@@ -1,0 +1,50 @@
+# secrets
+.env
+*.env
+.env.*
+config.json
+config-template.json
+
+# runtime data
+tmp/
+logs/
+*.log
+*.pid
+*.pkl
+*.pickle
+QR.png
+qrcode.png
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# backups
+*.bak
+*.bak.*
+docker-compose.yml.bak*
+plugins.json.bak*
+*.tmp
+
+# private memory/state
+plugins/memory_lite/memory.json
+plugins/proactive_love/proactive_state.json
+plugins/reminder_love/reminders.json
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# system/editor
+.DS_Store
+.idea/
+.vscode/
+
+# allow example env
+!.env.example
+
+# unused / external plugin repo
+plugins/timetask/
