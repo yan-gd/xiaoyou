@@ -1,5 +1,9 @@
 # 小悠 Xiaoyou
 
+<p align="center">
+  <img src="assets/xiaoyou-avatar.jpg" alt="小悠头像" width="320" />
+</p>
+
 > 一个基于个人微信小号、ChatGPT-on-WeChat、Qwen / 阿里云百炼的微信 AI 伴侣项目。
 
 小悠不是公众号机器人，也不是企业微信机器人，而是运行在个人微信小号上的 AI 伴侣。她可以像普通微信联系人一样和用户聊天，支持文字聊天、图片理解、长期记忆、主动找用户、定时提醒、多气泡分段发送等能力。

@@ -20,6 +20,10 @@ qrcode.png
 *.gif
 *.webp
 
+# project assets
+!assets/
+!assets/xiaoyou-avatar.jpg
+
 # backups
 *.bak
 *.bak.*
