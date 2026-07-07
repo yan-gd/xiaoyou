@@ -1,4 +1,4 @@
-# 小悠 Xiaoyou v1.0
+# 小悠 Xiaoyou
 
 > 一个基于个人微信小号、ChatGPT-on-WeChat、Qwen / 阿里云百炼的微信 AI 伴侣项目。
 
