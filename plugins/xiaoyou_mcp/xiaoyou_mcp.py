@@ -101,10 +101,10 @@ class XiaoyouMCP(Plugin):
         if re.search(r"附近|周边|哪里有|哪有|地址|营业时间|电话|门店|餐厅|酒店|医院|地铁站|景点", text):
             return "map_search"
 
-        if re.search(r"现在几点|几点了|今天几号|今天星期几|当前时间|北京时间|时间同步|校准时间|现在时间|时区", text):
+        if re.search(r"几点|几点啦|几点了|现在几点|今天几号|今天星期几|当前时间|北京时间|时间同步|校准时间|现在时间|时区", text):
             return "time"
 
-        if self._extract_url(text) or re.search(r"查一下|查下|搜一下|搜索|联网查|帮我查|资料|新闻|最新|最近|价格|汇率|百科|是什么|是谁|怎么回事|链接|网页", text):
+        if self._extract_url(text) or re.search(r"查一下|查下|搜一下|搜搜|搜索|联网查|帮我查|资料|新闻|最新|最近|价格|汇率|百科|是什么|是谁|怎么回事|链接|网页|", text, re.I):
             return "search"
 
         return None
@@ -358,16 +358,7 @@ class XiaoyouMCP(Plugin):
         if cached and now - cached.get("ts", 0) < cache_ttl:
             return cached.get("tools", [])
 
-        try:
-            # Some Hosted MCP servers reject empty params for tools/list.
-            # In MCP spec, params is optional for tools/list, so omit it first.
-            data = self._jsonrpc(endpoint, "tools/list", None)
-        except RuntimeError as ex:
-            if "Invalid request parameters" in str(ex) or "-32602" in str(ex):
-                logger.warning("[XiaoyouMCP] tools/list without params failed, retry with empty params: %s", ex)
-                data = self._jsonrpc(endpoint, "tools/list", {})
-            else:
-                raise
+        data = self._jsonrpc(endpoint, "tools/list", {})
         result = data.get("result", data)
         tools = result.get("tools", []) if isinstance(result, dict) else []
 
@@ -413,114 +404,102 @@ class XiaoyouMCP(Plugin):
     def _jsonrpc(self, endpoint, method, params=None):
         endpoint = endpoint.strip()
         timeout = int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45"))
-        request_id = int(time.time() * 1000)
-        headers = self._headers(endpoint)
 
-        if method != "initialize" and endpoint not in SESSION_CACHE:
+        def _is_session_expired_error(value):
+            msg = str(value or "")
+            low = msg.lower()
+            return (
+                "SessionExpired" in msg
+                or ("session" in low and "expired" in low)
+                or "MCP error 401" in msg
+                or " 401" in msg
+            )
+
+        def _send_once():
+            request_id = int(time.time() * 1000)
+
+            if method != "initialize" and endpoint not in SESSION_CACHE:
+                self._try_initialize(endpoint)
+
+            payload = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params or {},
+            }
+
+            r = requests.post(
+                endpoint,
+                headers=self._headers(endpoint),
+                json=payload,
+                timeout=timeout,
+            )
+
+            self._capture_session_id(endpoint, r)
+            return self._parse_response_json(r)
+
+        try:
+            data = _send_once()
+        except Exception as e:
+            if method == "initialize" or not _is_session_expired_error(e):
+                raise
+
+            logger.warning("[XiaoyouMCP] MCP session expired, reinitializing endpoint=%s", endpoint[:80])
+            try:
+                SESSION_CACHE.pop(endpoint, None)
+            except Exception:
+                pass
+
             self._try_initialize(endpoint)
-            headers = self._headers(endpoint)
-
-        payload = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": method,
-        }
-
-        # MCP methods such as tools/list may not need params.
-        # Some Hosted MCP validators reject params: {}.
-        if params is not None:
-            payload["params"] = params
-
-        r = requests.post(
-            endpoint,
-            headers=headers,
-            json=payload,
-            timeout=timeout,
-        )
-
-        self._capture_session_id(endpoint, r)
-        data = self._parse_response_json(r)
+            data = _send_once()
 
         if isinstance(data, dict) and data.get("error"):
-            raise RuntimeError("MCP error: %s" % data.get("error"))
+            err = data.get("error")
+
+            if method != "initialize" and _is_session_expired_error(err):
+                logger.warning("[XiaoyouMCP] MCP jsonrpc session expired, reinitializing endpoint=%s", endpoint[:80])
+                try:
+                    SESSION_CACHE.pop(endpoint, None)
+                except Exception:
+                    pass
+
+                self._try_initialize(endpoint)
+                data = _send_once()
+
+                if isinstance(data, dict) and data.get("error"):
+                    raise RuntimeError("MCP error: %s" % data.get("error"))
+
+                return data
+
+            raise RuntimeError("MCP error: %s" % err)
 
         return data
 
-
     def _try_initialize(self, endpoint):
-        timeout = int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45"))
-
-        configured = os.getenv("XIAOYOU_MCP_PROTOCOL_VERSION", "").strip()
-        if configured:
-            versions = [x.strip() for x in configured.split(",") if x.strip()]
-        else:
-            # Streamable HTTP MCP is commonly 2025-03-26.
-            # Keep 2024-11-05 as fallback for older Hosted MCP services.
-            versions = ["2025-03-26", "2024-11-05"]
-
-        last_error = ""
-
-        for version in versions:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": int(time.time() * 1000),
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": version,
-                    "capabilities": {},
-                    "clientInfo": {
-                        "name": "xiaoyou-cow",
-                        "version": "0.2",
-                    },
-                },
-            }
-
-            try:
-                r = requests.post(
-                    endpoint,
-                    headers=self._headers(endpoint, include_session=False),
-                    json=payload,
-                    timeout=timeout,
-                )
-
-                self._capture_session_id(endpoint, r)
-                data = self._parse_response_json(r)
-
-                if isinstance(data, dict) and data.get("error"):
-                    last_error = str(data.get("error"))
-                    logger.warning("[XiaoyouMCP] initialize error protocol=%s: %s", version, last_error)
-                    continue
-
-                logger.info("[XiaoyouMCP] initialize ok protocol=%s session=%s", version, bool(SESSION_CACHE.get(endpoint)))
-                self._send_initialized(endpoint)
-                return
-
-            except Exception as ex:
-                last_error = str(ex)
-                logger.warning("[XiaoyouMCP] initialize failed protocol=%s: %s", version, last_error)
-
-        logger.warning("[XiaoyouMCP] initialize skipped after retries for %s, last_error=%s", endpoint[:80], last_error)
-
-    def _send_initialized(self, endpoint):
         payload = {
             "jsonrpc": "2.0",
-            "method": "notifications/initialized",
-            "params": {},
+            "id": int(time.time() * 1000),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "xiaoyou-cow",
+                    "version": "0.1",
+                },
+            },
         }
 
         try:
             r = requests.post(
                 endpoint,
-                headers=self._headers(endpoint),
+                headers=self._headers(endpoint, include_session=False),
                 json=payload,
                 timeout=int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45")),
             )
             self._capture_session_id(endpoint, r)
-            logger.info("[XiaoyouMCP] initialized notification sent status=%s", r.status_code)
-        except Exception as ex:
-            # Some servers do not require this notification. Do not fail startup.
-            logger.info("[XiaoyouMCP] initialized notification skipped/failed: %s", ex)
-
+        except Exception:
+            logger.info("[XiaoyouMCP] initialize skipped/failed for %s", endpoint[:80])
 
     def _call_rest_tool(self, endpoint, tool_name, arguments):
         timeout = int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45"))
@@ -563,6 +542,13 @@ class XiaoyouMCP(Plugin):
             SESSION_CACHE[endpoint] = session_id
 
     def _parse_response_json(self, response):
+        if response.status_code == 401 and "SessionExpired" in str(response.text):
+            try:
+                SESSION_CACHE.clear()
+            except Exception:
+                pass
+            raise RuntimeError("MCP error 401 SessionExpired: %s" % response.text[:1000])
+
         if response.status_code >= 400:
             raise RuntimeError("MCP error %s: %s" % (response.status_code, response.text[:1000]))
 
