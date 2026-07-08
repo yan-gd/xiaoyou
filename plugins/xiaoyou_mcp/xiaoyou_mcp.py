@@ -89,6 +89,16 @@ class XiaoyouMCP(Plugin):
     def _route_intent(self, text):
         text = str(text or "").strip()
 
+        # 普通情绪、撒娇、确认、吐槽，不调用 MCP。
+        # MCP 路由只处理明确的天气/时间/地图/搜索意图。
+        if re.fullmatch(
+            r"(嗯+|好+|好的|哈哈+|嘿嘿+|爱你|想你|亲亲|抱抱|在吗|你还在吗|"
+            r"我去|卧槽|我靠|哎呀|唉呀|妈呀|救命|"
+            r".*(热飞了|热死了|冷死了|困死了|累死了|笑死了|气死了))",
+            text,
+        ):
+            return None
+
         if re.search(r"提醒我|记得提醒|叫我|喊我|闹钟|定个提醒|设个提醒", text):
             return None
 
@@ -104,7 +114,16 @@ class XiaoyouMCP(Plugin):
         if re.search(r"几点|几点啦|几点了|现在几点|今天几号|今天星期几|当前时间|北京时间|时间同步|校准时间|现在时间|时区", text):
             return "time"
 
-        if self._extract_url(text) or re.search(r"查一下|查下|搜一下|搜搜|搜索|联网查|帮我查|资料|新闻|最新|最近|价格|汇率|百科|是什么|是谁|怎么回事|链接|网页|", text, re.I):
+        if self._extract_url(text):
+            return "search"
+
+        # 搜索必须来自“当前用户消息”的明确查询意图，不能因为短期记忆里出现过搜索就触发。
+        # 不再使用末尾带空分支的正则，也避免“最近/是什么”等普通聊天词泛化触发。
+        if re.search(
+            r"查一下|查下|搜一下|搜搜|搜索|联网查|帮我查|帮我搜|网上查|去网上|资料|新闻|热点|最新|价格|汇率|链接|网页|世界杯|战况|比分|赛程|积分榜",
+            text,
+            re.I,
+        ):
             return "search"
 
         return None
@@ -358,7 +377,7 @@ class XiaoyouMCP(Plugin):
         if cached and now - cached.get("ts", 0) < cache_ttl:
             return cached.get("tools", [])
 
-        data = self._jsonrpc(endpoint, "tools/list", {})
+        data = self._jsonrpc(endpoint, "tools/list", None)
         result = data.get("result", data)
         tools = result.get("tools", []) if isinstance(result, dict) else []
 
@@ -425,8 +444,9 @@ class XiaoyouMCP(Plugin):
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "method": method,
-                "params": params or {},
             }
+            if params is not None:
+                payload["params"] = params
 
             r = requests.post(
                 endpoint,
@@ -439,6 +459,15 @@ class XiaoyouMCP(Plugin):
             return self._parse_response_json(r)
 
         try:
+            data = _send_once()
+        except requests.exceptions.RequestException as e:
+            logger.warning(
+                "[XiaoyouMCP] MCP network error, retry once method=%s endpoint=%s err=%s",
+                method,
+                endpoint[:80],
+                e,
+            )
+            time.sleep(1)
             data = _send_once()
         except Exception as e:
             if method == "initialize" or not _is_session_expired_error(e):
@@ -498,6 +527,21 @@ class XiaoyouMCP(Plugin):
                 timeout=int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45")),
             )
             self._capture_session_id(endpoint, r)
+
+            try:
+                notify_payload = {
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                }
+                requests.post(
+                    endpoint,
+                    headers=self._headers(endpoint),
+                    json=notify_payload,
+                    timeout=int(os.getenv("XIAOYOU_MCP_TIMEOUT", "45")),
+                )
+            except Exception:
+                logger.info("[XiaoyouMCP] initialized notification skipped/failed for %s", endpoint[:80])
+
         except Exception:
             logger.info("[XiaoyouMCP] initialize skipped/failed for %s", endpoint[:80])
 
@@ -686,14 +730,22 @@ YoYo 问：
     def _extract_plain_user_text(self, content):
         text = str(content or "").strip()
 
+        # MCP 只能根据“当前用户原话”决定是否调用工具。
+        # 短期记忆/长期记忆仍可给普通回复使用，但不能参与 MCP 路由。
         markers = [
-            "现在 YoYo 回复：",
             "[用户当前消息]",
             "[已有上下文与当前消息]",
+            "现在 YoYo 回复：",
         ]
 
         for marker in markers:
             if marker in text:
                 text = text.rsplit(marker, 1)[1].strip()
 
+        # 如果上游仍把记忆块混进来了，只取最后一行作为当前输入。
+        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        if lines:
+            text = lines[-1]
+
+        text = re.sub(r"^(YoYo|用户|我)[:：]\s*", "", text).strip()
         return re.sub(r"\s+", " ", text)
