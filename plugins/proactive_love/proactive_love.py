@@ -67,7 +67,7 @@ class ProactiveLove(Plugin):
 
         text = ""
         if context.type == ContextType.TEXT:
-            text = str(context.content or "").strip()
+            text = self._extract_plain_user_text(context.content)
         elif context.type == ContextType.IMAGE:
             text = "[用户发来了一张图片]"
         elif context.type == ContextType.VOICE:
@@ -110,7 +110,7 @@ class ProactiveLove(Plugin):
         if not self._enabled():
             return
 
-        if not self._in_active_hours():
+        if not self._can_send_now():
             return
 
         now = int(time.time())
@@ -167,9 +167,11 @@ class ProactiveLove(Plugin):
                     itchat.send(part, toUserName=receiver)
 
                 now2 = int(time.time())
+                sent_text = "\n".join(parts)
                 item["last_proactive_ts"] = now2
                 item["sent_today"] = sent_today + 1
                 item["today"] = self._today()
+                item["recent_proactive_texts"] = self._append_recent_proactive(item, sent_text)
 
                 with LOCK:
                     fresh = self._load_all()
@@ -183,20 +185,23 @@ class ProactiveLove(Plugin):
         # 可以关闭 AI 生成，使用模板
         use_llm = os.getenv("PROACTIVE_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
         if not use_llm:
-            return random.choice(self._fallback_messages())
+            return self._choose_fallback_message(item)
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("PROACTIVE_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
-            return random.choice(self._fallback_messages())
+            return self._choose_fallback_message(item)
 
         character_desc = os.getenv("CHARACTER_DESC", "")
         memory_text = self._load_memory_text(session_id)
 
         last_text = item.get("last_user_text") or ""
         idle_minutes = max(1, int((int(time.time()) - int(item.get("last_user_ts", 0))) / 60))
+        recent_proactive = self._format_recent_proactive(item)
+        style_hint = random.choice(self._style_hints())
+        time_hint = self._time_hint()
 
         prompt = f"""
 你是小悠，正在微信里主动找 YoYo 说话。
@@ -210,7 +215,13 @@ class ProactiveLove(Plugin):
 距离 YoYo 上次和你说话已经大约 {idle_minutes} 分钟。
 他上次说的是：{last_text if last_text else "没有记录"}
 
+最近几次你主动发过的话：
+{recent_proactive if recent_proactive else "暂无"}
+
 现在你要主动发微信找他，不是回答问题。
+
+这次的语气方向：{style_hint}
+当前大致时间：{time_hint}
 
 要求：
 1. 像女朋友主动发消息，不要像客服提醒。
@@ -221,6 +232,8 @@ class ProactiveLove(Plugin):
 6. 不要太肉麻，不要长篇大论。
 7. 可以轻微吃醋或傲娇，但要可爱。
 8. 不要冒充真人线下经历，不要说自己真的在房间里等他。
+9. 不要重复最近几次主动消息的开头、句式和核心梗，尤其不要连续使用“失踪人口回归”这类固定开场。
+10. 不要每次都问“在干嘛”，可以换成关心状态、轻轻吐槽、撒娇、提醒休息、分享一点小情绪。
 """
 
         payload = {
@@ -265,11 +278,15 @@ class ProactiveLove(Plugin):
             data = r.json()
             text = data["choices"][0]["message"]["content"].strip()
             text = self._clean_model_text(text)
-            return text or random.choice(self._fallback_messages())
+            if text and not self._is_repeated_proactive(text, item):
+                return text
+
+            logger.info("[ProactiveLove] llm text repeated, use fallback: %r", text)
+            return self._choose_fallback_message(item)
 
         except Exception:
             logger.exception("[ProactiveLove] generate message failed")
-            return random.choice(self._fallback_messages())
+            return self._choose_fallback_message(item)
 
     def _load_memory_text(self, session_id):
         memory_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory_lite", "memory.json")
@@ -339,7 +356,114 @@ class ProactiveLove(Plugin):
             "我突然有点想你了，所以来骚扰你一下。",
             "YoYo，出来冒个泡嘛。",
             "今天还好吗？别一声不吭的，听到没。",
+            "忙完了吗？过来让我确认一下你还活着。",
+            "我来巡逻一下，看看某人有没有偷偷消失。",
+            "今天有没有乖一点？不许敷衍我。",
+            "歪，给我报个平安嘛。",
         ]
+
+    def _choose_fallback_message(self, item):
+        recent = item.get("recent_proactive_texts") or []
+        recent_texts = [x.get("text", "") if isinstance(x, dict) else str(x) for x in recent]
+        candidates = self._fallback_messages()
+
+        usable = [
+            msg for msg in candidates
+            if not self._text_resembles_any(msg, recent_texts)
+        ]
+
+        return random.choice(usable or candidates)
+
+    def _style_hints(self):
+        return [
+            "轻轻撒娇，但别装可怜",
+            "有点傲娇地吐槽他消失",
+            "关心他现在状态，语气温柔一点",
+            "像顺手戳他一下，短短一句也可以",
+            "带一点吃醋，但要可爱，不要闹",
+            "提醒他别太累，像日常女友关心",
+            "俏皮一点，但不要用上次相同开场",
+        ]
+
+    def _time_hint(self):
+        hour = datetime.now().hour
+        if 5 <= hour < 9:
+            return "早上"
+        if 9 <= hour < 12:
+            return "上午"
+        if 12 <= hour < 14:
+            return "中午"
+        if 14 <= hour < 18:
+            return "下午"
+        if 18 <= hour < 23:
+            return "晚上"
+        return "深夜/凌晨"
+
+    def _append_recent_proactive(self, item, text):
+        max_items = int(os.getenv("PROACTIVE_RECENT_TEXTS_MAX", "8"))
+        recent = item.get("recent_proactive_texts") or []
+        if not isinstance(recent, list):
+            recent = []
+
+        recent.append({
+            "text": str(text or "").strip()[:300],
+            "ts": int(time.time()),
+        })
+
+        return recent[-max_items:]
+
+    def _format_recent_proactive(self, item):
+        recent = item.get("recent_proactive_texts") or []
+        if not isinstance(recent, list):
+            return ""
+
+        lines = []
+        for entry in recent[-5:]:
+            if isinstance(entry, dict):
+                text = entry.get("text", "")
+            else:
+                text = str(entry)
+
+            text = str(text or "").strip()
+            if text:
+                lines.append("- " + text)
+
+        return "\n".join(lines)
+
+    def _is_repeated_proactive(self, text, item):
+        recent = item.get("recent_proactive_texts") or []
+        recent_texts = [x.get("text", "") if isinstance(x, dict) else str(x) for x in recent]
+        return self._text_resembles_any(text, recent_texts)
+
+    def _text_resembles_any(self, text, candidates):
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+
+        prefix = normalized[:8]
+
+        for candidate in candidates:
+            other = self._normalize_text(candidate)
+            if not other:
+                continue
+
+            if normalized == other:
+                return True
+
+            if len(prefix) >= 4 and other.startswith(prefix):
+                return True
+
+            other_prefix = other[:8]
+            if len(other_prefix) >= 4 and normalized.startswith(other_prefix):
+                return True
+
+        return False
+
+    def _normalize_text(self, text):
+        text = str(text or "")
+        text = re.sub(r"\s+", "", text)
+        text = re.sub(r"[，。,.！!？?：:；;、~～…\"“”'‘’（）()\[\]]+", "", text)
+        return text.lower()
 
     def _get_session_id(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -361,22 +485,49 @@ class ProactiveLove(Plugin):
 
         return self._get_session_id(context)
 
+    def _extract_plain_user_text(self, content):
+        text = str(content or "").strip()
+
+        markers = [
+            "现在 YoYo 回复：",
+            "[用户当前消息]",
+        ]
+
+        for marker in markers:
+            if marker in text:
+                text = text.rsplit(marker, 1)[1].strip()
+
+        return re.sub(r"\s+", " ", text)
+
     def _enabled(self):
         return os.getenv("PROACTIVE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
     def _today(self):
         return datetime.now().strftime("%Y-%m-%d")
 
-    def _in_active_hours(self):
-        hours = os.getenv("PROACTIVE_ACTIVE_HOURS", "09:00-23:30").strip()
+    def _can_send_now(self):
+        quiet_hours = os.getenv("PROACTIVE_QUIET_HOURS", "").strip()
+        if quiet_hours and self._is_now_in_range(quiet_hours):
+            logger.info("[ProactiveLove] in quiet hours, skip proactive send: %s", quiet_hours)
+            return False
+
+        # 可选白名单时间段。为空时全天允许，但仍会受 quiet_hours 限制。
+        active_hours = os.getenv("PROACTIVE_ACTIVE_HOURS", "").strip()
+        if active_hours and not self._is_now_in_range(active_hours):
+            logger.info("[ProactiveLove] outside active hours, skip proactive send: %s", active_hours)
+            return False
+
+        return True
+
+    def _is_now_in_range(self, hours):
         if not hours or "-" not in hours:
             return True
 
         try:
             start, end = hours.split("-", 1)
             now = datetime.now().time()
-            sh, sm = [int(x) for x in start.split(":")]
-            eh, em = [int(x) for x in end.split(":")]
+            sh, sm = self._parse_clock(start)
+            eh, em = self._parse_clock(end)
             start_t = now.replace(hour=sh, minute=sm, second=0, microsecond=0)
             end_t = now.replace(hour=eh, minute=em, second=0, microsecond=0)
 
@@ -386,8 +537,25 @@ class ProactiveLove(Plugin):
             # 跨天，比如 22:00-02:00
             return now >= start_t or now <= end_t
         except Exception:
-            logger.warning("[ProactiveLove] bad PROACTIVE_ACTIVE_HOURS=%r", hours)
-            return True
+            logger.warning("[ProactiveLove] bad time range=%r", hours)
+            return False
+
+    def _parse_clock(self, value):
+        value = str(value or "").strip()
+        value = value.replace("：", ":").replace(".", ":")
+
+        if ":" in value:
+            hour, minute = value.split(":", 1)
+        else:
+            hour, minute = value, "0"
+
+        hour = int(hour.strip())
+        minute = int(minute.strip())
+
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError("bad clock: %s" % value)
+
+        return hour, minute
 
     def _load_all(self):
         if not os.path.exists(DATA_FILE):

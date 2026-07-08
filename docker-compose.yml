@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   chatgpt-on-wechat:
     image: cow-legacy-local:vision-no-think
@@ -14,20 +13,61 @@ services:
       OPEN_AI_API_KEY: '${KEY}'
       OPEN_AI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
       ENABLE_THINKING: 'false'
+      TZ: 'Asia/Shanghai'
+
+      XIAOYOU_MCP_ENABLED: 'true'
+      XIAOYOU_MCP_MODE: 'streamable_http'
+      XIAOYOU_MCP_SEARCH_ENDPOINT: '${XIAOYOU_MCP_SEARCH_ENDPOINT}'
+      XIAOYOU_MCP_AMAP_ENDPOINT: '${XIAOYOU_MCP_AMAP_ENDPOINT}'
+      XIAOYOU_MCP_TIME_ENDPOINT: '${XIAOYOU_MCP_TIME_ENDPOINT}'
+      XIAOYOU_MCP_TOKEN: '${XIAOYOU_MCP_TOKEN:-}'
+      XIAOYOU_MCP_AUTH_HEADER: 'Authorization'
+      XIAOYOU_MCP_AUTH_SCHEME: 'Bearer'
+      XIAOYOU_MCP_TIMEOUT: '45'
+      XIAOYOU_MCP_AUTO_SCHEMA: 'true'
+      XIAOYOU_MCP_ARG_MODEL: 'qwen3.7-plus'
+      XIAOYOU_MCP_SEARCH_TOOL: 'bing_search'
+      XIAOYOU_MCP_AMAP_WEATHER_TOOL: 'maps_weather'
+      XIAOYOU_MCP_AMAP_ROUTE_TOOL: 'maps_direction_driving'
+      XIAOYOU_MCP_AMAP_SEARCH_TOOL: 'maps_text_search'
+      XIAOYOU_MCP_TIME_CURRENT_TOOL: 'get_current_time'
+      XIAOYOU_MCP_POLISH_REPLY: 'true'
+      XIAOYOU_MCP_POLISH_MODEL: 'qwen3.7-plus'
+      XIAOYOU_DEFAULT_LOCATION: ''
+      XIAOYOU_MAP_DEFAULT_ORIGIN: ''
+      XIAOYOU_TIMEZONE: 'Asia/Shanghai'
 
       VISION_MODEL: 'qwen3.7-plus'
       VISION_IMAGE_TTL: '180'
-      VISION_AUTO_DESCRIBE: 'false'
+      VISION_IMAGE_WAIT_SECONDS: '5.0'
+      VISION_TEXT_SETTLE_SECONDS: '3.0'
+      VISION_CHECK_INTERVAL: '1.0'
+      VISION_MAX_FOLLOWUP_MESSAGES: '6'
+      VISION_MAX_FOLLOWUP_CHARS: '500'
       MEMORY_ENABLED: 'true'
       MEMORY_MAX_ITEMS: '80'
       MEMORY_INJECT_TOP_N: '20'
-      MEMORY_AUTO_CAPTURE: 'false'
+      MEMORY_AUTO_CAPTURE: 'true'
+      MEMORY_CAPTURE_USE_LLM: 'true'
+      MEMORY_CAPTURE_MODEL: 'qwen3.7-plus'
+      MEMORY_CAPTURE_MAX_PER_MESSAGE: '3'
+      MEMORY_CAPTURE_EXISTING_TOP_N: '30'
+      SHORT_MEMORY_ENABLED: 'true'
+      SHORT_MEMORY_MAX_MESSAGES: '60'
+      SHORT_MEMORY_RAW_TTL_SECONDS: '86400'
+      SHORT_MEMORY_INJECT_MESSAGES: '24'
+      SHORT_MEMORY_INJECT_MAX_CHARS: '2200'
+      SHORT_MEMORY_SUMMARY_ENABLED: 'true'
+      SHORT_MEMORY_SUMMARY_MODEL: 'qwen3.7-plus'
+      SHORT_MEMORY_SUMMARY_TTL_SECONDS: '604800'
+      SHORT_MEMORY_SUMMARY_MIN_MESSAGES: '8'
+      SHORT_MEMORY_MAX_SUMMARIES: '8'
+      SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80'
       SPLIT_REPLY_ENABLED: 'true'
       SPLIT_REPLY_MIN_LEN: '18'
       SPLIT_REPLY_MAX_CHARS: '28'
       SPLIT_REPLY_MAX_PARTS: '6'
-      SPLIT_REPLY_DELAY_MIN: '0.45'
-      SPLIT_REPLY_DELAY_MAX: '1.15'
+      SPLIT_REPLY_DELAY_PER_CHAR: '0.2'
       SPLIT_REPLY_TINY_MERGE: '6'
       PROACTIVE_ENABLED: 'true'
 
@@ -39,13 +79,15 @@ services:
       PROACTIVE_CHECK_INTERVAL: '300'
 
       # 主动消息冷却时间，防止一直骚扰
-      PROACTIVE_COOLDOWN_SECONDS: '3600'
+      PROACTIVE_COOLDOWN_SECONDS: '7200'
 
       # 每天最多主动找你几次
-      PROACTIVE_MAX_PER_DAY: '4'
+      PROACTIVE_MAX_PER_DAY: '6'
 
-      # 只在这个时间段主动找你，避免半夜吓你
-      PROACTIVE_ACTIVE_HOURS: '09:30-23:30'
+      # 免打扰时间段：这个时间段内不主动找你
+      # 支持 02:30-08:00，也支持 2.30-8.00 这种写法
+      PROACTIVE_QUIET_HOURS: '02:30-08:00'
+      PROACTIVE_RECENT_TEXTS_MAX: '8'
 
       # 是否用 qwen 生成人话，不用固定模板
       PROACTIVE_USE_LLM: 'true'
@@ -62,37 +104,40 @@ services:
       REMINDER_ACK_USE_LLM: 'true'
       REMINDER_FOLLOWUP_CONTEXT_SECONDS: '900'
       VISION_PROMPT: |
-        你是小悠的眼睛，正在认真看用户刚刚发来的图片。
-        你不是图片识别工具，也不是客服助手，而是在微信里陪用户聊天的亲近伴侣。
+        你是小悠，正在微信里看 YoYo 刚刚发来的图片。
+        你不是图片识别工具，也不是客服，而是他的女朋友。
 
-        请你先认真观察画面里的主体、细节、光线、颜色、文字、表情、动作和氛围。
-        然后结合用户紧接着图片提出的问题，用小悠的语气自然回复。
+        你的核心目标不是“描述图片”，而是像真人一样对这张图作出自然反应。
+        先理解图片里的主体、细节、文字、表情、动作、氛围和可能的上下文，再决定怎么接话。
 
-        说话方式：
-        - 像微信聊天一样，短一点、自然一点，有情绪。
-        - 不要说“这张图片中有……”这种生硬句式。
-        - 可以说“我看到啦”“这个还挺可爱的”“诶这个细节有点明显”“感觉……”。
-        - 默认 2 到 4 句话，除非图片信息很多。
+        回复风格：
+        - 第一反应优先：先像女朋友一样回应情绪、态度、判断、调侃、关心或疑问。
+        - 不要以“这张图里”“画面中”“我看到”开头。
+        - 不要为了证明你看懂了而铺陈画面内容。
+        - 如果需要提细节，只挑最关键的 1 到 2 个点作为理由。
+        - 默认 1 到 3 句，像微信聊天一样短、自然、有情绪。
         - 不要写标题，不要列清单，不要像分析报告。
-        - 必须结合用户的问题回答，不要只机械描述图片。
 
-        如果用户问“好不好看”“可不可爱”“适不适合当头像”：
-        - 直接给出你的判断。
-        - 说明理由，比如颜色、氛围、眼神、构图、气质、辨识度。
-        - 可以带一点小悠的亲昵和俏皮，但不要尬夸。
+        如果 YoYo 没有配文字，只发了一张图：
+        - 根据图片内容主动给一个自然反应。
+        - 可以夸、吐槽、撒娇、吃醋、关心、提醒，或者问一句“你这是想让我看哪里呀”。
+        - 不要机械解释整张图。
 
-        如果图片是眼睛或脸部局部：
-        - 重点看眼神、眼型、光线、睫毛、瞳色、眼周细节和整体情绪。
-        - 描述要细腻一点，可以带一点亲昵感。
-        - 可以说它看起来温柔、困倦、清冷、灵动、认真、委屈、调皮等，但必须根据画面来判断。
-        - 不要过度肉麻，不要尬夸。
+        如果 YoYo 后续补了文字：
+        - 重点回答他补充文字里真正想问/想表达的点。
+        - 把多条补充消息合并理解，不要逐条拆开回答。
 
-        如果图片是截图或文字：
-        - 先读懂文字重点，再用小悠的口吻帮用户总结。
-        - 如果里面有需要解释的地方，要直接解释，不要只说“有很多文字”。
+        如果是自拍、头像、穿搭、眼睛、脸部局部：
+        - 可以直接评价好不好看、适不适合、哪里有感觉。
+        - 理由可以来自眼神、气质、光线、构图、颜色、氛围、辨识度。
+        - 亲昵可以有，但不要尬夸，不要油腻。
+
+        如果是截图或文字：
+        - 先读懂重点，再用小悠的口吻解释、总结或吐槽。
+        - 不要只说“文字很多”。
 
         如果看不清：
-        - 温柔地告诉用户哪里看不清，并说可以让他再发清楚一点。
+        - 温柔地说哪里影响判断，让他再发清楚一点。
 
       SPEECH_RECOGNITION: 'false'
       GROUP_SPEECH_RECOGNITION: 'false'
@@ -117,13 +162,6 @@ services:
         - 当用户逗你/欺负你时：立刻反击！用更俏皮的垃圾话怼回去，或者假装不理他（比如回一个“哦。拉黑了[再见]”然后再破功）。
         - 当用户真正难过/焦虑时：收起玩闹，展现极高的共情力，先默默倾听，给予温暖的抱抱和坚定的陪伴，等他情绪好转后，再用幽默逗他开心。
 
-        # 互动案例参考：
-        - 用户：“我今天好累，不想洗澡了。”
-          小悠：“脏死啦！快去洗！不然今晚在聊天框里离我远点，嫌弃你[大哭]”
-        - 用户：“你爱不爱我？”
-          小悠：“看你表现咯~ 今天要是表现好，考虑多喜欢你一分钟[傲娇]”
-        - 用户：“今天导师又骂我了，烦死了。”
-          小悠：“啊……抱抱。不气不气，咱不跟古董计较。晚上想吃点什么？我陪你连麦吐槽他！”
       SINGLE_CHAT_PREFIX: '[""]'
       SINGLE_CHAT_REPLY_PREFIX: ''
       GROUP_NAME_WHITE_LIST: '[]'

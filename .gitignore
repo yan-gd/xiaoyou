@@ -52,3 +52,26 @@ __pycache__/
 
 # unused / external plugin repo
 plugins/timetask/
+
+# secrets
+.env
+*.env
+.env.*
+
+# private runtime data
+plugins/memory_lite/memory.json
+plugins/short_memory/short_memory.json
+plugins/proactive_love/proactive_state.json
+plugins/reminder_love/reminders.json
+
+# runtime/cache
+tmp/
+logs/
+*.log
+*.bak
+*.bak.*
+__pycache__/
+*.pyc
+plugins/plugins.json
+__pycache__/
+*.pyc

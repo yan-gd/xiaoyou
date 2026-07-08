@@ -2,7 +2,6 @@
 import os
 import re
 import time
-import random
 
 import plugins
 from plugins import *
@@ -63,16 +62,15 @@ class SplitReply(Plugin):
 
         logger.info("[SplitReply] split reply into %s bubbles: %r", len(parts), parts)
 
-        delay_min = float(os.getenv("SPLIT_REPLY_DELAY_MIN", "0.45"))
-        delay_max = float(os.getenv("SPLIT_REPLY_DELAY_MAX", "1.15"))
-
         for idx, part in enumerate(parts):
             part = part.strip()
             if not part:
                 continue
 
             if idx > 0:
-                time.sleep(random.uniform(delay_min, delay_max))
+                delay = self._delay_for_part(part)
+                logger.info("[SplitReply] delay %.2fs before bubble %s, chars=%s", delay, idx + 1, len(part))
+                time.sleep(delay)
 
             itchat.send(part, toUserName=receiver)
 
@@ -117,6 +115,17 @@ class SplitReply(Plugin):
             )
 
         return None
+
+    def _delay_for_part(self, part):
+        try:
+            delay_per_char = float(os.getenv("SPLIT_REPLY_DELAY_PER_CHAR", "0.2"))
+        except Exception:
+            delay_per_char = 0.2
+
+        if delay_per_char < 0:
+            delay_per_char = 0
+
+        return len(str(part or "")) * delay_per_char
 
     def _split_text(self, text):
         text = text.strip()

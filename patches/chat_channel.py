@@ -9,7 +9,9 @@ from bridge.context import *
 from bridge.reply import *
 from channel.channel import Channel
 from common.dequeue import Dequeue
+from common.log import logger
 from common import memory
+from config import conf
 from plugins import *
 
 try:
