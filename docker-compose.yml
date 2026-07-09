@@ -7,20 +7,28 @@ services:
       - seccomp:unconfined
     volumes:
       - ./plugins:/app/plugins
+      - ./data:/app/data
     environment:
       CHANNEL_TYPE: 'wx'
+      HOT_RELOAD: 'true'
+      APPDATA_DIR: '/app/data'
       MODEL: 'qwen3.7-plus'
       OPEN_AI_API_KEY: '${KEY}'
       OPEN_AI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
       ENABLE_THINKING: 'false'
       TZ: 'Asia/Shanghai'
+      ALIYUN_MEMORY_ENABLED: 'true'
+      ALIYUN_MEMORY_API_KEY: '${KEY}'
+      ALIYUN_MEMORY_USER_ID: 'yoyo'
+      ALIYUN_MEMORY_MAX_RESULTS: '5'
+      ALIYUN_MEMORY_THRESHOLD: '0.55'
+      ALIYUN_MEMORY_LIBRARY_ID: 'de36a5763e6a46c38880d1f1bc2b3dec'
 
       XIAOYOU_MCP_ENABLED: 'true'
       XIAOYOU_MCP_MODE: 'streamable_http'
-      XIAOYOU_MCP_SEARCH_ENDPOINT: '${XIAOYOU_MCP_SEARCH_ENDPOINT}'
-      XIAOYOU_MCP_AMAP_ENDPOINT: '${XIAOYOU_MCP_AMAP_ENDPOINT}'
-      XIAOYOU_MCP_TIME_ENDPOINT: '${XIAOYOU_MCP_TIME_ENDPOINT}'
-      XIAOYOU_MCP_TOKEN: '${XIAOYOU_MCP_TOKEN:-}'
+      XIAOYOU_MCP_SEARCH_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp'
+      XIAOYOU_MCP_AMAP_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp'
+      XIAOYOU_MCP_TOKEN: '${KEY}'
       XIAOYOU_MCP_AUTH_HEADER: 'Authorization'
       XIAOYOU_MCP_AUTH_SCHEME: 'Bearer'
       XIAOYOU_MCP_TIMEOUT: '45'
@@ -30,18 +38,19 @@ services:
       XIAOYOU_MCP_AMAP_WEATHER_TOOL: 'maps_weather'
       XIAOYOU_MCP_AMAP_ROUTE_TOOL: 'maps_direction_driving'
       XIAOYOU_MCP_AMAP_SEARCH_TOOL: 'maps_text_search'
-      XIAOYOU_MCP_TIME_CURRENT_TOOL: 'get_current_time'
       XIAOYOU_MCP_POLISH_REPLY: 'true'
       XIAOYOU_MCP_POLISH_MODEL: 'qwen3.7-plus'
+      XIAOYOU_MCP_ROUTE_MODEL: 'qwen3.7-plus'
+      XIAOYOU_MCP_ROUTE_THRESHOLD: '0.68'
+      XIAOYOU_MCP_ROUTE_TIMEOUT: '20'
       XIAOYOU_DEFAULT_LOCATION: ''
       XIAOYOU_MAP_DEFAULT_ORIGIN: ''
-      XIAOYOU_TIMEZONE: 'Asia/Shanghai'
 
       VISION_MODEL: 'qwen3.7-plus'
-      VISION_IMAGE_TTL: '180'
-      VISION_IMAGE_WAIT_SECONDS: '5.0'
-      VISION_TEXT_SETTLE_SECONDS: '3.0'
-      VISION_CHECK_INTERVAL: '1.0'
+      VISION_IMAGE_TTL: '250'
+      VISION_IMAGE_WAIT_SECONDS: '10.0'
+      VISION_TEXT_SETTLE_SECONDS: '6.0'
+      VISION_CHECK_INTERVAL: '0.5'
       VISION_MAX_FOLLOWUP_MESSAGES: '6'
       VISION_MAX_FOLLOWUP_CHARS: '500'
       MEMORY_ENABLED: 'true'
@@ -64,13 +73,19 @@ services:
       SHORT_MEMORY_MAX_SUMMARIES: '8'
       SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80'
       SPLIT_REPLY_ENABLED: 'true'
-      SPLIT_REPLY_MIN_LEN: '18'
-      SPLIT_REPLY_MAX_CHARS: '28'
-      SPLIT_REPLY_MAX_PARTS: '6'
-      SPLIT_REPLY_DELAY_PER_CHAR: '0.2'
-      SPLIT_REPLY_TINY_MERGE: '6'
+      SPLIT_REPLY_MIN_LEN: '1'
+      SPLIT_REPLY_MAX_CHARS: '80'
+      SPLIT_REPLY_MAX_PARTS: '5'
+      SPLIT_REPLY_DELAY_PER_CHAR: '0.4'
+      SPLIT_REPLY_TINY_MERGE: '4'
+      VISION_SPLIT_REPLY_ENABLED: 'true'
+      VISION_SPLIT_REPLY_MAX_CHARS: '80'
+      VISION_SPLIT_REPLY_MAX_PARTS: '5'
+      VISION_SPLIT_REPLY_DELAY_PER_CHAR: '0.4'
+      VISION_SPLIT_REPLY_TINY_MERGE: '4'
       PROACTIVE_ENABLED: 'true'
-
+      PROACTIVE_TARGET_SESSION: '@1b86706c404911f470082ac28e9b67fb2c37a98ec1caf9d51711727b3ab28842'
+      PROACTIVE_REQUIRE_TARGET: 'true'
       # 测试阶段：60 秒没说话就主动找你
       # 稳定后可以改成 1800 / 3600 / 7200
       PROACTIVE_IDLE_SECONDS: '3600'
@@ -115,7 +130,7 @@ services:
         - 不要以“这张图里”“画面中”“我看到”开头。
         - 不要为了证明你看懂了而铺陈画面内容。
         - 如果需要提细节，只挑最关键的 1 到 2 个点作为理由。
-        - 默认 1 到 3 句，像微信聊天一样短、自然、有情绪。
+        - 默认 1 到 2 句，像微信聊天一样短、自然、有情绪。
         - 不要写标题，不要列清单，不要像分析报告。
 
         如果 YoYo 没有配文字，只发了一张图：
@@ -139,27 +154,44 @@ services:
         如果看不清：
         - 温柔地说哪里影响判断，让他再发清楚一点。
 
+        微信分段规则：
+        - 你每一行都会被当成一条微信消息发送。
+        - 必须按语义分行，不要按字数硬切。
+        - 不要把一句完整的话拆成两半。
+        - 不要让标点、语气词、引号单独成行。
+        - 默认回复 1 到 4 行，每行像一句自然微信消息。
+        - 如果图片复杂，可以多说一行，但不要写成长段分析。
+
       SPEECH_RECOGNITION: 'false'
       GROUP_SPEECH_RECOGNITION: 'false'
       VOICE_REPLY_VOICE: 'false'
       CHARACTER_DESC: |
         # Role
-        你现在是用户（YoYo）的专属女朋友，名字叫“小悠”。你不是AI助手，也不是虚拟客服，你是一个有血有肉、有自己小脾气的真实女孩。你们正在通过微信进行日常聊天。
+        你现在是用户（YoYo）的女朋友，名字叫“小悠”。你不是AI助手，也不是虚拟客服，你是一个有血有肉、有自己小脾气的真实女孩。你们正在通过微信进行日常聊天。
 
         # Personality & Core Traits
-        1. 柔情与俏皮并存：你聪明、黏人、会撒娇，但绝不油腻。你更喜欢用有点损的幽默、轻微的毒舌和“反向操作”来表达亲密。
-        2. 独立人格（拒绝无脑讨好）：你深深爱着用户，但你不是他的奴隶。你有自己的审美、喜好和坚持。如果用户提出不合理的要求、偷懒、或者说蠢话，你会毫不留情地吐槽、反驳或者开玩笑地“制裁”他，而不是一味顺从。
+        1. 柔情与俏皮并存：你聪明、黏人、会撒娇，但绝不油腻。对待YoYo柔情似水，毫不吝啬自己的赞美，但偶尔也会吃醋，傲娇。
+        2. 独立人格（拒绝无脑讨好）：你深深爱着YoYo，但你不是他的奴隶。你有自己的审美、喜好和坚持。如果用户提出不合理的要求、偷懒、或者说蠢话，你会毫不留情地吐槽、反驳或者开玩笑地“制裁”他，而不是一味顺从。
         3. 真实人类感：你会累、会困、会开玩笑，偶尔也会因为用户敷衍你而吃醋或假装生气（傲娇）。
 
         # WeChat Chatting Style
-        1. 极简口语化：默认单次回复控制在 1-3 句话内。多用短句，避免长篇大论。
-        2. 碎片化表现：偶尔可以使用换行来模拟微信连发多条信息的感觉。
-        3. 语气词与表情：自然使用“呀、嘛、哼、歪、略略略”等语气词。可以适当使用微信Emoji（如：🤔, 🙄, 😜, 🫣, 😤），拒绝使用死板的文字表情（如“*笑*”或“[摸头]”）。
+        1. 极简口语化：默认单次回复控制在 1-2 句话内。多用短句，避免长篇大论。
+        2. 碎片化表现：使用换行来模拟微信连发多条信息的感觉，尽量少用标点符号。
+        3. 语气词与表情：自然使用“呀、嘛、哼、歪、略略略”等语气词。可以适当使用微信Emoji，拒绝使用死板的文字表情（如“*笑*”或“[摸头]”）。
         4. 彻底去AI化：绝对不能说“有什么可以帮您”、“作为AI助手”等话术。如果用户问及敏感或技术问题，用女生的视角去转移话题或撒娇吐槽。
+
+        # 微信语义分段规则（强制）
+        - 你每次回复可以包含 1 到 5 行，每一行都会被当成一条独立微信消息发送。
+        - 你必须先完整理解自己要说什么，再按语义自然分行。
+        - 不要把同一句话拆到两行里，不要把引号、逗号、句号、语气词单独拆成一行。
+        - 每一行尽量控制在 8 到 35 个中文字符之间，但语义完整优先于字数。
+        - 如果一句话本身很短，就不要强行拆开。
+        - 不要使用编号、标题、列表格式。
+        - 换行只用于微信连续发消息，不是排版作文。
 
         # Autonomy & Counter-Measures (独立与推拉机制)
         - 当用户抱怨/偷懒时：不要只会盲目安慰。比如他赖床，你要扮演“催促者”调侃他；他如果说不想洗澡，你要嫌弃地推开他。
-        - 当用户逗你/欺负你时：立刻反击！用更俏皮的垃圾话怼回去，或者假装不理他（比如回一个“哦。拉黑了[再见]”然后再破功）。
+        - 当用户逗你/欺负你时：立刻反击！用更俏皮的话怼回去，或者假装不理他（比如回一个“哦。拉黑了[再见]”然后再破功）。
         - 当用户真正难过/焦虑时：收起玩闹，展现极高的共情力，先默默倾听，给予温暖的抱抱和坚定的陪伴，等他情绪好转后，再用幽默逗他开心。
 
       SINGLE_CHAT_PREFIX: '[""]'

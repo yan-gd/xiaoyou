@@ -13,6 +13,7 @@ import plugins
 from plugins import *
 from bridge.context import ContextType
 from common.log import logger
+from plugins.xiaoyou_common.time_context import build_time_context
 from lib import itchat
 
 
@@ -24,7 +25,7 @@ THREAD_STARTED = False
 @plugins.register(
     name="ProactiveLove",
     desc="Let Xiaoyou proactively message user after inactivity",
-    version="0.1",
+    version="0.2-target",
     author="yoyo",
     desire_priority=10,
 )
@@ -63,6 +64,18 @@ class ProactiveLove(Plugin):
         receiver = self._get_receiver(context)
 
         if not session_id or not receiver:
+            return
+
+        target_session = self._target_session()
+        target_receiver = self._target_receiver()
+
+        # 如果配置了唯一目标，只记录这个目标，避免把旧 session / 其他联系人写入主动消息候选池。
+        if target_session and session_id != target_session:
+            logger.info("[ProactiveLove] ignore non-target session activity session=%s target_session=%s", session_id, target_session)
+            return
+
+        if target_receiver and receiver != target_receiver:
+            logger.info("[ProactiveLove] ignore non-target receiver activity receiver=%s target_receiver=%s", receiver, target_receiver)
             return
 
         text = ""
@@ -124,6 +137,13 @@ class ProactiveLove(Plugin):
         if not data:
             return
 
+        target_session = self._target_session()
+        target_receiver = self._target_receiver()
+
+        if self._require_target() and not target_session and not target_receiver:
+            logger.warning("[ProactiveLove] PROACTIVE_REQUIRE_TARGET=true but no PROACTIVE_TARGET_SESSION/PROACTIVE_TARGET_RECEIVER configured, skip proactive send")
+            return
+
         for session_id, item in list(data.items()):
             try:
                 receiver = item.get("receiver")
@@ -132,6 +152,14 @@ class ProactiveLove(Plugin):
 
                 if not receiver or not last_user_ts:
                     continue
+
+                if target_session and session_id != target_session:
+                    continue
+
+                if target_receiver and receiver != target_receiver:
+                    continue
+
+                send_receiver = target_receiver or receiver
 
                 if item.get("today") != self._today():
                     item["today"] = self._today()
@@ -159,12 +187,24 @@ class ProactiveLove(Plugin):
                 msg = self._generate_message(session_id, item)
                 parts = self._split_message(msg)
 
-                logger.info("[ProactiveLove] sending proactive message to %s: %r", receiver, parts)
+                if not parts:
+                    logger.warning("[ProactiveLove] no model-generated proactive text, skip sending")
+                    continue
+
+                logger.info("[ProactiveLove] sending proactive message to %s session=%s: %r", send_receiver, session_id, parts)
 
                 for idx, part in enumerate(parts):
                     if idx > 0:
                         time.sleep(random.uniform(0.8, 2.2))
-                    itchat.send(part, toUserName=receiver)
+                    result = itchat.send(part, toUserName=send_receiver)
+                    logger.info(
+                        "[ProactiveLove] send result receiver=%s session=%s part=%s/%s result=%r",
+                        send_receiver,
+                        session_id,
+                        idx + 1,
+                        len(parts),
+                        result,
+                    )
 
                 now2 = int(time.time())
                 sent_text = "\n".join(parts)
@@ -185,16 +225,19 @@ class ProactiveLove(Plugin):
         # 可以关闭 AI 生成，使用模板
         use_llm = os.getenv("PROACTIVE_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
         if not use_llm:
-            return self._choose_fallback_message(item)
+            return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("PROACTIVE_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
-            return self._choose_fallback_message(item)
+            return ""
 
         character_desc = os.getenv("CHARACTER_DESC", "")
+        _xiaoyou_time_context = build_time_context()
+        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
+            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
         memory_text = self._load_memory_text(session_id)
 
         last_text = item.get("last_user_text") or ""
@@ -273,7 +316,7 @@ class ProactiveLove(Plugin):
 
             if r.status_code >= 400:
                 logger.warning("[ProactiveLove] llm error %s: %s", r.status_code, r.text[:500])
-                return random.choice(self._fallback_messages())
+                return ""
 
             data = r.json()
             text = data["choices"][0]["message"]["content"].strip()
@@ -281,12 +324,12 @@ class ProactiveLove(Plugin):
             if text and not self._is_repeated_proactive(text, item):
                 return text
 
-            logger.info("[ProactiveLove] llm text repeated, use fallback: %r", text)
-            return self._choose_fallback_message(item)
+            logger.info("[ProactiveLove] llm text repeated or empty, skip sending: %r", text)
+            return ""
 
         except Exception:
             logger.exception("[ProactiveLove] generate message failed")
-            return self._choose_fallback_message(item)
+            return ""
 
     def _load_memory_text(self, session_id):
         memory_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory_lite", "memory.json")
@@ -322,7 +365,7 @@ class ProactiveLove(Plugin):
     def _split_message(self, text):
         text = str(text or "").strip()
         if not text:
-            return [random.choice(self._fallback_messages())]
+            return []
 
         # 先按换行拆
         parts = [x.strip() for x in re.split(r"\n+", text) if x.strip()]
@@ -345,7 +388,7 @@ class ProactiveLove(Plugin):
 
         # 限制最多 3 个泡泡
         parts = [p for p in parts if p.strip()]
-        return parts[:3] if parts else [text]
+        return parts[:3] if parts else []
 
     def _fallback_messages(self):
         return [
@@ -498,6 +541,15 @@ class ProactiveLove(Plugin):
                 text = text.rsplit(marker, 1)[1].strip()
 
         return re.sub(r"\s+", " ", text)
+
+    def _target_session(self):
+        return os.getenv("PROACTIVE_TARGET_SESSION", "").strip()
+
+    def _target_receiver(self):
+        return os.getenv("PROACTIVE_TARGET_RECEIVER", "").strip()
+
+    def _require_target(self):
+        return os.getenv("PROACTIVE_REQUIRE_TARGET", "true").strip().lower() in ("1", "true", "yes", "on")
 
     def _enabled(self):
         return os.getenv("PROACTIVE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")

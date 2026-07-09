@@ -4,6 +4,7 @@ import time
 import base64
 import mimetypes
 import threading
+import re
 import requests
 
 import plugins
@@ -11,6 +12,7 @@ from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from plugins.xiaoyou_common.time_context import build_time_context
 from lib import itchat
 
 
@@ -23,9 +25,9 @@ THREAD_STARTED = False
 @plugins.register(
     name="QwenVision",
     desc="Use Qwen VLM to understand WeChat images with following user question",
-    version="0.2",
+    version="0.5-followup-silent",
     author="yoyo",
-    desire_priority=80,
+    desire_priority=980,
 )
 class QwenVision(Plugin):
     def __init__(self):
@@ -54,6 +56,7 @@ class QwenVision(Plugin):
     def _handle_image(self, e_context, context):
         try:
             session_id = self._get_session_id(context)
+            session_keys = self._get_session_keys(context)
             receiver = self._get_receiver(context)
             img_path = self._get_image_path(context)
 
@@ -70,11 +73,13 @@ class QwenVision(Plugin):
                     "ttl": ttl,
                     "texts": [],
                     "status": "waiting",
+                    "keys": session_keys,
                 }
 
             logger.info(
-                "[QwenVision] cached image for session=%s receiver=%s path=%s ttl=%ss",
+                "[QwenVision] cached image for session=%s keys=%s receiver=%s path=%s ttl=%ss",
                 session_id,
+                session_keys,
                 receiver,
                 img_path,
                 ttl,
@@ -92,33 +97,114 @@ class QwenVision(Plugin):
 
     def _handle_text(self, e_context, context):
         session_id = self._get_session_id(context)
-        user_text = str(context.content or "").strip()
+        receiver = self._get_receiver(context)
+        user_text = self._clean_followup_text(context.content)
+
+        if not user_text:
+            return
+
+        now = time.time()
+        matched_key = None
+        matched_item = None
+        matched_by = ""
 
         with LOCK:
+            # 1. 优先精确匹配 session_id
             item = PENDING_IMAGES.get(session_id)
+            if item and item.get("status") == "waiting":
+                matched_key = session_id
+                matched_item = item
+                matched_by = "session_id"
 
-            if not item or item.get("status") != "waiting":
+            # 2. 其次匹配 receiver
+            if not matched_item:
+                for key, item in list(PENDING_IMAGES.items()):
+                    if item.get("status") != "waiting":
+                        continue
+                    if receiver and item.get("receiver") == receiver:
+                        matched_key = key
+                        matched_item = item
+                        matched_by = "receiver"
+                        break
+
+            # 3. 单聊兜底：如果当前只有一张等待中的图，就认为这句是在补充图片
+            if not matched_item:
+                candidates = []
+                for key, item in list(PENDING_IMAGES.items()):
+                    if item.get("status") != "waiting":
+                        continue
+
+                    img_path = item.get("path")
+                    ts = float(item.get("ts") or 0)
+                    ttl = float(item.get("ttl") or 180)
+
+                    if now - ts > ttl or not img_path or not os.path.exists(img_path):
+                        PENDING_IMAGES.pop(key, None)
+                        continue
+
+                    candidates.append((key, item))
+
+                if len(candidates) == 1:
+                    matched_key, matched_item = candidates[0]
+                    matched_by = "single_pending"
+
+            if not matched_item:
                 return
 
-            img_path = item.get("path")
-            ts = item.get("ts", 0)
-            ttl = item.get("ttl", 180)
+            img_path = matched_item.get("path")
+            ts = float(matched_item.get("ts") or 0)
+            ttl = float(matched_item.get("ttl") or 180)
 
-            if time.time() - ts > ttl or not img_path or not os.path.exists(img_path):
-                logger.info("[QwenVision] pending image expired or missing for session=%s", session_id)
-                PENDING_IMAGES.pop(session_id, None)
+            if now - ts > ttl or not img_path or not os.path.exists(img_path):
+                logger.info("[QwenVision] pending image expired or missing for text session=%s", session_id)
+                if matched_key:
+                    PENDING_IMAGES.pop(matched_key, None)
                 return
 
             max_messages = int(os.getenv("VISION_MAX_FOLLOWUP_MESSAGES", "6"))
             max_chars = int(os.getenv("VISION_MAX_FOLLOWUP_CHARS", "500"))
-            item.setdefault("texts", [])
-            item["texts"].append(user_text[:max_chars])
-            item["texts"] = item["texts"][-max_messages:]
-            item["last_update"] = time.time()
-            PENDING_IMAGES[session_id] = item
 
-        logger.info("[QwenVision] appended follow-up text session=%s text=%r", session_id, user_text[:80])
-        e_context.action = EventAction.BREAK
+            matched_item.setdefault("texts", [])
+            matched_item["texts"].append(user_text[:max_chars])
+            matched_item["texts"] = matched_item["texts"][-max_messages:]
+            matched_item["last_update"] = now
+            PENDING_IMAGES[matched_key] = matched_item
+
+        logger.info(
+            "[QwenVision] appended follow-up text matched_by=%s image_session=%s text_session=%s receiver=%s text=%r",
+            matched_by,
+            matched_key,
+            session_id,
+            receiver,
+            user_text[:100],
+        )
+
+        # 关键：吃掉这条文字，不让普通 ChatGPT 再单独回复
+        # 单纯 BREAK 在当前链路里仍可能继续进入 bot，这里用空 Reply + BREAK_PASS 强制截断。
+        e_context["reply"] = Reply(ReplyType.TEXT, "")
+        e_context.action = EventAction.BREAK_PASS
+
+    def _clean_followup_text(self, content):
+        text = str(content or "").strip()
+
+        markers = [
+            "YOYO 当前发来的微信消息：",
+            "YoYo 当前发来的微信消息：",
+            "[用户当前消息]",
+            "[已有上下文与当前消息]",
+            "现在 YoYo 回复：",
+        ]
+
+        for marker in markers:
+            if marker in text:
+                text = text.rsplit(marker, 1)[1].strip()
+
+        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        if lines:
+            text = lines[-1]
+
+        text = re.sub(r"^(YoYo|YOYO|用户|我)[:：]\s*", "", text).strip()
+        return re.sub(r"\s+", " ", text)
 
     def _loop(self):
         while True:
@@ -179,12 +265,12 @@ class QwenVision(Plugin):
                 answer = "我看到了呀，但这张图有点让我不知道先从哪句说起。你想让我看哪里嘛？"
 
             logger.info("[QwenVision] sending vision reply session=%s receiver=%s text=%r", session_id, receiver, answer[:100])
-            itchat.send(answer, toUserName=receiver)
+            self._send_text_with_split_delay(answer, receiver, tag="vision")
 
         except Exception:
             logger.exception("[QwenVision] async vision answer failed session=%s", session_id)
             try:
-                itchat.send("我刚刚看到图了，但回答的时候卡了一下……你再发我一下嘛。", toUserName=receiver)
+                self._send_text_with_split_delay("我刚刚看到图了，但回答的时候卡了一下……你再发我一下嘛。", receiver, tag="vision_fallback")
             except Exception:
                 logger.exception("[QwenVision] send fallback failed session=%s", session_id)
 
@@ -194,13 +280,217 @@ class QwenVision(Plugin):
                 if current and current.get("id") == pending_id:
                     PENDING_IMAGES.pop(session_id, None)
 
-    def _get_session_id(self, context):
-        kwargs = getattr(context, "kwargs", {}) or {}
-        return (
-            kwargs.get("session_id")
-            or kwargs.get("receiver")
-            or "default"
+
+    def _send_text_with_split_delay(self, text, receiver, tag="vision"):
+        text = str(text or "").strip()
+        if not text:
+            return
+
+        enabled = os.getenv("VISION_SPLIT_REPLY_ENABLED", os.getenv("SPLIT_REPLY_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
+        delay_per_char = float(os.getenv("VISION_SPLIT_REPLY_DELAY_PER_CHAR", os.getenv("SPLIT_REPLY_DELAY_PER_CHAR", "0.4")))
+        max_parts = int(os.getenv("VISION_SPLIT_REPLY_MAX_PARTS", os.getenv("SPLIT_REPLY_MAX_PARTS", "4")))
+        max_chars = int(os.getenv("VISION_SPLIT_REPLY_MAX_CHARS", os.getenv("SPLIT_REPLY_MAX_CHARS", "80")))
+
+        if not enabled:
+            itchat.send(text, toUserName=receiver)
+            return
+
+        # 先尊重大模型自己的换行：一行就是一条微信消息
+        normalized = re.sub(r"\n\s*\n+", "\n", text)
+        lines = [x.strip() for x in re.split(r"\n+", normalized) if x.strip()]
+
+        if len(lines) >= 2:
+            parts = lines[:max_parts]
+        else:
+            # 没换行时，按完整句子拆；最后才做长度兜底
+            pieces = re.split(r"(?<=[。！？!?~～…])\s*", text)
+            pieces = [p.strip() for p in pieces if p.strip()]
+
+            parts = []
+            buf = ""
+            for p in pieces:
+                if not buf:
+                    buf = p
+                elif len(buf) + len(p) <= max_chars:
+                    buf += p
+                else:
+                    parts.append(buf)
+                    buf = p
+
+            if buf:
+                parts.append(buf)
+
+            if not parts:
+                parts = [text]
+
+            # 极端长句兜底，避免一条太长
+            fixed = []
+            for p in parts:
+                if len(p) <= max_chars:
+                    fixed.append(p)
+                else:
+                    for i in range(0, len(p), max_chars):
+                        fixed.append(p[i:i + max_chars])
+            parts = fixed[:max_parts]
+
+        logger.info(
+            "[QwenVision] split_send tag=%s receiver=%s parts=%s delay_per_char=%s",
+            tag,
+            receiver,
+            len(parts),
+            delay_per_char,
         )
+
+        for idx, part in enumerate(parts):
+            part = str(part or "").strip()
+            if not part:
+                continue
+
+            sleep_seconds = max(0, len(part) * delay_per_char)
+            logger.info(
+                "[QwenVision] split_send tag=%s part=%s/%s chars=%s sleep=%.1fs text=%r",
+                tag,
+                idx + 1,
+                len(parts),
+                len(part),
+                sleep_seconds,
+                part[:80],
+            )
+            time.sleep(sleep_seconds)
+            itchat.send(part, toUserName=receiver)
+
+    def _split_text(self, text, max_chars=28, max_parts=6, tiny_merge=6):
+        text = str(text or "").strip()
+        max_chars = max(1, int(max_chars or 28))
+        max_parts = max(1, int(max_parts or 6))
+        tiny_merge = max(0, int(tiny_merge or 0))
+
+        if len(text) <= max_chars:
+            return [text]
+
+        seeds = []
+        for line in re.split(r"\n+", text):
+            line = line.strip()
+            if not line:
+                continue
+            chunks = re.findall(r".+?[。！？!?；;，,、~～]|.+$", line)
+            for chunk in chunks:
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if len(chunk) <= max_chars:
+                    seeds.append(chunk)
+                else:
+                    seeds.extend(chunk[i:i + max_chars] for i in range(0, len(chunk), max_chars))
+
+        if not seeds:
+            seeds = [text]
+
+        merged = []
+        for chunk in seeds:
+            if not merged:
+                merged.append(chunk)
+                continue
+
+            prev = merged[-1]
+            joiner = "\n" if ("\n" in text or len(prev) + len(chunk) > max_chars // 2) else ""
+            can_merge = len(prev) + len(joiner) + len(chunk) <= max_chars
+            if can_merge and (len(chunk) <= tiny_merge or len(prev) <= tiny_merge):
+                merged[-1] = prev + joiner + chunk
+            else:
+                merged.append(chunk)
+
+        if len(merged) > max_parts:
+            head = merged[:max_parts - 1]
+            tail = "\n".join(merged[max_parts - 1:]).strip()
+            merged = head + ([tail] if tail else [])
+
+        return [p for p in merged if p.strip()]
+
+    def _env_bool(self, key, default=False):
+        value = os.getenv(key)
+        if value is None:
+            return bool(default)
+        return str(value).strip().lower() in ("1", "true", "yes", "on", "y")
+
+    def _env_int(self, key, default=0):
+        value = os.getenv(key)
+        if value is None or str(value).strip() == "":
+            return int(default)
+        try:
+            return int(float(str(value).strip()))
+        except Exception:
+            logger.warning("[QwenVision] invalid int env %s=%r, use %r", key, value, default)
+            return int(default)
+
+    def _env_float(self, key, default=0.0):
+        value = os.getenv(key)
+        if value is None or str(value).strip() == "":
+            return float(default)
+        try:
+            return float(str(value).strip())
+        except Exception:
+            logger.warning("[QwenVision] invalid float env %s=%r, use %r", key, value, default)
+            return float(default)
+
+    def _get_session_id(self, context):
+        keys = self._get_session_keys(context)
+        return keys[0] if keys else "default"
+
+    def _get_session_keys(self, context):
+        kwargs = getattr(context, "kwargs", {}) or {}
+        keys = [
+            kwargs.get("session_id"),
+            kwargs.get("receiver"),
+            kwargs.get("actual_user_id"),
+            kwargs.get("from_user_id"),
+            kwargs.get("to_user_id"),
+            kwargs.get("other_user_id"),
+        ]
+
+        msg = kwargs.get("msg")
+        if msg is not None:
+            for attr in (
+                "session_id",
+                "receiver",
+                "actual_user_id",
+                "from_user_id",
+                "to_user_id",
+                "other_user_id",
+                "user_id",
+            ):
+                keys.append(getattr(msg, attr, None))
+
+        keys = self._merge_unique([], keys)
+        return keys or ["default"]
+
+    def _merge_unique(self, base, extra):
+        result = []
+        for value in list(base or []) + list(extra or []):
+            if value is None:
+                continue
+            value = str(value).strip()
+            if not value or value in result:
+                continue
+            result.append(value)
+        return result
+
+    def _find_pending_item_locked(self, session_keys):
+        keys = self._merge_unique([], session_keys)
+        for key in keys:
+            item = PENDING_IMAGES.get(key)
+            if item and item.get("status") == "waiting":
+                return key, item
+
+        key_set = set(keys)
+        for saved_session_id, item in list(PENDING_IMAGES.items()):
+            if item.get("status") != "waiting":
+                continue
+            saved_keys = set(self._merge_unique([saved_session_id], item.get("keys") or []))
+            if key_set & saved_keys:
+                return saved_session_id, item
+
+        return None, None
 
     def _get_receiver(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -286,6 +576,11 @@ class QwenVision(Plugin):
             "VISION_PROMPT",
             "你是小悠，正在微信里看 YoYo 刚刚发来的图片。请像女朋友一样自然回应。"
         )
+
+        _xiaoyou_time_context = build_time_context()
+        if _xiaoyou_time_context and _xiaoyou_time_context not in str(base_prompt or ""):
+            base_prompt = (str(base_prompt or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
+
 
         if isinstance(followup_texts, str):
             followup_texts = [followup_texts] if followup_texts.strip() else []

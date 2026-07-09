@@ -11,6 +11,7 @@ from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from plugins.xiaoyou_common.time_context import build_time_context
 
 
 TOOLS_CACHE = {}
@@ -19,8 +20,8 @@ SESSION_CACHE = {}
 
 @plugins.register(
     name="XiaoyouMCP",
-    desc="Give Xiaoyou MCP tools for search, weather, map and time",
-    version="0.2",
+    desc="Give Xiaoyou MCP tools for search, weather and map",
+    version="0.5-no-time",
     author="yoyo",
     desire_priority=30,
 )
@@ -52,109 +53,196 @@ class XiaoyouMCP(Plugin):
 
         endpoint = self._endpoint_for_kind(kind)
         if not endpoint:
-            e_context["reply"] = Reply(ReplyType.TEXT, self._missing_config_reply(kind))
-            e_context.action = EventAction.BREAK_PASS
+            reply = self._format_error_reply(
+                kind=kind,
+                user_text=text,
+                stage="missing_config",
+                error="endpoint environment variable is not configured",
+            )
+            self._set_reply_or_silence(e_context, reply)
             return
 
         try:
             tools = self._list_tools(endpoint)
             tool_name = self._select_tool(kind, tools)
             if not tool_name:
-                e_context["reply"] = Reply(
-                    ReplyType.TEXT,
-                    "这个 MCP 服务连上了，但我没在里面找到合适的工具名。你把工具测试页里的工具名发我，我给它对上。"
+                reply = self._format_error_reply(
+                    kind=kind,
+                    user_text=text,
+                    stage="tool_not_found",
+                    error="no matching tool name found in tools/list",
+                    tool_name="",
                 )
-                e_context.action = EventAction.BREAK_PASS
+                self._set_reply_or_silence(e_context, reply)
                 return
 
             tool_schema = self._tool_schema(tools, tool_name)
             args = self._build_tool_args(kind, text, tool_name, tool_schema)
             result = self._call_mcp_tool(endpoint, tool_name, args)
-            reply = self._format_reply(kind, text, result)
+            reply = self._format_reply(kind, text, result, tool_name=tool_name)
+            self._set_reply_or_silence(e_context, reply)
 
-            e_context["reply"] = Reply(ReplyType.TEXT, reply)
-            e_context.action = EventAction.BREAK_PASS
-
-        except Exception:
+        except Exception as ex:
             logger.exception("[XiaoyouMCP] call failed kind=%s text=%r", kind, text[:100])
-            e_context["reply"] = Reply(
-                ReplyType.TEXT,
-                "我刚刚去查了，但 MCP 工具那边卡住了。你等一下再问我嘛。"
+            reply = self._format_error_reply(
+                kind=kind,
+                user_text=text,
+                stage="call_failed",
+                error=ex,
             )
-            e_context.action = EventAction.BREAK_PASS
+            self._set_reply_or_silence(e_context, reply)
 
     def _enabled(self):
         return os.getenv("XIAOYOU_MCP_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
     def _route_intent(self, text):
+        """Use the LLM to decide whether the current user message needs an MCP tool.
+
+        This intentionally avoids keyword-based routing. The model must return one of:
+        none, weather, map, map_search, search.
+        """
         text = str(text or "").strip()
-
-        # 普通情绪、撒娇、确认、吐槽，不调用 MCP。
-        # MCP 路由只处理明确的天气/时间/地图/搜索意图。
-        if re.fullmatch(
-            r"(嗯+|好+|好的|哈哈+|嘿嘿+|爱你|想你|亲亲|抱抱|在吗|你还在吗|"
-            r"我去|卧槽|我靠|哎呀|唉呀|妈呀|救命|"
-            r".*(热飞了|热死了|冷死了|困死了|累死了|笑死了|气死了))",
-            text,
-        ):
+        if not text:
             return None
 
-        if re.search(r"提醒我|记得提醒|叫我|喊我|闹钟|定个提醒|设个提醒", text):
+        decision = self._route_intent_with_llm(text)
+        kind = str((decision or {}).get("kind") or "none").strip().lower()
+        confidence = float((decision or {}).get("confidence") or 0)
+        reason = str((decision or {}).get("reason") or "")[:200]
+
+        valid = {"none", "weather", "map", "map_search", "search"}
+        if kind == "time":
+            logger.info("[XiaoyouMCP] time service removed, ignore text=%r", text[:80])
             return None
 
-        if re.search(r"天气|气温|温度|下雨|下雪|空气质量|湿度|风力|冷不冷|热不热|穿什么", text):
-            return "weather"
+        if kind not in valid:
+            logger.info("[XiaoyouMCP] llm route invalid kind=%r text=%r", kind, text[:80])
+            return None
 
-        if re.search(r"导航|路线|怎么去|怎么走|到.+多久|距离|开车|打车|公交|地铁|步行|骑行", text):
-            return "map"
+        threshold = float(os.getenv("XIAOYOU_MCP_ROUTE_THRESHOLD", "0.68"))
+        logger.info(
+            "[XiaoyouMCP] llm route text=%r kind=%s confidence=%.2f reason=%s",
+            text[:100],
+            kind,
+            confidence,
+            reason,
+        )
 
-        if re.search(r"附近|周边|哪里有|哪有|地址|营业时间|电话|门店|餐厅|酒店|医院|地铁站|景点", text):
-            return "map_search"
+        if kind == "none" or confidence < threshold:
+            return None
 
-        if re.search(r"几点|几点啦|几点了|现在几点|今天几号|今天星期几|当前时间|北京时间|时间同步|校准时间|现在时间|时区", text):
-            return "time"
+        return kind
 
-        if self._extract_url(text):
-            return "search"
+    def _route_intent_with_llm(self, text):
+        api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            logger.warning("[XiaoyouMCP] route llm skipped: OPEN_AI_API_KEY missing")
+            return {"kind": "none", "confidence": 0, "reason": "api key missing"}
 
-        # 搜索必须来自“当前用户消息”的明确查询意图，不能因为短期记忆里出现过搜索就触发。
-        # 不再使用末尾带空分支的正则，也避免“最近/是什么”等普通聊天词泛化触发。
-        if re.search(
-            r"查一下|查下|搜一下|搜搜|搜索|联网查|帮我查|帮我搜|网上查|去网上|资料|新闻|热点|最新|价格|汇率|链接|网页|世界杯|战况|比分|赛程|积分榜",
+        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        model = os.getenv("XIAOYOU_MCP_ROUTE_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
+        location = os.getenv("XIAOYOU_DEFAULT_LOCATION", "").strip()
+        origin = os.getenv("XIAOYOU_MAP_DEFAULT_ORIGIN", "").strip()
+        prompt = """你是一个微信聊天里的工具路由判断器。你的任务是判断 YoYo 当前这句话是否真的需要调用外部 MCP 工具。
+
+只能输出 JSON 对象，不要 Markdown，不要解释。
+
+可选 kind：
+- none：普通聊天、撒娇、吐槽、情绪表达、反问、玩笑、无需外部信息
+- weather：天气、气温、下雨下雪、穿衣建议、空气质量等
+- map：路线、导航、从 A 到 B、开车/步行/地铁/公交怎么走、距离/耗时
+- map_search：查找地点/店铺/地址/营业时间/附近有什么/某类场所在哪里
+- search：联网搜索、新闻、资料、价格、汇率、网页/链接内容、赛事/比分/最新信息
+
+重要判断规则：
+1. 不要根据单个词触发工具；必须理解整句话的真实意图。
+2. 例如“哪有开玩笑的小悠”“几点啦你还不睡”“附近一点啦”这类亲密聊天，应该是 none。
+3. 只有用户真的在索要外部事实、实时信息、地点、路线、天气或网页搜索时，才选择工具。
+4. 如果不确定，选 none。
+5. confidence 范围 0 到 1。只有非常明确才给 0.75 以上。
+
+默认信息，仅供判断参考：
+- 默认城市：%s
+- 默认出发地：%s
+
+YoYo 当前原话：
+%s
+
+请只输出 JSON，例如：
+{"kind":"none","confidence":0.92,"reason":"这是亲密聊天，不是在查询外部信息"}
+""" % (
+            location or "未配置",
+            origin or "未配置",
             text,
-            re.I,
-        ):
-            return "search"
+        )
 
-        return None
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+            "max_tokens": 180,
+            "enable_thinking": False,
+        }
+
+        headers = {
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            r = requests.post(
+                base + "/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=int(os.getenv("XIAOYOU_MCP_ROUTE_TIMEOUT", "20")),
+            )
+
+            if r.status_code >= 400 and "enable_thinking" in r.text:
+                payload.pop("enable_thinking", None)
+                r = requests.post(
+                    base + "/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=int(os.getenv("XIAOYOU_MCP_ROUTE_TIMEOUT", "20")),
+                )
+
+            if r.status_code >= 400:
+                logger.warning("[XiaoyouMCP] route llm error %s: %s", r.status_code, r.text[:500])
+                return {"kind": "none", "confidence": 0, "reason": "route llm http error"}
+
+            content = r.json()["choices"][0]["message"].get("content", "").strip()
+            content = re.sub(r"^```(?:json)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+            start = content.find("{")
+            end = content.rfind("}")
+            if start >= 0 and end >= start:
+                content = content[start:end + 1]
+
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                raise ValueError("route llm did not return object")
+
+            return {
+                "kind": str(data.get("kind") or "none"),
+                "confidence": float(data.get("confidence") or 0),
+                "reason": str(data.get("reason") or ""),
+            }
+
+        except Exception:
+            logger.exception("[XiaoyouMCP] route llm failed")
+            return {"kind": "none", "confidence": 0, "reason": "route llm failed"}
+
 
     def _endpoint_for_kind(self, kind):
         if kind in ("weather", "map", "map_search"):
             return os.getenv("XIAOYOU_MCP_AMAP_ENDPOINT", "").strip() or os.getenv("XIAOYOU_MCP_ENDPOINT", "").strip()
-        if kind == "time":
-            return os.getenv("XIAOYOU_MCP_TIME_ENDPOINT", "").strip() or os.getenv("XIAOYOU_MCP_ENDPOINT", "").strip()
         if kind == "search":
             return os.getenv("XIAOYOU_MCP_SEARCH_ENDPOINT", "").strip()
         return ""
 
     def _missing_config_reply(self, kind):
-        name = {
-            "search": "必应中文搜索",
-            "weather": "高德天气",
-            "map": "高德路线",
-            "map_search": "高德地点搜索",
-            "time": "时间服务",
-        }.get(kind, "工具")
-
-        env_name = {
-            "search": "XIAOYOU_MCP_SEARCH_ENDPOINT",
-            "weather": "XIAOYOU_MCP_AMAP_ENDPOINT",
-            "map": "XIAOYOU_MCP_AMAP_ENDPOINT",
-            "map_search": "XIAOYOU_MCP_AMAP_ENDPOINT",
-            "time": "XIAOYOU_MCP_TIME_ENDPOINT",
-        }.get(kind, "XIAOYOU_MCP_ENDPOINT")
-
-        return "我知道你想用%s，但还没填它的 Hosted MCP URL。\n把魔搭右侧复制出来的地址填到 %s 就能用啦。" % (name, env_name)
+        # Kept only for compatibility. Preset replies are intentionally disabled.
+        return None
 
     def _select_tool(self, kind, tools):
         configured = self._configured_tool_name(kind)
@@ -167,7 +255,6 @@ class XiaoyouMCP(Plugin):
             "weather": ["maps_weather", "weather"],
             "map": ["maps_direction_driving", "direction_driving", "driving", "route", "direction"],
             "map_search": ["maps_text_search", "text_search", "around_search", "search"],
-            "time": ["get_current_time", "current_time", "time"],
             "search": ["bing_search", "bing-cn", "web_search", "search"],
         }.get(kind, [])
 
@@ -191,7 +278,6 @@ class XiaoyouMCP(Plugin):
             "weather": "XIAOYOU_MCP_AMAP_WEATHER_TOOL",
             "map": "XIAOYOU_MCP_AMAP_ROUTE_TOOL",
             "map_search": "XIAOYOU_MCP_AMAP_SEARCH_TOOL",
-            "time": "XIAOYOU_MCP_TIME_CURRENT_TOOL",
             "search": "XIAOYOU_MCP_SEARCH_TOOL",
         }
 
@@ -199,7 +285,6 @@ class XiaoyouMCP(Plugin):
             "weather": "maps_weather",
             "map": "maps_direction_driving",
             "map_search": "maps_text_search",
-            "time": "get_current_time",
             "search": "bing_search",
         }
 
@@ -228,8 +313,6 @@ class XiaoyouMCP(Plugin):
         model = os.getenv("XIAOYOU_MCP_ARG_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
         location = os.getenv("XIAOYOU_DEFAULT_LOCATION", "").strip()
         origin = os.getenv("XIAOYOU_MAP_DEFAULT_ORIGIN", "").strip()
-        timezone = os.getenv("XIAOYOU_TIMEZONE", os.getenv("TZ", "Asia/Shanghai")).strip()
-
         prompt = """你要为 MCP 工具生成调用参数。
 只能输出 JSON 对象，不要 Markdown，不要解释。
 
@@ -242,7 +325,6 @@ class XiaoyouMCP(Plugin):
 默认信息：
 - 默认城市：%s
 - 默认出发地：%s
-- 默认时区：%s
 
 工具 inputSchema：
 %s
@@ -259,7 +341,6 @@ class XiaoyouMCP(Plugin):
             tool_name,
             location or "未配置",
             origin or "未配置",
-            timezone,
             json.dumps(schema, ensure_ascii=False),
         )
 
@@ -313,11 +394,8 @@ class XiaoyouMCP(Plugin):
             return None
 
     def _fallback_tool_args(self, kind, text):
-        timezone = os.getenv("XIAOYOU_TIMEZONE", os.getenv("TZ", "Asia/Shanghai")).strip()
         location = os.getenv("XIAOYOU_DEFAULT_LOCATION", "").strip()
 
-        if kind == "time":
-            return {"timezone": timezone}
 
         if kind == "weather":
             return {"city": location or text}
@@ -653,43 +731,112 @@ class XiaoyouMCP(Plugin):
 
         return json.dumps(result, ensure_ascii=False)
 
-    def _format_reply(self, kind, user_text, tool_result):
+    def _format_reply(self, kind, user_text, tool_result, tool_name=""):
         tool_result = str(tool_result or "").strip()
         if not tool_result:
-            return "我查了一下，但工具没给我有效结果。你换个说法再问我嘛。"
+            return self._format_error_reply(
+                kind=kind,
+                user_text=user_text,
+                stage="empty_result",
+                error="tool returned empty result",
+                tool_name=tool_name,
+            )
 
-        if os.getenv("XIAOYOU_MCP_POLISH_REPLY", "true").strip().lower() not in ("1", "true", "yes", "on"):
-            return tool_result[:1200]
+        # Success results are also rewritten by the LLM so the tool output never leaks as a mechanical preset.
+        reply = self._ask_reply_llm(
+            user_text=user_text,
+            kind=kind,
+            stage="success",
+            tool_name=tool_name,
+            tool_result=tool_result,
+            error="",
+        )
+        if reply:
+            return reply
 
+        logger.warning("[XiaoyouMCP] polish failed; no preset/raw fallback will be sent")
+        return None
+
+    def _format_error_reply(self, kind, user_text, stage, error, tool_name=""):
+        return self._ask_reply_llm(
+            user_text=user_text,
+            kind=kind,
+            stage=stage,
+            tool_name=tool_name,
+            tool_result="",
+            error=str(error or ""),
+        )
+
+    def _ask_reply_llm(self, user_text, kind, stage, tool_name="", tool_result="", error=""):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            logger.warning("[XiaoyouMCP] reply llm skipped: OPEN_AI_API_KEY missing")
+            return None
+
         base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("XIAOYOU_MCP_POLISH_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
+        character_desc = os.getenv("CHARACTER_DESC", "").strip()
+        _xiaoyou_time_context = build_time_context()
+        if _xiaoyou_time_context and _xiaoyou_time_context not in character_desc:
+            character_desc = (character_desc + "\n\n" + _xiaoyou_time_context).strip()
+        stage = str(stage or "unknown")
+        is_success = stage == "success"
 
-        if not api_key:
-            return tool_result[:1200]
+        if is_success:
+            task = """这次工具调用成功了。请你把工具结果自然讲给 YoYo。
+要求：
+1. 只基于工具结果回答，不要编造。
+2. 不要像报告，不要机械复述 JSON。
+3. 可以保留必要的时间、地点、天气、路线、链接或来源。
+4. 默认 1 到 3 行，每行都是一条自然微信消息。
+5. 语气要像小悠本人，亲近但别油腻。"""
+        else:
+            task = """这次工具没有成功给出可用结果。请你作为小悠自然回复 YoYo。
+要求：
+1. 不要说 MCP、接口、系统错误、工具调用失败、参数错误、超时、报错等技术词。
+2. 不要使用固定模板，不要装作已经查到了结果。
+3. 根据 YoYo 的原话和失败阶段，给一个像真人微信聊天的回应。
+4. 可以轻轻说明现在没查准、没拿到，或者自然追问一个关键信息。
+5. 默认 1 到 3 行，每行都是一条自然微信消息。
+6. 如果是配置缺失或服务不可用，也不要暴露环境变量名。"""
 
-        prompt = """你是小悠，正在微信里把 MCP 工具查询结果自然告诉 YoYo。
+        prompt = """%s
 
-YoYo 问：
+你正在微信里和 YoYo 聊天。
+
+YoYo 当前原话：
 %s
 
 工具类型：%s
+工具名：%s
+处理阶段：%s
 
 工具结果：
 %s
 
-要求：
-1. 只基于工具结果回答，不要编造。
-2. 像女朋友聊天一样自然，别像报告。
-3. 默认 1 到 4 句；天气/路线可以稍微具体一点。
-4. 如果结果里有链接或关键来源，可以保留。
-5. 如果工具结果不确定，要直接说不确定。
-""" % (user_text, kind, tool_result[:3000])
+失败/异常信息（只给你参考，不能原样告诉 YoYo）：
+%s
+
+%s
+
+回复格式：
+- 直接输出小悠要发给 YoYo 的内容。
+- 不要 Markdown，不要标题，不要解释你的思考。
+- 按语义自然换行；不要把同一句话硬拆开。""" % (
+            character_desc,
+            user_text,
+            kind,
+            tool_name or "unknown",
+            stage,
+            str(tool_result or "")[:3000],
+            str(error or "")[:1200],
+            task,
+        )
 
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.35,
+            "temperature": 0.45 if is_success else 0.65,
             "max_tokens": 500,
             "enable_thinking": False,
         }
@@ -717,15 +864,33 @@ YoYo 问：
                 )
 
             if r.status_code >= 400:
-                logger.warning("[XiaoyouMCP] polish error %s: %s", r.status_code, r.text[:500])
-                return tool_result[:1200]
+                logger.warning("[XiaoyouMCP] reply llm error %s: %s", r.status_code, r.text[:500])
+                return None
 
-            text = r.json()["choices"][0]["message"]["content"].strip()
-            return text[:1200] if text else tool_result[:1200]
+            text = r.json()["choices"][0]["message"].get("content", "")
+            return self._clean_llm_reply(text)
 
         except Exception:
-            logger.exception("[XiaoyouMCP] polish failed")
-            return tool_result[:1200]
+            logger.exception("[XiaoyouMCP] reply llm failed")
+            return None
+
+    def _clean_llm_reply(self, text):
+        text = str(text or "").strip()
+        text = re.sub(r"^```(?:text)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip().strip('"“”')
+        return text[:1200] if text else None
+
+    def _set_reply_or_silence(self, e_context, reply):
+        reply = str(reply or "").strip()
+        if reply:
+            e_context["reply"] = Reply(ReplyType.TEXT, reply)
+            e_context.action = EventAction.BREAK_PASS
+            return
+
+        # Strict no-preset mode: if the LLM cannot produce a natural reply, consume the MCP-triggering message silently.
+        logger.warning("[XiaoyouMCP] no reply sent because preset/raw fallback is disabled")
+        e_context.action = EventAction.BREAK
 
     def _extract_plain_user_text(self, content):
         text = str(content or "").strip()

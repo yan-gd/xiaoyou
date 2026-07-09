@@ -1,24 +1,12 @@
 {
     "plugins": {
-        "Godcmd": {
+        "PatPatReply": {
             "enabled": true,
-            "priority": 999
+            "priority": 9999
         },
-        "timetask": {
-            "enabled": true,
-            "priority": 950
-        },
-        "Keyword": {
+        "AliyunMemory": {
             "enabled": true,
             "priority": 900
-        },
-        "Banwords": {
-            "enabled": false,
-            "priority": 100
-        },
-        "linkai": {
-            "enabled": true,
-            "priority": 99
         },
         "SplitReply": {
             "enabled": true,
@@ -26,43 +14,27 @@
         },
         "QwenVision": {
             "enabled": true,
-            "priority": 50
+            "priority": 80
         },
         "ReminderLove": {
             "enabled": true,
             "priority": 35
         },
-        "MemoryLite": {
+        "XiaoyouMCP": {
             "enabled": true,
-            "priority": 20
+            "priority": 30
+        },
+        "ShortMemory": {
+            "enabled": true,
+            "priority": 15
         },
         "ProactiveLove": {
             "enabled": true,
             "priority": 10
         },
-        "tool": {
-            "enabled": false,
-            "priority": 0
-        },
-        "Role": {
+        "XiaoyouChat": {
             "enabled": true,
-            "priority": 0
-        },
-        "Dungeon": {
-            "enabled": true,
-            "priority": 0
-        },
-        "BDunit": {
-            "enabled": false,
-            "priority": 0
-        },
-        "Hello": {
-            "enabled": true,
-            "priority": -1
-        },
-        "Finish": {
-            "enabled": true,
-            "priority": -999
+            "priority": -10000
         }
     }
 }

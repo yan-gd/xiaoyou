@@ -14,6 +14,7 @@ from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from plugins.xiaoyou_common.time_context import build_time_context
 from lib import itchat
 
 
@@ -55,6 +56,7 @@ class ReminderLove(Plugin):
             return
 
         text = str(context.content or "").strip()
+        text = self._extract_actual_user_text(text)
         if not text:
             return
 
@@ -86,22 +88,26 @@ class ReminderLove(Plugin):
 
         parsed = self._parse_due_time(text)
         if not parsed:
-            e_context["reply"] = Reply(
-                ReplyType.TEXT,
-                "可以呀，但你得告诉我具体时间嘛，比如：明天9点提醒我起床。"
-            )
-            e_context.action = EventAction.BREAK_PASS
+            context.content = """[隐藏上下文]
+YoYo 这句话看起来像是在让小悠设置提醒，但没有说清楚具体时间。
+请你作为小悠自然追问他需要什么时候提醒，不要像客服，不要说系统或插件。
+
+YoYo 当前消息：
+%s
+""" % text
             return
 
         due_dt, span = parsed
         now = datetime.now()
 
         if due_dt <= now:
-            e_context["reply"] = Reply(
-                ReplyType.TEXT,
-                "这个时间已经过去啦，笨蛋。换个未来的时间我再帮你记。🙄"
-            )
-            e_context.action = EventAction.BREAK_PASS
+            context.content = """[隐藏上下文]
+YoYo 想设置一个提醒，但解析出来的时间已经过去。
+请你作为小悠自然告诉他换一个未来时间，不要像客服，不要说系统或插件。
+
+YoYo 当前消息：
+%s
+""" % text
             return
 
         task = self._extract_task(text, span)
@@ -125,8 +131,20 @@ class ReminderLove(Plugin):
 
         reply = self._generate_ack_message(reminder)
 
-        e_context["reply"] = Reply(ReplyType.TEXT, reply)
-        e_context.action = EventAction.BREAK_PASS
+        if reply:
+            e_context["reply"] = Reply(ReplyType.TEXT, reply)
+            e_context.action = EventAction.BREAK_PASS
+        else:
+            context.content = """[隐藏上下文]
+小悠已经成功帮 YoYo 创建了一个提醒。
+提醒时间：%s
+提醒事项：%s
+
+请你作为小悠自然确认已经记好了。不要说系统、插件、定时任务。
+YoYo 当前消息：
+%s
+""" % (reminder.get("due_text", ""), reminder.get("task", ""), text)
+            return
 
     def _loop(self):
         while True:
@@ -172,6 +190,11 @@ class ReminderLove(Plugin):
                 msg = self._generate_reminder_message(item)
                 parts = self._split_message(msg)
 
+                if not parts:
+                    logger.warning("[ReminderLove] no model-generated reminder text, keep pending: %r", item)
+                    self._mark_pending(item.get("session_id"), item.get("id"))
+                    continue
+
                 logger.info("[ReminderLove] send reminder to %s: %r", receiver, parts)
 
                 for idx, part in enumerate(parts):
@@ -191,16 +214,19 @@ class ReminderLove(Plugin):
         due_text = item.get("due_text") or ""
 
         if not use_llm:
-            return "YoYo，到点啦。\n你让我提醒你：%s" % task
+            return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("REMINDER_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
-            return "YoYo，到点啦。\n你让我提醒你：%s" % task
+            return ""
 
         character_desc = os.getenv("CHARACTER_DESC", "")
+        _xiaoyou_time_context = build_time_context()
+        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
+            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
         memory_text = self._load_memory_text(item.get("session_id"))
 
         prompt = f"""
@@ -264,16 +290,16 @@ class ReminderLove(Plugin):
 
             if r.status_code >= 400:
                 logger.warning("[ReminderLove] llm error %s: %s", r.status_code, r.text[:500])
-                return "YoYo，到点啦。\n你让我提醒你：%s" % task
+                return ""
 
             data = r.json()
             text = data["choices"][0]["message"]["content"].strip()
             text = self._clean_model_text(text)
-            return text or "YoYo，到点啦。\n你让我提醒你：%s" % task
+            return text or ""
 
         except Exception:
             logger.exception("[ReminderLove] generate reminder failed")
-            return "YoYo，到点啦。\n你让我提醒你：%s" % task
+            return ""
 
     def _generate_ack_message(self, reminder):
         task = reminder.get("task") or "这件事"
@@ -282,16 +308,19 @@ class ReminderLove(Plugin):
 
         use_llm = os.getenv("REMINDER_ACK_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
         if not use_llm:
-            return self._fallback_ack(task, friendly_time)
+            return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("REMINDER_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
-            return self._fallback_ack(task, friendly_time)
+            return ""
 
         character_desc = os.getenv("CHARACTER_DESC", "")
+        _xiaoyou_time_context = build_time_context()
+        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
+            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
 
         prompt = f"""
 你是小悠，正在微信里回复 YoYo 的提醒请求。
@@ -354,16 +383,16 @@ YoYo 刚刚说：
 
             if r.status_code >= 400:
                 logger.warning("[ReminderLove] ack llm error %s: %s", r.status_code, r.text[:500])
-                return self._fallback_ack(task, friendly_time)
+                return ""
 
             data = r.json()
             text = data["choices"][0]["message"]["content"].strip()
             text = self._clean_model_text(text)
-            return text or self._fallback_ack(task, friendly_time)
+            return text or ""
 
         except Exception:
             logger.exception("[ReminderLove] generate ack failed")
-            return self._fallback_ack(task, friendly_time)
+            return ""
 
     def _fallback_ack(self, task, friendly_time):
         task = task or "这件事"
@@ -642,20 +671,110 @@ YoYo 刚刚说：
 
         return s.strip()
 
-    def _has_reminder_intent(self, text):
-        patterns = [
-            r"提醒我",
-            r"记得提醒",
-            r"叫我",
-            r"喊我",
-            r"叫醒我",
-            r"定个提醒",
-            r"设个提醒",
-            r"设个闹钟",
-            r"定个闹钟",
-            r"闹钟",
+    def _extract_actual_user_text(self, text):
+        text = str(text or "").strip()
+
+        markers = [
+            "YOYO 当前发来的微信消息：",
+            "YOYO 当前发来的微信消息:",
+            "YoYo 当前消息：",
+            "YoYo 当前消息:",
+            "[用户当前消息]",
+            "现在 YoYo 回复：",
+            "现在 YoYo 回复:",
         ]
-        return any(re.search(p, text) for p in patterns)
+
+        for marker in markers:
+            if marker in text:
+                text = text.rsplit(marker, 1)[1].strip()
+
+        # 如果仍然混有隐藏上下文，只取最后一段较像用户原话的内容
+        text = text.strip()
+        return text
+
+    def _has_reminder_intent(self, text):
+        # 让模型判断“用户是否明确要求创建未来提醒/闹钟”
+        # 失败时默认 False，避免误触发。
+        use_llm = os.getenv("REMINDER_INTENT_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
+        if not use_llm:
+            return False
+
+        user_text = self._extract_actual_user_text(text)
+        if not user_text:
+            return False
+
+        api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
+        model = os.getenv("REMINDER_INTENT_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
+
+        if not api_key:
+            logger.warning("[ReminderLove] no api key for reminder intent judge, skip")
+            return False
+
+        prompt = f"""
+你是一个意图分类器，只判断用户是否在明确要求创建一个未来提醒/闹钟。
+
+只在以下情况回答 YES：
+- 用户明确要求“提醒我/帮我提醒/到时候提醒/叫醒我/设个闹钟/定个提醒”等
+- 且语义上是在让小悠未来某个时间点或一段时间后主动提醒他
+
+以下情况必须回答 NO：
+- 用户只是让小悠“记住”偏好、习惯、称呼、关系设定
+- 用户只是询问提醒功能怎么实现、触发逻辑是什么
+- 用户只是聊天里提到“提醒、闹钟、叫我”等词，但不是要创建提醒
+- 用户说“你要记得我喜欢什么”“记住哦”这种属于长期记忆，不是提醒
+- 用户没有明确让小悠在未来提醒他
+
+只输出 YES 或 NO，不要解释。
+
+用户消息：
+{user_text}
+"""
+
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0,
+            "max_tokens": 8,
+            "enable_thinking": False,
+        }
+
+        headers = {
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        }
+
+        try:
+            r = requests.post(
+                base + "/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=20,
+            )
+
+            if r.status_code >= 400 and "enable_thinking" in r.text:
+                payload.pop("enable_thinking", None)
+                r = requests.post(
+                    base + "/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=20,
+                )
+
+            if r.status_code >= 400:
+                logger.warning("[ReminderLove] intent judge llm error %s: %s", r.status_code, r.text[:300])
+                return False
+
+            data = r.json()
+            ans = data["choices"][0]["message"]["content"].strip().upper()
+            logger.info("[ReminderLove] intent judge text=%r ans=%r", user_text[:80], ans)
+            return ans.startswith("YES")
+
+        except Exception:
+            logger.exception("[ReminderLove] intent judge failed")
+            return False
 
     def _is_list_cmd(self, text):
         patterns = [
@@ -759,7 +878,7 @@ YoYo 刚刚说：
     def _split_message(self, text):
         text = str(text or "").strip()
         if not text:
-            return ["YoYo，到点啦。"]
+            return []
 
         parts = [x.strip() for x in re.split(r"\n+", text) if x.strip()]
 

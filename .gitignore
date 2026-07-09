@@ -1,77 +1,39 @@
 # secrets
 .env
-*.env
 .env.*
-config.json
-config-template.json
+!.env.example
 
-# runtime data
+# runtime data / login state
+data/
 tmp/
 logs/
+log/
 *.log
-*.pid
-*.pkl
-*.pickle
-QR.png
-qrcode.png
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.webp
 
-# project assets
-!assets/
-!assets/xiaoyou-avatar.jpg
+# python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
 
 # backups
 *.bak
 *.bak.*
-docker-compose.yml.bak*
-plugins.json.bak*
-*.tmp
+*_bak*
+*_backup*
+*.backup
 
-# private memory/state
-plugins/memory_lite/memory.json
-plugins/proactive_love/proactive_state.json
-plugins/reminder_love/reminders.json
-
-# python
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-
-# system/editor
+# editor/system
 .DS_Store
-.idea/
 .vscode/
+.idea/
 
-# allow example env
-!.env.example
+# docker runtime
+*.pid
 
-# unused / external plugin repo
-plugins/timetask/
-
-# secrets
-.env
-*.env
-.env.*
-
-# private runtime data
-plugins/memory_lite/memory.json
-plugins/short_memory/short_memory.json
+# Xiaoyou local runtime memories / states, keep locally but never commit
 plugins/proactive_love/proactive_state.json
 plugins/reminder_love/reminders.json
-
-# runtime/cache
-tmp/
-logs/
-*.log
-*.bak
-*.bak.*
-__pycache__/
-*.pyc
-plugins/plugins.json
-__pycache__/
-*.pyc
+plugins/short_memory/short_memory.json
+disabled_plugins/
