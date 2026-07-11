@@ -5,15 +5,20 @@ import base64
 import mimetypes
 import threading
 import re
-import requests
+from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.outbound_dispatcher import send_text
 
 import plugins
 from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
-from plugins.xiaoyou_common.time_context import build_time_context
-from lib import itchat
+from plugins.xiaoyou_common.context_service import (
+    build_time_context,
+    extract_current_user_text,
+)
+from plugins.xiaoyou_common.trace_service import activate_context_trace
 
 
 # session_id -> pending image context
@@ -25,7 +30,7 @@ THREAD_STARTED = False
 @plugins.register(
     name="QwenVision",
     desc="Use Qwen VLM to understand WeChat images with following user question",
-    version="0.5-followup-silent",
+    version="1.0-trace-runtime",
     author="yoyo",
     desire_priority=980,
 )
@@ -59,6 +64,11 @@ class QwenVision(Plugin):
             session_keys = self._get_session_keys(context)
             receiver = self._get_receiver(context)
             img_path = self._get_image_path(context)
+            channel = e_context["channel"]
+
+            if not session_id or not receiver:
+                logger.warning("[QwenVision] missing session or receiver, skip image cache")
+                return
 
             ttl = int(os.getenv("VISION_IMAGE_TTL", "180"))
             now = time.time()
@@ -73,6 +83,10 @@ class QwenVision(Plugin):
                     "ttl": ttl,
                     "texts": [],
                     "status": "waiting",
+                    "revision": 1,
+                    "dirty": False,
+                    "channel": channel,
+                    "turn_context": context,
                     "keys": session_keys,
                 }
 
@@ -85,14 +99,17 @@ class QwenVision(Plugin):
                 ttl,
             )
 
+            self._record_user_short_memory(
+                session_id,
+                "[YoYo 发来了一张图片]",
+            )
+
             e_context.action = EventAction.BREAK
 
         except Exception:
             logger.exception("[QwenVision] image cache failed")
-            e_context["reply"] = Reply(
-                ReplyType.TEXT,
-                "这张图我刚刚没存好，可能是图片下载出了点小问题。"
-            )
+            # 图片链路失败时保持静默，不使用固定兜底回复。
+            e_context["reply"] = Reply(ReplyType.TEXT, "")
             e_context.action = EventAction.BREAK_PASS
 
     def _handle_text(self, e_context, context):
@@ -103,6 +120,19 @@ class QwenVision(Plugin):
         if not user_text:
             return
 
+        # 明确是在让小悠拍自己/分享她的日常时，不把这句话误吞成上一张用户图片的补充说明。
+        if self._looks_like_xiaoyou_photo_request(user_text):
+            with LOCK:
+                PENDING_IMAGES.pop(session_id, None)
+                for key, pending in list(PENDING_IMAGES.items()):
+                    if receiver and pending.get("receiver") == receiver:
+                        PENDING_IMAGES.pop(key, None)
+            logger.info(
+                "[QwenVision] pending user image cancelled by Xiaoyou photo request session=%s",
+                session_id,
+            )
+            return
+
         now = time.time()
         matched_key = None
         matched_item = None
@@ -111,7 +141,7 @@ class QwenVision(Plugin):
         with LOCK:
             # 1. 优先精确匹配 session_id
             item = PENDING_IMAGES.get(session_id)
-            if item and item.get("status") == "waiting":
+            if item and item.get("status") in ("waiting", "sending"):
                 matched_key = session_id
                 matched_item = item
                 matched_by = "session_id"
@@ -119,7 +149,7 @@ class QwenVision(Plugin):
             # 2. 其次匹配 receiver
             if not matched_item:
                 for key, item in list(PENDING_IMAGES.items()):
-                    if item.get("status") != "waiting":
+                    if item.get("status") not in ("waiting", "sending"):
                         continue
                     if receiver and item.get("receiver") == receiver:
                         matched_key = key
@@ -131,7 +161,7 @@ class QwenVision(Plugin):
             if not matched_item:
                 candidates = []
                 for key, item in list(PENDING_IMAGES.items()):
-                    if item.get("status") != "waiting":
+                    if item.get("status") not in ("waiting", "sending"):
                         continue
 
                     img_path = item.get("path")
@@ -168,6 +198,11 @@ class QwenVision(Plugin):
             matched_item["texts"].append(user_text[:max_chars])
             matched_item["texts"] = matched_item["texts"][-max_messages:]
             matched_item["last_update"] = now
+            matched_item["revision"] = int(matched_item.get("revision") or 0) + 1
+            matched_item["channel"] = e_context["channel"]
+            matched_item["turn_context"] = context
+            if matched_item.get("status") == "sending":
+                matched_item["dirty"] = True
             PENDING_IMAGES[matched_key] = matched_item
 
         logger.info(
@@ -179,32 +214,26 @@ class QwenVision(Plugin):
             user_text[:100],
         )
 
+        self._record_user_short_memory(matched_key or session_id, user_text)
+
         # 关键：吃掉这条文字，不让普通 ChatGPT 再单独回复
         # 单纯 BREAK 在当前链路里仍可能继续进入 bot，这里用空 Reply + BREAK_PASS 强制截断。
         e_context["reply"] = Reply(ReplyType.TEXT, "")
         e_context.action = EventAction.BREAK_PASS
 
     def _clean_followup_text(self, content):
-        text = str(content or "").strip()
+        return extract_current_user_text(content)
 
-        markers = [
-            "YOYO 当前发来的微信消息：",
-            "YoYo 当前发来的微信消息：",
-            "[用户当前消息]",
-            "[已有上下文与当前消息]",
-            "现在 YoYo 回复：",
-        ]
-
-        for marker in markers:
-            if marker in text:
-                text = text.rsplit(marker, 1)[1].strip()
-
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
-        if lines:
-            text = lines[-1]
-
-        text = re.sub(r"^(YoYo|YOYO|用户|我)[:：]\s*", "", text).strip()
-        return re.sub(r"\s+", " ", text)
+    def _looks_like_xiaoyou_photo_request(self, text):
+        text = str(text or "").strip()
+        patterns = (
+            r"(?:给我|让我|想看|要看).{0,8}(?:你|小悠).{0,10}(?:自拍|照片|穿搭|现在)",
+            r"(?:你|小悠).{0,8}(?:拍|发).{0,8}(?:自拍|照片|穿搭|日常)",
+            r"(?:拍|发).{0,8}(?:你|你的|小悠).{0,8}(?:自拍|照片|穿搭)",
+            r"(?:给我|来|发|拍).{0,6}(?:一张|张|个)?.{0,4}(?:照片|自拍|穿搭照)",
+            r"(?:看看你|看你现在|看你今天|给我看看你)",
+        )
+        return any(re.search(pattern, text, re.I) for pattern in patterns)
 
     def _loop(self):
         while True:
@@ -244,17 +273,25 @@ class QwenVision(Plugin):
                     continue
 
                 item["status"] = "sending"
+                item["dirty"] = False
                 PENDING_IMAGES[session_id] = item
-                due_items.append((session_id, dict(item)))
+                snapshot = dict(item)
+                snapshot["texts"] = list(item.get("texts") or [])
+                due_items.append((session_id, snapshot))
 
         for session_id, item in due_items:
             self._send_pending_response(session_id, item)
 
     def _send_pending_response(self, session_id, item):
+        turn_context = item.get("turn_context")
+        if turn_context is not None:
+            activate_context_trace(turn_context)
         receiver = item.get("receiver") or session_id
         img_path = item.get("path")
         pending_id = item.get("id")
+        revision = int(item.get("revision") or 0)
         texts = item.get("texts") or []
+        keep_pending = False
 
         try:
             prompt = self._build_prompt(texts)
@@ -262,29 +299,75 @@ class QwenVision(Plugin):
             answer = self._clean_answer(answer)
 
             if not answer:
-                answer = "我看到了呀，但这张图有点让我不知道先从哪句说起。你想让我看哪里嘛？"
+                logger.warning("[QwenVision] model returned empty vision reply; keep silent session=%s", session_id)
+                return
+
+            if not self._vision_snapshot_current(session_id, pending_id, revision, item):
+                keep_pending = True
+                logger.info(
+                    "[QwenVision] stale vision result discarded session=%s revision=%s",
+                    session_id,
+                    revision,
+                )
+                return
 
             logger.info("[QwenVision] sending vision reply session=%s receiver=%s text=%r", session_id, receiver, answer[:100])
-            self._send_text_with_split_delay(answer, receiver, tag="vision")
+            send_result = self._send_text_with_split_delay(
+                answer,
+                receiver,
+                session_id=session_id,
+                tag="vision",
+                channel=item.get("channel"),
+                turn_context=item.get("turn_context"),
+            )
+            sent_text = send_result.get("text", "")
+            keep_pending = bool(send_result.get("stale"))
 
         except Exception:
             logger.exception("[QwenVision] async vision answer failed session=%s", session_id)
-            try:
-                self._send_text_with_split_delay("我刚刚看到图了，但回答的时候卡了一下……你再发我一下嘛。", receiver, tag="vision_fallback")
-            except Exception:
-                logger.exception("[QwenVision] send fallback failed session=%s", session_id)
 
         finally:
             with LOCK:
                 current = PENDING_IMAGES.get(session_id)
                 if current and current.get("id") == pending_id:
-                    PENDING_IMAGES.pop(session_id, None)
+                    current_revision = int(current.get("revision") or 0)
+                    if keep_pending or current_revision != revision or current.get("dirty"):
+                        current["status"] = "waiting"
+                        current["dirty"] = False
+                        if keep_pending and current_revision == revision:
+                            current["last_update"] = time.time()
+                        PENDING_IMAGES[session_id] = current
+                    else:
+                        PENDING_IMAGES.pop(session_id, None)
 
 
-    def _send_text_with_split_delay(self, text, receiver, tag="vision"):
+    def _vision_snapshot_current(self, session_id, pending_id, revision, item):
+        with LOCK:
+            current = PENDING_IMAGES.get(session_id)
+            if not current or current.get("id") != pending_id:
+                return False
+            if int(current.get("revision") or 0) != int(revision):
+                return False
+
+        return self._context_is_current(
+            item.get("channel"),
+            item.get("turn_context"),
+        )
+
+    def _context_is_current(self, channel, context):
+        checker = getattr(channel, "is_context_current", None)
+        if not callable(checker):
+            return True
+        try:
+            return bool(checker(context))
+        except Exception:
+            logger.exception("[QwenVision] failed to check input turn version")
+            return False
+
+    def _send_text_with_split_delay(self, text, receiver, session_id, tag="vision", channel=None, turn_context=None):
         text = str(text or "").strip()
         if not text:
-            return
+            return {"text": "", "stale": False}
 
         enabled = os.getenv("VISION_SPLIT_REPLY_ENABLED", os.getenv("SPLIT_REPLY_ENABLED", "true")).strip().lower() in ("1", "true", "yes", "on")
         delay_per_char = float(os.getenv("VISION_SPLIT_REPLY_DELAY_PER_CHAR", os.getenv("SPLIT_REPLY_DELAY_PER_CHAR", "0.4")))
@@ -292,8 +375,16 @@ class QwenVision(Plugin):
         max_chars = int(os.getenv("VISION_SPLIT_REPLY_MAX_CHARS", os.getenv("SPLIT_REPLY_MAX_CHARS", "80")))
 
         if not enabled:
-            itchat.send(text, toUserName=receiver)
-            return
+            receipt = send_text(
+                session_id=session_id,
+                source="qwen_vision",
+                text=text,
+                receiver=receiver,
+                channel=channel,
+                context=turn_context,
+                record_memory=True,
+            )
+            return {"text": receipt.sent_text, "stale": receipt.stale}
 
         # 先尊重大模型自己的换行：一行就是一条微信消息
         normalized = re.sub(r"\n\s*\n+", "\n", text)
@@ -341,23 +432,31 @@ class QwenVision(Plugin):
             delay_per_char,
         )
 
-        for idx, part in enumerate(parts):
-            part = str(part or "").strip()
-            if not part:
-                continue
+        receipt = send_text(
+            session_id=session_id,
+            source="qwen_vision",
+            parts=parts,
+            receiver=receiver,
+            channel=channel,
+            context=turn_context,
+            delay_before_part=lambda _index, part: max(0, len(part) * delay_per_char),
+            record_memory=True,
+        )
+        return {"text": receipt.sent_text, "stale": receipt.stale}
 
-            sleep_seconds = max(0, len(part) * delay_per_char)
-            logger.info(
-                "[QwenVision] split_send tag=%s part=%s/%s chars=%s sleep=%.1fs text=%r",
-                tag,
-                idx + 1,
-                len(parts),
-                len(part),
-                sleep_seconds,
-                part[:80],
-            )
-            time.sleep(sleep_seconds)
-            itchat.send(part, toUserName=receiver)
+    def _record_user_short_memory(self, session_id, text):
+        try:
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            short_memory = instances.get("SHORTMEMORY")
+            record = getattr(short_memory, "append_external_user_message", None)
+
+            if callable(record):
+                record(session_id, text, source="qwen_vision")
+            else:
+                logger.warning("[QwenVision] ShortMemory external message API unavailable")
+        except Exception:
+            logger.exception("[QwenVision] failed to record vision reply in ShortMemory")
 
     def _split_text(self, text, max_chars=28, max_parts=6, tiny_merge=6):
         text = str(text or "").strip()
@@ -435,7 +534,7 @@ class QwenVision(Plugin):
 
     def _get_session_id(self, context):
         keys = self._get_session_keys(context)
-        return keys[0] if keys else "default"
+        return keys[0] if keys else ""
 
     def _get_session_keys(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -621,10 +720,6 @@ class QwenVision(Plugin):
 
     def _ask_vision(self, image_path, prompt):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base = (
-            os.getenv("OPEN_AI_API_BASE")
-            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        ).rstrip("/")
         model = os.getenv("VISION_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
@@ -649,34 +744,20 @@ class QwenVision(Plugin):
             ],
             "max_tokens": 800,
             "temperature": 0.7,
-            "enable_thinking": False,
-        }
-
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
+            **build_thinking_payload("VISION"),
         }
 
         logger.info("[QwenVision] ask vision model=%s image=%s", model, image_path)
-
-        r = requests.post(
-            base + "/chat/completions",
-            headers=headers,
-            json=payload,
+        result = chat_completion(
+            component="QwenVision",
+            purpose="vision_understanding",
+            payload=payload,
             timeout=90,
+            api_key=api_key,
         )
-
-        if r.status_code >= 400 and "enable_thinking" in r.text:
-            payload.pop("enable_thinking", None)
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=90,
+        if not result.ok:
+            raise RuntimeError(
+                "vision api failed category=%s status=%s code=%s"
+                % (result.error_kind, result.status_code, result.error_code)
             )
-
-        if r.status_code >= 400:
-            raise RuntimeError("vision api error %s: %s" % (r.status_code, r.text[:1000]))
-
-        data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
+        return result.content.strip()

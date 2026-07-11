@@ -6,12 +6,17 @@ import time
 from datetime import datetime
 
 import requests
+from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.model_gateway import chat_completion
 import plugins
 from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
-from plugins.xiaoyou_common.time_context import build_time_context
+from plugins.xiaoyou_common.context_service import (
+    build_character_context,
+    extract_current_user_text,
+)
 
 
 TOOLS_CACHE = {}
@@ -21,7 +26,7 @@ SESSION_CACHE = {}
 @plugins.register(
     name="XiaoyouMCP",
     desc="Give Xiaoyou MCP tools for search, weather and map",
-    version="0.5-no-time",
+    version="0.8-trace-runtime",
     author="yoyo",
     desire_priority=30,
 )
@@ -139,7 +144,6 @@ class XiaoyouMCP(Plugin):
             logger.warning("[XiaoyouMCP] route llm skipped: OPEN_AI_API_KEY missing")
             return {"kind": "none", "confidence": 0, "reason": "api key missing"}
 
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("XIAOYOU_MCP_ROUTE_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
         location = os.getenv("XIAOYOU_DEFAULT_LOCATION", "").strip()
         origin = os.getenv("XIAOYOU_MAP_DEFAULT_ORIGIN", "").strip()
@@ -181,36 +185,21 @@ YoYo 当前原话：
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "max_tokens": 180,
-            "enable_thinking": False,
-        }
-
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
+            **build_thinking_payload("XIAOYOU_MCP_ROUTE"),
         }
 
         try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
+            result = chat_completion(
+                component="XiaoyouMCP",
+                purpose="route_intent",
+                payload=payload,
                 timeout=int(os.getenv("XIAOYOU_MCP_ROUTE_TIMEOUT", "20")),
+                api_key=api_key,
             )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=int(os.getenv("XIAOYOU_MCP_ROUTE_TIMEOUT", "20")),
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[XiaoyouMCP] route llm error %s: %s", r.status_code, r.text[:500])
+            if not result.ok:
                 return {"kind": "none", "confidence": 0, "reason": "route llm http error"}
 
-            content = r.json()["choices"][0]["message"].get("content", "").strip()
+            content = result.content.strip()
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             start = content.find("{")
@@ -309,7 +298,6 @@ YoYo 当前原话：
         if not api_key:
             return None
 
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("XIAOYOU_MCP_ARG_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
         location = os.getenv("XIAOYOU_DEFAULT_LOCATION", "").strip()
         origin = os.getenv("XIAOYOU_MAP_DEFAULT_ORIGIN", "").strip()
@@ -349,36 +337,21 @@ YoYo 当前原话：
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
             "max_tokens": 300,
-            "enable_thinking": False,
-        }
-
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
+            **build_thinking_payload("XIAOYOU_MCP_ARG"),
         }
 
         try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
+            result = chat_completion(
+                component="XiaoyouMCP",
+                purpose="build_tool_args",
+                payload=payload,
                 timeout=30,
+                api_key=api_key,
             )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=30,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[XiaoyouMCP] arg llm error %s: %s", r.status_code, r.text[:500])
+            if not result.ok:
                 return None
 
-            content = r.json()["choices"][0]["message"]["content"].strip()
+            content = result.content.strip()
             content = re.sub(r"^```(?:json)?\s*", "", content)
             content = re.sub(r"\s*```$", "", content)
             start = content.find("{")
@@ -773,12 +746,8 @@ YoYo 当前原话：
             logger.warning("[XiaoyouMCP] reply llm skipped: OPEN_AI_API_KEY missing")
             return None
 
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("XIAOYOU_MCP_POLISH_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
-        character_desc = os.getenv("CHARACTER_DESC", "").strip()
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in character_desc:
-            character_desc = (character_desc + "\n\n" + _xiaoyou_time_context).strip()
+        character_desc = build_character_context()
         stage = str(stage or "unknown")
         is_success = stage == "success"
 
@@ -838,37 +807,21 @@ YoYo 当前原话：
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.45 if is_success else 0.65,
             "max_tokens": 500,
-            "enable_thinking": False,
-        }
-
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
+            **build_thinking_payload("XIAOYOU_MCP_POLISH"),
         }
 
         try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
+            result = chat_completion(
+                component="XiaoyouMCP",
+                purpose="polish_reply",
+                payload=payload,
                 timeout=45,
+                api_key=api_key,
             )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=45,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[XiaoyouMCP] reply llm error %s: %s", r.status_code, r.text[:500])
+            if not result.ok:
                 return None
 
-            text = r.json()["choices"][0]["message"].get("content", "")
-            return self._clean_llm_reply(text)
+            return self._clean_llm_reply(result.content)
 
         except Exception:
             logger.exception("[XiaoyouMCP] reply llm failed")
@@ -893,24 +846,5 @@ YoYo 当前原话：
         e_context.action = EventAction.BREAK
 
     def _extract_plain_user_text(self, content):
-        text = str(content or "").strip()
-
         # MCP 只能根据“当前用户原话”决定是否调用工具。
-        # 短期记忆/长期记忆仍可给普通回复使用，但不能参与 MCP 路由。
-        markers = [
-            "[用户当前消息]",
-            "[已有上下文与当前消息]",
-            "现在 YoYo 回复：",
-        ]
-
-        for marker in markers:
-            if marker in text:
-                text = text.rsplit(marker, 1)[1].strip()
-
-        # 如果上游仍把记忆块混进来了，只取最后一行作为当前输入。
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
-        if lines:
-            text = lines[-1]
-
-        text = re.sub(r"^(YoYo|用户|我)[:：]\s*", "", text).strip()
-        return re.sub(r"\s+", " ", text)
+        return extract_current_user_text(content)

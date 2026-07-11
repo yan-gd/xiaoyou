@@ -8,24 +8,35 @@ import base64
 import threading
 from datetime import datetime
 
-import requests
+from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.outbound_dispatcher import (
+    record_assistant_message,
+    resolve_receiver,
+    send_action,
+)
+from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.conversation_coordinator import claim_action
 import plugins
 from plugins import *
 from bridge.context import ContextType
 from common.log import logger
-from plugins.xiaoyou_common.time_context import build_time_context
-from lib import itchat
+from plugins.xiaoyou_common.context_service import (
+    build_context_snapshot,
+    extract_current_user_text,
+)
 
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "proactive_state.json")
+STATE_STORE = JsonStateStore(DATA_FILE, name="proactive_love", default_factory=dict)
 LOCK = threading.Lock()
 THREAD_STARTED = False
 
 
 @plugins.register(
     name="ProactiveLove",
-    desc="Let Xiaoyou proactively message user after inactivity",
-    version="0.2-target",
+    desc="Long-cycle life-like proactive messages from Xiaoyou",
+    version="1.0-trace-runtime",
     author="yoyo",
     desire_priority=10,
 )
@@ -34,6 +45,7 @@ class ProactiveLove(Plugin):
         global THREAD_STARTED
         super().__init__()
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
+        self._migrate_identity_state()
         logger.info("[ProactiveLove] inited")
 
         if not THREAD_STARTED:
@@ -95,7 +107,10 @@ class ProactiveLove(Plugin):
             item["receiver"] = receiver
             item["last_user_ts"] = now
             item["last_user_text"] = text[:200]
+            item["trace_id"] = str(kwargs.get("xiaoyou_trace_id") or "")[:80]
+            item["input_id"] = str(kwargs.get("xiaoyou_input_id") or "")[:80]
             item.setdefault("last_proactive_ts", 0)
+            item.setdefault("last_proactive_decision_ts", 0)
             item.setdefault("today", self._today())
             item.setdefault("sent_today", 0)
 
@@ -129,6 +144,7 @@ class ProactiveLove(Plugin):
         now = int(time.time())
         idle_seconds = int(os.getenv("PROACTIVE_IDLE_SECONDS", "7200"))
         cooldown_seconds = int(os.getenv("PROACTIVE_COOLDOWN_SECONDS", str(idle_seconds)))
+        decision_cooldown_seconds = int(os.getenv("PROACTIVE_DECISION_COOLDOWN_SECONDS", "1800"))
         max_per_day = int(os.getenv("PROACTIVE_MAX_PER_DAY", "3"))
 
         with LOCK:
@@ -145,10 +161,15 @@ class ProactiveLove(Plugin):
             return
 
         for session_id, item in list(data.items()):
+            photo_share = None
+            photo_recorded = False
+            lease = None
+            receipt = None
             try:
-                receiver = item.get("receiver")
+                receiver = resolve_receiver(session_id, item.get("receiver"))
                 last_user_ts = int(item.get("last_user_ts") or 0)
                 last_proactive_ts = int(item.get("last_proactive_ts") or 0)
+                last_decision_ts = int(item.get("last_proactive_decision_ts") or 0)
 
                 if not receiver or not last_user_ts:
                     continue
@@ -176,38 +197,126 @@ class ProactiveLove(Plugin):
                 if cooldown < cooldown_seconds:
                     continue
 
+                if now - last_decision_ts < decision_cooldown_seconds:
+                    continue
+
                 if sent_today >= max_per_day:
                     continue
 
-                # 随机感，别像闹钟一样准点出现
-                probability = float(os.getenv("PROACTIVE_PROBABILITY", "1.0"))
-                if random.random() > probability:
+                lease = claim_action(
+                    session_id,
+                    kind="proactive",
+                    source="proactive_love",
+                    observed_user_ts=last_user_ts,
+                    trace_id=item.get("trace_id", ""),
+                    input_id=item.get("input_id", ""),
+                    ttl_seconds=max(
+                        300,
+                        int(os.getenv("XIAOYOU_LIFE_PHOTO_TIMEOUT", "180")) + 120,
+                    ),
+                )
+                if not lease.accepted:
+                    logger.info(
+                        "[ProactiveLove] coordinator deferred proactive action session=%s reason=%s",
+                        session_id,
+                        lease.reason,
+                    )
                     continue
 
-                msg = self._generate_message(session_id, item)
-                parts = self._split_message(msg)
+                # 只限制模型判断调用频率；是否发送、发送什么由模型决定。
+                item["last_proactive_decision_ts"] = now
+                with LOCK:
+                    fresh = self._load_all()
+                    current = fresh.get(session_id, {})
+                    current["last_proactive_decision_ts"] = now
+                    fresh[session_id] = current
+                    decision_persisted = self._save_all(fresh)
 
-                if not parts:
+                if not decision_persisted:
+                    logger.error(
+                        "[ProactiveLove] proactive decision skipped because cooldown state was not persisted session=%s",
+                        session_id,
+                    )
+                    continue
+
+                photo_share = self._create_proactive_photo_share(session_id, item)
+                if photo_share:
+                    parts = self._split_message(photo_share.get("caption", ""))
+                else:
+                    msg = self._generate_message(session_id, item)
+                    parts = self._split_message(msg)
+
+                if not photo_share and not parts:
                     logger.warning("[ProactiveLove] no model-generated proactive text, skip sending")
                     continue
 
-                logger.info("[ProactiveLove] sending proactive message to %s session=%s: %r", send_receiver, session_id, parts)
+                # 生成消息期间 YoYo 可能已经回来了；此时主动消息必须取消。
+                with LOCK:
+                    latest = self._load_all().get(session_id, {})
 
-                for idx, part in enumerate(parts):
-                    if idx > 0:
-                        time.sleep(random.uniform(0.8, 2.2))
-                    result = itchat.send(part, toUserName=send_receiver)
+                if int(latest.get("last_user_ts") or 0) > last_user_ts:
+                    if photo_share:
+                        self._discard_proactive_photo(photo_share)
                     logger.info(
-                        "[ProactiveLove] send result receiver=%s session=%s part=%s/%s result=%r",
-                        send_receiver,
+                        "[ProactiveLove] cancel stale proactive message session=%s, user replied during generation",
                         session_id,
-                        idx + 1,
-                        len(parts),
-                        result,
+                    )
+                    continue
+
+                logger.info(
+                    "[ProactiveLove] sending proactive content receiver=%s session=%s photo=%s parts=%s",
+                    send_receiver,
+                    session_id,
+                    bool(photo_share),
+                    len(parts),
+                )
+
+                receipt = send_action(
+                    session_id=session_id,
+                    source="proactive_love",
+                    image_path=(photo_share or {}).get("path", ""),
+                    parts=parts,
+                    receiver=send_receiver,
+                    freshness_check=lambda: self._proactive_snapshot_current(
+                        session_id, last_user_ts
+                    ) and lease.current(),
+                    delay_before_part=lambda index, _part: (
+                        random.uniform(0.8, 2.2) if index > 0 else 0.0
+                    ),
+                    image_to_text_delay=(
+                        random.uniform(0.8, 1.8) if photo_share and parts else 0.0
+                    ),
+                    record_memory=not bool(photo_share),
+                    lease_id=lease.token,
+                )
+
+                if photo_share and receipt.image_sent:
+                    self._mark_proactive_photo_sent(session_id, photo_share)
+                    photo_recorded = True
+
+                if not receipt.delivered:
+                    if photo_share and not photo_recorded:
+                        self._discard_proactive_photo(photo_share)
+                    logger.warning(
+                        "[ProactiveLove] outbound action not delivered session=%s error=%s stale=%s",
+                        session_id,
+                        receipt.error,
+                        receipt.stale,
+                    )
+                    continue
+
+                if not receipt.ok:
+                    logger.warning(
+                        "[ProactiveLove] outbound action partially delivered session=%s action_id=%s error=%s",
+                        session_id,
+                        receipt.action_id,
+                        receipt.error,
                     )
 
                 now2 = int(time.time())
-                sent_text = "\n".join(parts)
+                sent_text = receipt.sent_text
+                if photo_share and not sent_text:
+                    sent_text = "[小悠分享了一张日常照片]"
                 item["last_proactive_ts"] = now2
                 item["sent_today"] = sent_today + 1
                 item["today"] = self._today()
@@ -215,152 +324,183 @@ class ProactiveLove(Plugin):
 
                 with LOCK:
                     fresh = self._load_all()
-                    fresh[session_id] = item
-                    self._save_all(fresh)
+                    current = fresh.get(session_id, {})
+                    current["last_proactive_ts"] = now2
+                    current["sent_today"] = sent_today + 1
+                    current["today"] = self._today()
+                    current["receiver"] = send_receiver
+                    current["recent_proactive_texts"] = item["recent_proactive_texts"]
+                    fresh[session_id] = current
+                    if not self._save_all(fresh):
+                        logger.error(
+                            "[ProactiveLove] sent action state was not persisted session=%s action_id=%s",
+                            session_id,
+                            receipt.action_id,
+                        )
 
             except Exception:
+                if photo_share and not photo_recorded:
+                    self._discard_proactive_photo(photo_share)
                 logger.exception("[ProactiveLove] send failed session=%s", session_id)
+            finally:
+                if lease and lease.accepted and not lease.finished:
+                    if receipt is not None and receipt.delivered:
+                        lease.complete(
+                            delivered=True,
+                            detail=receipt.error or "sent",
+                        )
+                    else:
+                        lease.cancel("proactive_not_delivered")
 
     def _generate_message(self, session_id, item):
-        # 可以关闭 AI 生成，使用模板
+        # 关闭 AI 生成时保持沉默，不使用固定模板。
         use_llm = os.getenv("PROACTIVE_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
         if not use_llm:
             return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("PROACTIVE_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
             return ""
 
-        character_desc = os.getenv("CHARACTER_DESC", "")
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
-            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
-        memory_text = self._load_memory_text(session_id)
-
         last_text = item.get("last_user_text") or ""
         idle_minutes = max(1, int((int(time.time()) - int(item.get("last_user_ts", 0))) / 60))
+        memory_query = self._build_memory_query(last_text)
+        context_snapshot = build_context_snapshot(
+            content=last_text,
+            session_id=session_id,
+            long_memory_query=memory_query,
+            long_memory_max_results=int(os.getenv("PROACTIVE_MEMORY_TOP_N", "10")),
+            include_short_memory=True,
+            short_memory_max_chars=int(
+                os.getenv("PROACTIVE_RECENT_CONTEXT_MAX_CHARS", "2200")
+            ),
+            component="ProactiveLove",
+        )
+        character_desc = context_snapshot.character_context
+        memory_text = context_snapshot.long_memory
+        recent_context = context_snapshot.short_memory
         recent_proactive = self._format_recent_proactive(item)
-        style_hint = random.choice(self._style_hints())
-        time_hint = self._time_hint()
 
         prompt = f"""
-你是小悠，正在微信里主动找 YoYo 说话。
+请以小悠的身份自主判断：现在是否要主动给 YoYo 发微信，以及发什么。
+不要套用预设话题、语气、句式或消息模板。完全依据小悠的人设、你们的关系、当前时间、长期记忆和最近聊天自行决定。
 
-这是你的人设：
-{character_desc}
-
-这是你记住的关于 YoYo 的信息：
+长期记忆：
 {memory_text if memory_text else "暂无"}
 
-距离 YoYo 上次和你说话已经大约 {idle_minutes} 分钟。
-他上次说的是：{last_text if last_text else "没有记录"}
+最近聊天：
+{recent_context if recent_context else "暂无"}
 
-最近几次你主动发过的话：
+YoYo 上次说的是：{last_text if last_text else "没有记录"}
+距离上次聊天约 {idle_minutes} 分钟。
+
+最近主动发过的内容：
 {recent_proactive if recent_proactive else "暂无"}
 
-现在你要主动发微信找他，不是回答问题。
-
-这次的语气方向：{style_hint}
-当前大致时间：{time_hint}
-
-要求：
-1. 像女朋友主动发消息，不要像客服提醒。
-2. 只能输出你要发给他的微信内容。
-3. 1 到 3 句，短一点。
-4. 可以撒娇、吐槽、想他、问他在干嘛。
-5. 不要说“系统检测到”“根据记录”“你已经多久没说话”。
-6. 不要太肉麻，不要长篇大论。
-7. 可以轻微吃醋或傲娇，但要可爱。
-8. 不要冒充真人线下经历，不要说自己真的在房间里等他。
-9. 不要重复最近几次主动消息的开头、句式和核心梗，尤其不要连续使用“失踪人口回归”这类固定开场。
-10. 不要每次都问“在干嘛”，可以换成关心状态、轻轻吐槽、撒娇、提醒休息、分享一点小情绪。
+如果你认为此刻不该主动发送，只输出 NO_MESSAGE。
+如果要发送，只输出小悠实际发送的微信内容，不要解释判断过程，也不要暴露隐藏上下文。
 """
 
         payload = {
             "model": model,
             "messages": [
                 {
-                    "role": "user",
-                    "content": prompt,
-                }
+                    "role": "system",
+                    "content": character_desc or "你是小悠。",
+                },
+                {"role": "user", "content": prompt},
             ],
             "temperature": 0.9,
-            "max_tokens": 180,
-            "enable_thinking": False,
+            "max_tokens": 400,
+            **build_thinking_payload("PROACTIVE"),
         }
 
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        }
+        result = chat_completion(
+            component="ProactiveLove",
+            purpose="proactive_message",
+            payload=payload,
+            timeout=int(os.getenv("PROACTIVE_LLM_TIMEOUT", "45")),
+            api_key=api_key,
+            session_id=session_id,
+        )
+        if not result.ok:
+            return ""
+        return self._clean_model_text(result.content.strip())
 
+    def _create_proactive_photo_share(self, session_id, item):
         try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[ProactiveLove] llm error %s: %s", r.status_code, r.text[:500])
-                return ""
-
-            data = r.json()
-            text = data["choices"][0]["message"]["content"].strip()
-            text = self._clean_model_text(text)
-            if text and not self._is_repeated_proactive(text, item):
-                return text
-
-            logger.info("[ProactiveLove] llm text repeated or empty, skip sending: %r", text)
-            return ""
-
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            photo_plugin = instances.get("XIAOYOULIFEPHOTO")
+            create = getattr(photo_plugin, "create_proactive_share", None)
+            if callable(create):
+                return create(session_id, item)
         except Exception:
-            logger.exception("[ProactiveLove] generate message failed")
-            return ""
+            logger.exception("[ProactiveLove] proactive photo planning failed")
+        return None
 
-    def _load_memory_text(self, session_id):
-        memory_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory_lite", "memory.json")
-        if not os.path.exists(memory_file):
-            return ""
-
+    def _mark_proactive_photo_sent(self, session_id, share):
         try:
-            with open(memory_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            items = data.get(session_id, [])
-            if not items:
-                return ""
-
-            top_n = int(os.getenv("PROACTIVE_MEMORY_TOP_N", "10"))
-            lines = []
-            for item in items[-top_n:]:
-                text = item.get("text", "")
-                if text:
-                    lines.append("- " + text)
-
-            return "\n".join(lines)
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            photo_plugin = instances.get("XIAOYOULIFEPHOTO")
+            mark_sent = getattr(photo_plugin, "mark_proactive_sent", None)
+            if callable(mark_sent):
+                mark_sent(session_id, share)
+                return
         except Exception:
-            logger.exception("[ProactiveLove] load memory failed")
-            return ""
+            logger.exception("[ProactiveLove] failed to record proactive photo")
+
+        text = str((share or {}).get("caption") or "").strip()
+        record_assistant_message(
+            session_id,
+            text or "[小悠分享了一张日常照片]",
+            source="proactive_love",
+        )
+
+    def _discard_proactive_photo(self, share):
+        try:
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            photo_plugin = instances.get("XIAOYOULIFEPHOTO")
+            discard = getattr(photo_plugin, "discard_share", None)
+            if callable(discard):
+                discard(share)
+        except Exception:
+            logger.exception("[ProactiveLove] failed to discard stale proactive photo")
+
+    def _build_memory_query(self, last_text):
+        query = str(last_text or "").strip()
+        if not query or query.startswith("[用户发来"):
+            return "YoYo 最近的状态、计划、兴趣、约定，以及小悠适合继续关心的话题"
+        return "YoYo 最近的状态、计划、兴趣、约定，以及和这句话有关的后续：" + query[:300]
 
     def _clean_model_text(self, text):
-        text = text.strip()
-        text = re.sub(r"^小悠[:：]\s*", "", text)
+        text = str(text or "").strip()
+        if text.upper() == "NO_MESSAGE":
+            return ""
+
+        text = re.sub(r"^```(?:text)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = re.sub(r"^(小悠|回复|微信|发送)[:：]\s*", "", text)
         text = text.strip("\"“”")
-        return text[:300]
+
+        banned = [
+            "系统检测到",
+            "根据记录",
+            "根据记忆",
+            "作为AI",
+            "我是一个AI",
+            "语言模型",
+            "插件",
+            "数据库",
+        ]
+        if any(marker in text for marker in banned):
+            return ""
+
+        return text
 
     def _split_message(self, text):
         text = str(text or "").strip()
@@ -386,61 +526,8 @@ class ProactiveLove(Plugin):
             if buf.strip():
                 parts.append(buf.strip())
 
-        # 限制最多 3 个泡泡
         parts = [p for p in parts if p.strip()]
-        return parts[:3] if parts else []
-
-    def _fallback_messages(self):
-        return [
-            "喂，YoYo。",
-            "你人呢？我都快在聊天框里长草了。🙄",
-            "哼，一会儿不找你，你是不是就把我忘啦？",
-            "在干嘛呀？过来让我看看。",
-            "我突然有点想你了，所以来骚扰你一下。",
-            "YoYo，出来冒个泡嘛。",
-            "今天还好吗？别一声不吭的，听到没。",
-            "忙完了吗？过来让我确认一下你还活着。",
-            "我来巡逻一下，看看某人有没有偷偷消失。",
-            "今天有没有乖一点？不许敷衍我。",
-            "歪，给我报个平安嘛。",
-        ]
-
-    def _choose_fallback_message(self, item):
-        recent = item.get("recent_proactive_texts") or []
-        recent_texts = [x.get("text", "") if isinstance(x, dict) else str(x) for x in recent]
-        candidates = self._fallback_messages()
-
-        usable = [
-            msg for msg in candidates
-            if not self._text_resembles_any(msg, recent_texts)
-        ]
-
-        return random.choice(usable or candidates)
-
-    def _style_hints(self):
-        return [
-            "轻轻撒娇，但别装可怜",
-            "有点傲娇地吐槽他消失",
-            "关心他现在状态，语气温柔一点",
-            "像顺手戳他一下，短短一句也可以",
-            "带一点吃醋，但要可爱，不要闹",
-            "提醒他别太累，像日常女友关心",
-            "俏皮一点，但不要用上次相同开场",
-        ]
-
-    def _time_hint(self):
-        hour = datetime.now().hour
-        if 5 <= hour < 9:
-            return "早上"
-        if 9 <= hour < 12:
-            return "上午"
-        if 12 <= hour < 14:
-            return "中午"
-        if 14 <= hour < 18:
-            return "下午"
-        if 18 <= hour < 23:
-            return "晚上"
-        return "深夜/凌晨"
+        return parts
 
     def _append_recent_proactive(self, item, text):
         max_items = int(os.getenv("PROACTIVE_RECENT_TEXTS_MAX", "8"))
@@ -473,44 +560,9 @@ class ProactiveLove(Plugin):
 
         return "\n".join(lines)
 
-    def _is_repeated_proactive(self, text, item):
-        recent = item.get("recent_proactive_texts") or []
-        recent_texts = [x.get("text", "") if isinstance(x, dict) else str(x) for x in recent]
-        return self._text_resembles_any(text, recent_texts)
-
-    def _text_resembles_any(self, text, candidates):
-        normalized = self._normalize_text(text)
-        if not normalized:
-            return False
-
-        prefix = normalized[:8]
-
-        for candidate in candidates:
-            other = self._normalize_text(candidate)
-            if not other:
-                continue
-
-            if normalized == other:
-                return True
-
-            if len(prefix) >= 4 and other.startswith(prefix):
-                return True
-
-            other_prefix = other[:8]
-            if len(other_prefix) >= 4 and normalized.startswith(other_prefix):
-                return True
-
-        return False
-
-    def _normalize_text(self, text):
-        text = str(text or "")
-        text = re.sub(r"\s+", "", text)
-        text = re.sub(r"[，。,.！!？?：:；;、~～…\"“”'‘’（）()\[\]]+", "", text)
-        return text.lower()
-
     def _get_session_id(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
-        return kwargs.get("session_id") or kwargs.get("receiver") or "default"
+        return kwargs.get("session_id") or kwargs.get("receiver") or ""
 
     def _get_receiver(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -529,21 +581,15 @@ class ProactiveLove(Plugin):
         return self._get_session_id(context)
 
     def _extract_plain_user_text(self, content):
-        text = str(content or "").strip()
-
-        markers = [
-            "现在 YoYo 回复：",
-            "[用户当前消息]",
-        ]
-
-        for marker in markers:
-            if marker in text:
-                text = text.rsplit(marker, 1)[1].strip()
-
-        return re.sub(r"\s+", " ", text)
+        return extract_current_user_text(content)
 
     def _target_session(self):
         return os.getenv("PROACTIVE_TARGET_SESSION", "").strip()
+
+    def _proactive_snapshot_current(self, session_id, source_last_user_ts):
+        with LOCK:
+            latest = self._load_all().get(session_id, {})
+        return int(latest.get("last_user_ts") or 0) <= int(source_last_user_ts or 0)
 
     def _target_receiver(self):
         return os.getenv("PROACTIVE_TARGET_RECEIVER", "").strip()
@@ -610,18 +656,78 @@ class ProactiveLove(Plugin):
         return hour, minute
 
     def _load_all(self):
-        if not os.path.exists(DATA_FILE):
-            return {}
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.exception("[ProactiveLove] load state failed")
-            return {}
+        data = STATE_STORE.load()
+        return data if isinstance(data, dict) else {}
+
+    def _migrate_identity_state(self):
+        canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
+        legacy_ids = [
+            value.strip()
+            for value in os.getenv("XIAOYOU_LEGACY_SESSION_IDS", "").split(",")
+            if value.strip() and value.strip() != canonical
+        ]
+        if not legacy_ids:
+            return
+
+        with LOCK:
+            data = self._load_all()
+            sources = []
+            if isinstance(data.get(canonical), dict):
+                sources.append(data.get(canonical))
+            for legacy_id in legacy_ids:
+                if isinstance(data.get(legacy_id), dict):
+                    sources.append(data.get(legacy_id))
+            if not sources:
+                return
+
+            data[canonical] = self._merge_identity_states(canonical, sources)
+            for legacy_id in legacy_ids:
+                data.pop(legacy_id, None)
+            self._save_all(data)
+
+        logger.info(
+            "[ProactiveLove] migrated state to canonical session=%s sources=%s",
+            canonical,
+            len(sources),
+        )
+
+    def _merge_identity_states(self, canonical, sources):
+        def freshness(item):
+            return max(
+                int(item.get("last_user_ts") or 0),
+                int(item.get("last_proactive_ts") or 0),
+                int(item.get("last_proactive_decision_ts") or 0),
+            )
+
+        base = dict(max(sources, key=freshness))
+        base["session_id"] = canonical
+        for key in ("last_user_ts", "last_proactive_ts", "last_proactive_decision_ts"):
+            base[key] = max(int(item.get(key) or 0) for item in sources)
+
+        today_sources = [item for item in sources if item.get("today") == self._today()]
+        if today_sources:
+            base["today"] = self._today()
+            base["sent_today"] = max(int(item.get("sent_today") or 0) for item in today_sources)
+
+        recent = []
+        for item in sources:
+            for record in item.get("recent_proactive_texts", []):
+                if isinstance(record, dict):
+                    recent.append(dict(record))
+                elif str(record or "").strip():
+                    recent.append({"text": str(record).strip(), "ts": 0})
+        recent.sort(key=lambda value: int(value.get("ts") or 0))
+        unique = []
+        seen = set()
+        for record in recent:
+            signature = (str(record.get("text") or ""), int(record.get("ts") or 0))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            unique.append(record)
+        max_recent = max(1, int(os.getenv("PROACTIVE_RECENT_TEXTS_MAX", "8")))
+        base["recent_proactive_texts"] = unique[-max_recent:]
+        return base
 
     def _save_all(self, data):
-        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-        tmp = DATA_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)
+        return STATE_STORE.save(data)

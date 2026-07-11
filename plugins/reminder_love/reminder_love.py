@@ -8,17 +8,25 @@ import random
 import threading
 from datetime import datetime, timedelta
 
-import requests
+from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.outbound_dispatcher import resolve_receiver, send_text
+from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.conversation_coordinator import claim_action
 import plugins
 from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
-from plugins.xiaoyou_common.time_context import build_time_context
-from lib import itchat
+from plugins.xiaoyou_common.context_service import (
+    build_character_context,
+    extract_current_user_text,
+    load_long_memory_context,
+)
 
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "reminders.json")
+STATE_STORE = JsonStateStore(DATA_FILE, name="reminder_love", default_factory=dict)
 LOCK = threading.Lock()
 THREAD_STARTED = False
 
@@ -26,7 +34,7 @@ THREAD_STARTED = False
 @plugins.register(
     name="ReminderLove",
     desc="Schedule reminders from natural Chinese text",
-    version="0.1",
+    version="0.7-trace-runtime",
     author="yoyo",
     desire_priority=35,
 )
@@ -35,6 +43,7 @@ class ReminderLove(Plugin):
         global THREAD_STARTED
         super().__init__()
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
+        self._migrate_identity_state()
         logger.info("[ReminderLove] inited")
 
         if not THREAD_STARTED:
@@ -81,7 +90,7 @@ class ReminderLove(Plugin):
             return
 
         # 普通聊天：如果刚刚触发过提醒，把提醒上下文塞给聊天模型
-        # 因为提醒是 itchat.send 直接发出去的，CoW 原始聊天上下文不知道这件事
+        # 提醒由统一发送器直接送达，主 CoW 回复上下文本身不知道这件事。
         if not self._has_reminder_intent(text):
             self._inject_recent_reminder_context(context, session_id, text)
             return
@@ -125,9 +134,17 @@ YoYo 当前消息：
             "status": "pending",
             "created_at": int(time.time()),
             "sent_at": 0,
+            "trace_id": str(kwargs.get("xiaoyou_trace_id") or "")[:80],
+            "input_id": str(kwargs.get("xiaoyou_input_id") or "")[:80],
         }
 
-        self._add_reminder(session_id, reminder)
+        if not self._add_reminder(session_id, reminder):
+            logger.error(
+                "[ReminderLove] reminder creation aborted because state was not persisted session=%s",
+                session_id,
+            )
+            e_context.action = EventAction.BREAK
+            return
 
         reply = self._generate_ack_message(reminder)
 
@@ -179,12 +196,44 @@ YoYo 当前消息：
                         changed = True
 
             if changed:
-                self._save_all(data)
+                if not self._save_all(data):
+                    logger.error(
+                        "[ReminderLove] due reminders not sent because sending state was not persisted"
+                    )
+                    due_items = []
 
         for item in due_items:
+            lease = None
+            receipt = None
             try:
-                receiver = item.get("receiver")
+                session_id = item.get("session_id")
+                receiver = resolve_receiver(session_id, item.get("receiver"))
                 if not receiver:
+                    self._mark_pending(session_id, item.get("id"))
+                    logger.warning(
+                        "[ReminderLove] no temporary WeChat receiver; reminder kept pending session=%s",
+                        session_id,
+                    )
+                    continue
+                if receiver != item.get("receiver"):
+                    self._update_receiver(session_id, item.get("id"), receiver)
+                    item["receiver"] = receiver
+
+                lease = claim_action(
+                    session_id,
+                    kind="reminder",
+                    source="reminder_love",
+                    ttl_seconds=150,
+                    trace_id=item.get("trace_id", ""),
+                    input_id=item.get("input_id", ""),
+                )
+                if not lease.accepted:
+                    self._mark_pending(session_id, item.get("id"))
+                    logger.info(
+                        "[ReminderLove] coordinator deferred reminder session=%s reason=%s",
+                        session_id,
+                        lease.reason,
+                    )
                     continue
 
                 msg = self._generate_reminder_message(item)
@@ -197,16 +246,41 @@ YoYo 当前消息：
 
                 logger.info("[ReminderLove] send reminder to %s: %r", receiver, parts)
 
-                for idx, part in enumerate(parts):
-                    if idx > 0:
-                        time.sleep(random.uniform(0.8, 1.8))
-                    itchat.send(part, toUserName=receiver)
-
-                self._mark_sent(item.get("session_id"), item.get("id"), "\n".join(parts))
+                receipt = send_text(
+                    session_id=session_id,
+                    source="reminder_love",
+                    parts=parts,
+                    receiver=receiver,
+                    delay_before_part=lambda index, _part: (
+                        random.uniform(0.8, 1.8) if index > 0 else 0.0
+                    ),
+                    freshness_check=lease.current,
+                    record_memory=True,
+                    lease_id=lease.token,
+                )
+                if receipt.delivered:
+                    self._mark_sent(session_id, item.get("id"), receipt.sent_text)
+                    if not receipt.ok:
+                        logger.warning(
+                            "[ReminderLove] reminder partially delivered action_id=%s error=%s",
+                            receipt.action_id,
+                            receipt.error,
+                        )
+                else:
+                    self._mark_pending(session_id, item.get("id"))
 
             except Exception:
                 logger.exception("[ReminderLove] send reminder failed: %r", item)
                 self._mark_pending(item.get("session_id"), item.get("id"))
+            finally:
+                if lease and lease.accepted and not lease.finished:
+                    if receipt is not None and receipt.delivered:
+                        lease.complete(
+                            delivered=True,
+                            detail=receipt.error or "sent",
+                        )
+                    else:
+                        lease.cancel("reminder_not_delivered")
 
     def _generate_reminder_message(self, item):
         use_llm = os.getenv("REMINDER_USE_LLM", "true").strip().lower() in ("1", "true", "yes", "on")
@@ -217,17 +291,13 @@ YoYo 当前消息：
             return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("REMINDER_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
             return ""
 
-        character_desc = os.getenv("CHARACTER_DESC", "")
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
-            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
-        memory_text = self._load_memory_text(item.get("session_id"))
+        character_desc = build_character_context()
+        memory_text = self._load_memory_text(item.get("session_id"), task)
 
         prompt = f"""
 你是小悠，正在微信里提醒 YoYo 一件他之前让你记住的事。
@@ -263,43 +333,20 @@ YoYo 当前消息：
             ],
             "temperature": 0.85,
             "max_tokens": 200,
-            "enable_thinking": False,
+            **build_thinking_payload("REMINDER"),
         }
 
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        }
-
-        try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[ReminderLove] llm error %s: %s", r.status_code, r.text[:500])
-                return ""
-
-            data = r.json()
-            text = data["choices"][0]["message"]["content"].strip()
-            text = self._clean_model_text(text)
-            return text or ""
-
-        except Exception:
-            logger.exception("[ReminderLove] generate reminder failed")
+        result = chat_completion(
+            component="ReminderLove",
+            purpose="due_message",
+            payload=payload,
+            timeout=60,
+            api_key=api_key,
+            session_id=item.get("session_id"),
+        )
+        if not result.ok:
             return ""
+        return self._clean_model_text(result.content.strip()) or ""
 
     def _generate_ack_message(self, reminder):
         task = reminder.get("task") or "这件事"
@@ -311,16 +358,12 @@ YoYo 当前消息：
             return ""
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("REMINDER_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
             return ""
 
-        character_desc = os.getenv("CHARACTER_DESC", "")
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in str(character_desc or ""):
-            character_desc = (str(character_desc or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
+        character_desc = build_character_context()
 
         prompt = f"""
 你是小悠，正在微信里回复 YoYo 的提醒请求。
@@ -356,43 +399,20 @@ YoYo 刚刚说：
             ],
             "temperature": 0.85,
             "max_tokens": 120,
-            "enable_thinking": False,
+            **build_thinking_payload("REMINDER_ACK"),
         }
 
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        }
-
-        try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=60,
-            )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=60,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[ReminderLove] ack llm error %s: %s", r.status_code, r.text[:500])
-                return ""
-
-            data = r.json()
-            text = data["choices"][0]["message"]["content"].strip()
-            text = self._clean_model_text(text)
-            return text or ""
-
-        except Exception:
-            logger.exception("[ReminderLove] generate ack failed")
+        result = chat_completion(
+            component="ReminderLove",
+            purpose="acknowledgement",
+            payload=payload,
+            timeout=60,
+            api_key=api_key,
+            session_id=reminder.get("session_id"),
+        )
+        if not result.ok:
             return ""
+        return self._clean_model_text(result.content.strip()) or ""
 
     def _fallback_ack(self, task, friendly_time):
         task = task or "这件事"
@@ -672,25 +692,7 @@ YoYo 刚刚说：
         return s.strip()
 
     def _extract_actual_user_text(self, text):
-        text = str(text or "").strip()
-
-        markers = [
-            "YOYO 当前发来的微信消息：",
-            "YOYO 当前发来的微信消息:",
-            "YoYo 当前消息：",
-            "YoYo 当前消息:",
-            "[用户当前消息]",
-            "现在 YoYo 回复：",
-            "现在 YoYo 回复:",
-        ]
-
-        for marker in markers:
-            if marker in text:
-                text = text.rsplit(marker, 1)[1].strip()
-
-        # 如果仍然混有隐藏上下文，只取最后一段较像用户原话的内容
-        text = text.strip()
-        return text
+        return extract_current_user_text(text)
 
     def _has_reminder_intent(self, text):
         # 让模型判断“用户是否明确要求创建未来提醒/闹钟”
@@ -704,7 +706,6 @@ YoYo 刚刚说：
             return False
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("REMINDER_INTENT_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
@@ -738,43 +739,21 @@ YoYo 刚刚说：
             ],
             "temperature": 0,
             "max_tokens": 8,
-            "enable_thinking": False,
+            **build_thinking_payload("REMINDER_INTENT"),
         }
 
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        }
-
-        try:
-            r = requests.post(
-                base + "/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=20,
-            )
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(
-                    base + "/chat/completions",
-                    headers=headers,
-                    json=payload,
-                    timeout=20,
-                )
-
-            if r.status_code >= 400:
-                logger.warning("[ReminderLove] intent judge llm error %s: %s", r.status_code, r.text[:300])
-                return False
-
-            data = r.json()
-            ans = data["choices"][0]["message"]["content"].strip().upper()
-            logger.info("[ReminderLove] intent judge text=%r ans=%r", user_text[:80], ans)
-            return ans.startswith("YES")
-
-        except Exception:
-            logger.exception("[ReminderLove] intent judge failed")
+        result = chat_completion(
+            component="ReminderLove",
+            purpose="intent_classification",
+            payload=payload,
+            timeout=20,
+            api_key=api_key,
+        )
+        if not result.ok:
             return False
+        ans = result.content.strip().upper()
+        logger.info("[ReminderLove] intent judge text=%r ans=%r", user_text[:80], ans)
+        return ans.startswith("YES")
 
     def _is_list_cmd(self, text):
         patterns = [
@@ -852,9 +831,11 @@ YoYo 刚刚说：
             items = data.get(session_id, [])
             items.append(reminder)
             data[session_id] = items
-            self._save_all(data)
+            saved = self._save_all(data)
 
-        logger.info("[ReminderLove] added reminder session=%s due=%s task=%s", session_id, reminder.get("due_text"), reminder.get("task"))
+        if saved:
+            logger.info("[ReminderLove] added reminder session=%s due=%s task=%s", session_id, reminder.get("due_text"), reminder.get("task"))
+        return saved
 
     def _mark_sent(self, session_id, reminder_id, sent_text=""):
         with LOCK:
@@ -873,6 +854,14 @@ YoYo 刚刚说：
             for item in data.get(session_id, []):
                 if item.get("id") == reminder_id and item.get("status") == "sending":
                     item["status"] = "pending"
+            self._save_all(data)
+
+    def _update_receiver(self, session_id, reminder_id, receiver):
+        with LOCK:
+            data = self._load_all()
+            for item in data.get(session_id, []):
+                if item.get("id") == reminder_id:
+                    item["receiver"] = receiver
             self._save_all(data)
 
     def _split_message(self, text):
@@ -906,30 +895,16 @@ YoYo 刚刚说：
         text = text.strip("\"“”")
         return text[:300]
 
-    def _load_memory_text(self, session_id):
-        memory_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "memory_lite", "memory.json")
-        if not os.path.exists(memory_file):
-            return ""
-
-        try:
-            with open(memory_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-            items = data.get(session_id, [])
-            if not items:
-                return ""
-
-            top_n = int(os.getenv("REMINDER_MEMORY_TOP_N", "10"))
-            lines = []
-            for item in items[-top_n:]:
-                t = item.get("text", "")
-                if t:
-                    lines.append("- " + t)
-
-            return "\n".join(lines)
-        except Exception:
-            logger.exception("[ReminderLove] load memory failed")
-            return ""
+    def _load_memory_text(self, session_id, task=""):
+        task = str(task or "").strip()
+        query = "YoYo 与当前提醒事项有关的偏好、计划和约定"
+        if task:
+            query += "：" + task[:300]
+        return load_long_memory_context(
+            query,
+            max_results=max(0, int(os.getenv("REMINDER_MEMORY_TOP_N", "10"))),
+            component="ReminderLove",
+        )
 
     def _to_int(self, value):
         if value is None:
@@ -975,7 +950,7 @@ YoYo 刚刚说：
 
     def _get_session_id(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
-        return kwargs.get("session_id") or kwargs.get("receiver") or "default"
+        return kwargs.get("session_id") or kwargs.get("receiver") or ""
 
     def _get_receiver(self, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -997,18 +972,69 @@ YoYo 刚刚说：
         return os.getenv("REMINDER_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
     def _load_all(self):
-        if not os.path.exists(DATA_FILE):
-            return {}
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            logger.exception("[ReminderLove] load reminders failed")
-            return {}
+        data = STATE_STORE.load()
+        return data if isinstance(data, dict) else {}
+
+    def _migrate_identity_state(self):
+        canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
+        legacy_ids = [
+            value.strip()
+            for value in os.getenv("XIAOYOU_LEGACY_SESSION_IDS", "").split(",")
+            if value.strip() and value.strip() != canonical
+        ]
+        if not legacy_ids:
+            return
+
+        with LOCK:
+            data = self._load_all()
+            source_ids = [canonical] + legacy_ids
+            reminders = []
+            found = False
+            for source_id in source_ids:
+                items = data.get(source_id)
+                if not isinstance(items, list):
+                    continue
+                found = True
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    migrated = dict(item)
+                    migrated["session_id"] = canonical
+                    reminders.append(migrated)
+
+            if not found:
+                return
+
+            by_id = {}
+            without_id = []
+            for item in reminders:
+                reminder_id = str(item.get("id") or "").strip()
+                if not reminder_id:
+                    without_id.append(item)
+                    continue
+                existing = by_id.get(reminder_id)
+                if existing is None or self._reminder_freshness(item) >= self._reminder_freshness(existing):
+                    by_id[reminder_id] = item
+
+            merged = list(by_id.values()) + without_id
+            merged.sort(key=lambda value: (int(value.get("due_ts") or 0), int(value.get("created_at") or 0)))
+            data[canonical] = merged
+            for legacy_id in legacy_ids:
+                data.pop(legacy_id, None)
+            self._save_all(data)
+
+        logger.info(
+            "[ReminderLove] migrated reminders to canonical session=%s count=%s",
+            canonical,
+            len(merged),
+        )
+
+    def _reminder_freshness(self, item):
+        return max(
+            int(item.get("sent_at") or 0),
+            int(item.get("created_at") or 0),
+            int(item.get("due_ts") or 0),
+        )
 
     def _save_all(self, data):
-        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
-        tmp = DATA_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, DATA_FILE)
+        return STATE_STORE.save(data)

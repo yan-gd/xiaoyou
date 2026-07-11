@@ -23,6 +23,8 @@ __pycache__/
 *_bak*
 *_backup*
 *.backup
+*.tmp
+*.tmp.*
 
 # editor/system
 .DS_Store
@@ -36,4 +38,10 @@ __pycache__/
 plugins/proactive_love/proactive_state.json
 plugins/reminder_love/reminders.json
 plugins/short_memory/short_memory.json
+plugins/conversation_followup/followup_state.json
+plugins/conversation_followup/followup_state.json.tmp
+plugins/xiaoyou_chat/recovery_state.json
+plugins/xiaoyou_chat/recovery_state.json.tmp
+plugins/xiaoyou_chat/recovery_state.json.backup
+plugins/xiaoyou_chat/recovery_state.json.backup.tmp
 disabled_plugins/

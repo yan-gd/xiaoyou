@@ -1,20 +1,18 @@
 # -*- coding:utf-8 -*-
 import os
 import re
-import time
 
 import plugins
 from plugins import *
 from bridge.reply import ReplyType
-from bridge.context import ContextType
 from common.log import logger
-from lib import itchat
+from plugins.xiaoyou_common.outbound_dispatcher import context_is_current, send_text
 
 
 @plugins.register(
     name="SplitReply",
     desc="Split long text replies into multiple WeChat bubbles",
-    version="0.1",
+    version="0.4-trace-runtime",
     author="yoyo",
     desire_priority=99,
 )
@@ -30,8 +28,14 @@ class SplitReply(Plugin):
 
         reply = e_context["reply"]
         context = e_context["context"]
+        channel = self._event_value(e_context, "channel")
 
         if not reply or reply.type != ReplyType.TEXT:
+            return
+
+        if not context_is_current(channel, context):
+            logger.info("[SplitReply] stale reply cancelled before split send")
+            self._cancel_original_reply(e_context, context, reply)
             return
 
         text = str(reply.content or "").strip()
@@ -62,20 +66,42 @@ class SplitReply(Plugin):
 
         logger.info("[SplitReply] split reply into %s bubbles: %r", len(parts), parts)
 
-        for idx, part in enumerate(parts):
-            part = part.strip()
-            if not part:
-                continue
-
-            if idx > 0:
-                delay = self._delay_for_part(part)
-                logger.info("[SplitReply] delay %.2fs before bubble %s, chars=%s", delay, idx + 1, len(part))
-                time.sleep(delay)
-
-            itchat.send(part, toUserName=receiver)
+        kwargs = getattr(context, "kwargs", {}) or {}
+        session_id = str(kwargs.get("session_id") or kwargs.get("receiver") or "").strip()
+        receipt = send_text(
+            session_id=session_id,
+            source="split_reply",
+            parts=parts,
+            receiver=receiver,
+            channel=channel,
+            context=context,
+            delay_before_part=lambda index, part: (
+                self._delay_for_part(part) if index > 0 else 0.0
+            ),
+            # ShortMemory already recorded the complete decorated reply before
+            # ON_SEND_REPLY; recording again here would duplicate it.
+            record_memory=False,
+        )
+        if receipt.stale:
+            logger.info(
+                "[SplitReply] remaining bubbles cancelled because newer user input arrived sent=%s total=%s",
+                len(receipt.sent_parts),
+                len(parts),
+            )
+        elif not receipt.ok:
+            logger.warning(
+                "[SplitReply] split send incomplete action_id=%s sent=%s/%s error=%s",
+                receipt.action_id,
+                len(receipt.sent_parts),
+                len(parts),
+                receipt.error,
+            )
 
         # 阻止原来的整段消息再次发送
         # 老版 CoW 某些位置不会自动尊重 BREAK，所以这里也把原 reply 清空
+        self._cancel_original_reply(e_context, context, reply)
+
+    def _cancel_original_reply(self, e_context, context, reply):
         try:
             reply.content = ""
         except Exception:
@@ -90,6 +116,16 @@ class SplitReply(Plugin):
             pass
 
         e_context.action = EventAction.BREAK
+
+    def _event_value(self, e_context, key, default=None):
+        try:
+            return e_context[key]
+        except Exception:
+            pass
+        try:
+            return e_context.get(key, default)
+        except Exception:
+            return default
 
     def _enabled(self):
         return os.getenv("SPLIT_REPLY_ENABLED", "true").strip().lower() in (

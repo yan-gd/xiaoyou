@@ -1,18 +1,19 @@
 # -*- coding:utf-8 -*-
 import os
-import requests
+from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.model_gateway import chat_completion
 
 import plugins
 from plugins import *
 from bridge.reply import Reply, ReplyType
 from common.log import logger
-from plugins.xiaoyou_common.time_context import build_time_context
+from plugins.xiaoyou_common.context_service import build_character_context
 
 
 @plugins.register(
     name="PatPatReply",
     desc="Use LLM to naturally reply to real WeChat patpat events",
-    version="0.2-clean",
+    version="0.5-trace-runtime",
     author="yoyo",
     desire_priority=9999,
 )
@@ -39,6 +40,7 @@ class PatPatReply(Plugin):
             return
 
         logger.info("[PatPatReply] real patpat detected text=%r", text[:120])
+        self._record_short_memory(context)
 
         reply = self._ask_llm(text)
         if reply:
@@ -53,12 +55,8 @@ class PatPatReply(Plugin):
         if not api_key:
             return ""
 
-        base = (os.getenv("OPEN_AI_API_BASE") or "https://dashscope.aliyuncs.com/compatible-mode/v1").rstrip("/")
         model = os.getenv("PATPAT_REPLY_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
-        character_desc = os.getenv("CHARACTER_DESC", "").strip()
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in character_desc:
-            character_desc = (character_desc + "\n\n" + _xiaoyou_time_context).strip()
+        character_desc = build_character_context()
 
         prompt = f"""你要替小悠回复一个微信“拍一拍”。
 
@@ -85,26 +83,33 @@ YoYo 刚刚在微信里拍了拍小悠。
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.85,
             "max_tokens": 260,
-            "enable_thinking": False,
+            **build_thinking_payload("PATPAT_REPLY"),
         }
 
-        headers = {
-            "Authorization": "Bearer " + api_key,
-            "Content-Type": "application/json",
-        }
-
-        try:
-            r = requests.post(base + "/chat/completions", headers=headers, json=payload, timeout=45)
-
-            if r.status_code >= 400 and "enable_thinking" in r.text:
-                payload.pop("enable_thinking", None)
-                r = requests.post(base + "/chat/completions", headers=headers, json=payload, timeout=45)
-
-            if r.status_code >= 400:
-                logger.warning("[PatPatReply] llm error %s: %s", r.status_code, r.text[:500])
-                return ""
-
-            return r.json()["choices"][0]["message"]["content"].strip()[:500]
-        except Exception:
-            logger.exception("[PatPatReply] llm failed")
+        result = chat_completion(
+            component="PatPatReply",
+            purpose="reply",
+            payload=payload,
+            timeout=45,
+            api_key=api_key,
+        )
+        if not result.ok:
             return ""
+        return result.content.strip()[:500]
+
+    def _record_short_memory(self, context):
+        try:
+            kwargs = getattr(context, "kwargs", {}) or {}
+            session_id = kwargs.get("session_id") or kwargs.get("receiver")
+            if not session_id:
+                return
+
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            short_memory = instances.get("SHORTMEMORY")
+            record = getattr(short_memory, "append_external_user_message", None)
+
+            if callable(record):
+                record(session_id, "[YoYo 拍了拍小悠]", source="patpat_reply")
+        except Exception:
+            logger.exception("[PatPatReply] failed to record patpat in ShortMemory")

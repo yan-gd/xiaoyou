@@ -2,6 +2,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from asyncio import CancelledError
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -13,6 +14,10 @@ from common.log import logger
 from common import memory
 from config import conf
 from plugins import *
+from plugins.xiaoyou_common.trace_service import (
+    activate_context_trace,
+    trace_event,
+)
 
 try:
     from voice.audio_convert import any_to_wav
@@ -29,6 +34,9 @@ class ChatChannel(Channel):
     futures = {}  # 记录每个session_id提交到线程池的future对象, 用于重置会话时把没执行的future取消掉，正在执行的不会被取消
     sessions = {}  # 用于控制并发，每个session_id同时只能有一个context在处理
     lock = threading.Lock()  # 用于控制对sessions的访问
+    input_batches = {}  # 同一会话在短时间内连续发来的文字
+    input_batch_workers = set()
+    input_versions = {}  # 每收到一条新输入就递增，用于废弃正在生成的旧回复
 
     def __init__(self):
         _thread = threading.Thread(target=self.consume)
@@ -167,15 +175,51 @@ class ChatChannel(Channel):
     def _handle(self, context: Context):
         if context is None or not context.content:
             return
+        trace_link = (
+            activate_context_trace(context)
+            if context.get("xiaoyou_trace_id")
+            else None
+        )
         logger.debug("[chat_channel] ready to handle context: {}".format(context))
         # reply的构建步骤
         reply = self._generate_reply(context)
+
+        # 模型思考期间如果又收到同一会话的新消息，旧结果不能再发送。
+        if not self.is_context_current(context):
+            if trace_link:
+                trace_event(
+                    "input_stale",
+                    status="before_decorate",
+                    link=trace_link,
+                    attrs={"reason": "newer_input"},
+                )
+            logger.info(
+                "[ChatChannel] stale reply discarded before decorate session=%s version=%s",
+                context.get("session_id"),
+                context.get("xiaoyou_input_version"),
+            )
+            return
 
         logger.debug("[chat_channel] ready to decorate reply: {}".format(reply))
 
         # reply的包装步骤
         if reply and reply.content:
             reply = self._decorate_reply(context, reply)
+
+            if not self.is_context_current(context):
+                if trace_link:
+                    trace_event(
+                        "input_stale",
+                        status="after_decorate",
+                        link=trace_link,
+                        attrs={"reason": "newer_input"},
+                    )
+                logger.info(
+                    "[ChatChannel] stale reply discarded after decorate session=%s version=%s",
+                    context.get("session_id"),
+                    context.get("xiaoyou_input_version"),
+                )
+                return
 
             # reply的发送步骤
             self._send_reply(context, reply)
@@ -275,6 +319,10 @@ class ChatChannel(Channel):
 
     def _send_reply(self, context: Context, reply: Reply):
         if reply and reply.type:
+            if not self.is_context_current(context):
+                logger.info("[ChatChannel] stale reply cancelled before send event")
+                return
+
             e_context = PluginManager().emit_event(
                 EventContext(
                     Event.ON_SEND_REPLY,
@@ -282,6 +330,11 @@ class ChatChannel(Channel):
                 )
             )
             reply = e_context["reply"]
+
+            if not self.is_context_current(context):
+                logger.info("[ChatChannel] stale reply cancelled after send event")
+                return
+
             # SplitReply / plugins may cancel original sending here
             _plugin_action = getattr(e_context, "action", None)
             if getattr(_plugin_action, "name", "") == "BREAK" or str(_plugin_action).endswith("BREAK"):
@@ -296,19 +349,54 @@ class ChatChannel(Channel):
                 pass
             if not e_context.is_pass() and reply and reply.type:
                 logger.debug("[chat_channel] ready to send reply: {}, context: {}".format(reply, context))
-                self._send(reply, context)
+                _trace_link = (
+                    activate_context_trace(context)
+                    if context.get("xiaoyou_trace_id")
+                    else None
+                )
+                _action_id = uuid.uuid4().hex[:16]
+                if _trace_link:
+                    trace_event(
+                        "outbound_started",
+                        status="started",
+                        link=_trace_link,
+                        action_id=_action_id,
+                        attrs={"source": "chat_channel", "requested_parts": 1},
+                    )
+                _send_ok = self._send(reply, context)
+                if _trace_link:
+                    _kwargs = getattr(context, "kwargs", {}) or {}
+                    trace_event(
+                        "outbound_completed",
+                        status="ok" if _send_ok else "failed",
+                        link=_trace_link,
+                        action_id=_action_id,
+                        memory_record_id=_kwargs.get("xiaoyou_memory_record_id", ""),
+                        attrs={
+                            "source": "chat_channel",
+                            "ok": bool(_send_ok),
+                            "delivered": bool(_send_ok),
+                            "requested_parts": 1,
+                            "sent_parts": 1 if _send_ok else 0,
+                            "memory_recorded": bool(
+                                _kwargs.get("xiaoyou_memory_record_id")
+                            ),
+                        },
+                    )
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
         try:
             self.send(reply, context)
+            return True
         except Exception as e:
             logger.error("[chat_channel] sendMsg error: {}".format(str(e)))
             if isinstance(e, NotImplementedError):
-                return
+                return False
             logger.exception(e)
             if retry_cnt < 2:
                 time.sleep(3 + 3 * retry_cnt)
-                self._send(reply, context, retry_cnt + 1)
+                return self._send(reply, context, retry_cnt + 1)
+            return False
 
     def _success_callback(self, session_id, **kwargs):  # 线程正常结束时的回调函数
         logger.debug("Worker return success, session_id = {}".format(session_id))
@@ -335,16 +423,208 @@ class ChatChannel(Channel):
 
     def produce(self, context: Context):
         session_id = context["session_id"]
+        start_batch_worker = False
+
         with self.lock:
-            if session_id not in self.sessions:
-                self.sessions[session_id] = [
-                    Dequeue(),
-                    threading.BoundedSemaphore(conf().get("concurrency_in_session", 4)),
-                ]
-            if context.type == ContextType.TEXT and context.content.startswith("#"):
-                self.sessions[session_id][0].putleft(context)  # 优先处理管理命令
+            if self._is_versioned_input(context):
+                version = int(self.input_versions.get(session_id, 0)) + 1
+                self.input_versions[session_id] = version
+                self._set_context_input_metadata(context, version=version)
+                if context.get("xiaoyou_trace_id"):
+                    trace_event(
+                        "input_versioned",
+                        status="queued",
+                        link=activate_context_trace(context),
+                        attrs={"input_version": version},
+                    )
+
+            if self._should_merge_input(context):
+                now = time.monotonic()
+                batch = self.input_batches.get(session_id)
+
+                if not batch:
+                    batch = {
+                        "contexts": [],
+                        "first_ts": now,
+                        "last_ts": now,
+                        "version": context.get("xiaoyou_input_version"),
+                        "force_flush": False,
+                    }
+
+                batch["contexts"].append(context)
+                batch["last_ts"] = now
+                batch["version"] = context.get("xiaoyou_input_version")
+
+                max_messages = max(1, int(os.getenv("XIAOYOU_INPUT_MAX_MESSAGES", "8")))
+                max_chars = max(1, int(os.getenv("XIAOYOU_INPUT_MAX_CHARS", "2400")))
+                total_chars = sum(
+                    len(str(item.content or ""))
+                    for item in batch["contexts"]
+                )
+                if len(batch["contexts"]) >= max_messages or total_chars >= max_chars:
+                    batch["force_flush"] = True
+
+                self.input_batches[session_id] = batch
+
+                if session_id not in self.input_batch_workers:
+                    self.input_batch_workers.add(session_id)
+                    start_batch_worker = True
             else:
-                self.sessions[session_id][0].put(context)
+                self._enqueue_context_locked(context)
+
+        if start_batch_worker:
+            worker = threading.Thread(
+                target=self._flush_input_batch_after_quiet,
+                args=(session_id,),
+                daemon=True,
+                name="InputMerge-%s" % str(session_id)[-8:],
+            )
+            worker.start()
+
+    def _enqueue_context_locked(self, context):
+        session_id = context["session_id"]
+        if session_id not in self.sessions:
+            self.sessions[session_id] = [
+                Dequeue(),
+                threading.BoundedSemaphore(conf().get("concurrency_in_session", 4)),
+            ]
+        if context.type == ContextType.TEXT and context.content.startswith("#"):
+            self.sessions[session_id][0].putleft(context)
+        else:
+            self.sessions[session_id][0].put(context)
+
+    def _flush_input_batch_after_quiet(self, session_id):
+        try:
+            settle_seconds = self._input_settle_seconds()
+
+            while True:
+                with self.lock:
+                    batch = self.input_batches.get(session_id)
+                    if not batch:
+                        self.input_batch_workers.discard(session_id)
+                        return
+
+                    remaining = settle_seconds - (time.monotonic() - float(batch["last_ts"]))
+                    force_flush = bool(batch.get("force_flush"))
+
+                    if force_flush or remaining <= 0:
+                        batch = self.input_batches.pop(session_id)
+                        self.input_batch_workers.discard(session_id)
+                        merged = self._merge_input_contexts(batch)
+                        self._enqueue_context_locked(merged)
+                        return
+
+                time.sleep(max(0.05, min(remaining, 0.25)))
+        except Exception:
+            logger.exception("[ChatChannel] input merge worker failed session=%s", session_id)
+            with self.lock:
+                batch = self.input_batches.pop(session_id, None)
+                self.input_batch_workers.discard(session_id)
+                if batch and batch.get("contexts"):
+                    # 合流异常时原消息仍全部入队，不能静默丢失。
+                    for context in batch["contexts"]:
+                        self._enqueue_context_locked(context)
+
+    def _merge_input_contexts(self, batch):
+        contexts = list(batch.get("contexts") or [])
+        if not contexts:
+            raise ValueError("empty input batch")
+
+        messages = [
+            str(context.content or "").strip()
+            for context in contexts
+            if str(context.content or "").strip()
+        ]
+        if not messages:
+            raise ValueError("empty input messages")
+
+        # 使用最后一条消息的微信元数据作为回复目标，同时保留完整发送顺序。
+        context = contexts[-1]
+        context.content = "\n".join(messages)
+        self._set_context_input_metadata(
+            context,
+            version=batch.get("version"),
+            messages=messages,
+            first_ts=batch.get("first_ts"),
+        )
+        if context.get("xiaoyou_trace_id"):
+            trace_event(
+                "input_merged",
+                status="ready",
+                link=activate_context_trace(context),
+                attrs={
+                    "input_version": batch.get("version"),
+                    "batch_size": len(messages),
+                },
+            )
+
+        if len(messages) > 1:
+            logger.info(
+                "[ChatChannel] merged consecutive input session=%s messages=%s chars=%s version=%s",
+                context.get("session_id"),
+                len(messages),
+                len(context.content),
+                context.get("xiaoyou_input_version"),
+            )
+
+        return context
+
+    def _set_context_input_metadata(self, context, version=None, messages=None, first_ts=None):
+        kwargs = getattr(context, "kwargs", {}) or {}
+
+        if version is not None:
+            kwargs["xiaoyou_input_version"] = int(version)
+        if messages is not None:
+            kwargs["xiaoyou_input_messages"] = list(messages)
+            kwargs["xiaoyou_input_batch_size"] = len(messages)
+        if first_ts is not None:
+            kwargs["xiaoyou_input_batch_first_ts"] = float(first_ts)
+
+        context.kwargs = kwargs
+
+    def _is_versioned_input(self, context):
+        if context is None or context.get("isgroup", False):
+            return False
+        return context.type in (ContextType.TEXT, ContextType.IMAGE, ContextType.VOICE)
+
+    def _should_merge_input(self, context):
+        enabled = os.getenv("XIAOYOU_INPUT_MERGE_ENABLED", "true").strip().lower()
+        if enabled not in ("1", "true", "yes", "on"):
+            return False
+        if context is None or context.get("isgroup", False):
+            return False
+        if context.type != ContextType.TEXT:
+            return False
+        text = str(context.content or "").strip()
+        if not text or text.startswith("#"):
+            return False
+        return True
+
+    def _input_settle_seconds(self):
+        try:
+            value = float(os.getenv("XIAOYOU_INPUT_SETTLE_SECONDS", "2.5"))
+        except Exception:
+            value = 2.5
+        return max(0.1, min(value, 10.0))
+
+    def is_context_current(self, context):
+        """供最终发送链及发送插件判断生成结果是否仍属于最新输入。"""
+        if context is None:
+            return True
+
+        session_id = context.get("session_id")
+        version = context.get("xiaoyou_input_version")
+
+        if not session_id or version is None:
+            return True
+
+        with self.lock:
+            latest = int(self.input_versions.get(session_id, version))
+
+        try:
+            return int(version) >= latest
+        except Exception:
+            return True
 
     # 消费者函数，单独线程，用于从消息队列中取出消息并处理
     def consume(self):
@@ -376,6 +656,8 @@ class ChatChannel(Channel):
     # 取消session_id对应的所有任务，只能取消排队的消息和已提交线程池但未执行的任务
     def cancel_session(self, session_id):
         with self.lock:
+            self.input_batches.pop(session_id, None)
+            self.input_versions[session_id] = int(self.input_versions.get(session_id, 0)) + 1
             if session_id in self.sessions:
                 for future in self.futures[session_id]:
                     future.cancel()
@@ -386,6 +668,9 @@ class ChatChannel(Channel):
 
     def cancel_all_session(self):
         with self.lock:
+            self.input_batches.clear()
+            for session_id in list(self.input_versions.keys()):
+                self.input_versions[session_id] = int(self.input_versions.get(session_id, 0)) + 1
             for session_id in self.sessions:
                 for future in self.futures[session_id]:
                     future.cancel()

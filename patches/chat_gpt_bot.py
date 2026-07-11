@@ -128,15 +128,39 @@ class ChatGPTBot(Bot, OpenAIImage):
             # if api_key == None, the default openai.api_key will be used
             if args is None:
                 args = self.args
-            # Qwen hybrid-thinking switch for DashScope/Bailian
+            # Qwen hybrid-thinking switch for DashScope/Bailian.
+            # 是否开启 thinking 完全由环境变量控制。
             import os
             model_name = str(args.get("model", ""))
             if model_name.startswith(("qwen3.7", "qwen3.6", "qwen3.5", "qwen3-vl")):
-                _think = os.getenv("ENABLE_THINKING", "false").strip().lower()
+                _think = os.getenv(
+                    "XIAOYOU_CHAT_ENABLE_THINKING",
+                    os.getenv(
+                        "XIAOYOU_ENABLE_THINKING",
+                        os.getenv("ENABLE_THINKING", "false")
+                    )
+                ).strip().lower()
+
                 if _think in ("0", "false", "no", "off"):
                     args["enable_thinking"] = False
+                    args.pop("thinking_budget", None)
+
                 elif _think in ("1", "true", "yes", "on"):
                     args["enable_thinking"] = True
+
+                    _budget = os.getenv(
+                        "XIAOYOU_CHAT_THINKING_BUDGET",
+                        os.getenv(
+                            "XIAOYOU_THINKING_BUDGET",
+                            os.getenv("THINKING_BUDGET", "")
+                        )
+                    ).strip()
+
+                    if _budget:
+                        try:
+                            args["thinking_budget"] = int(_budget)
+                        except Exception:
+                            pass
             response = openai.ChatCompletion.create(api_key=api_key, messages=session.messages, **args)
             # logger.debug("[CHATGPT] response={}".format(response))
             # logger.info("[ChatGPT] reply={}, total_tokens={}".format(response.choices[0]['message']['content'], response["usage"]["total_tokens"]))

@@ -1,5 +1,13 @@
 {
     "plugins": {
+        "XiaoyouIdentity": {
+            "enabled": true,
+            "priority": 10000
+        },
+        "ConversationFollowup": {
+            "enabled": true,
+            "priority": 9998
+        },
         "PatPatReply": {
             "enabled": true,
             "priority": 9999
@@ -26,7 +34,11 @@
         },
         "ShortMemory": {
             "enabled": true,
-            "priority": 15
+            "priority": 40
+        },
+        "XiaoyouLifePhoto": {
+            "enabled": true,
+            "priority": 31
         },
         "ProactiveLove": {
             "enabled": true,
