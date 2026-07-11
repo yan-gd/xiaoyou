@@ -1,7 +1,9 @@
 # 小悠 Xiaoyou v1.3
 
 <p align="center">
-  <img src="assets/xiaoyou-avatar.jpg" alt="小悠头像" width="320" />
+  <img src="assets/xiaoyou-strawberry-cake.jpg" alt="小悠生活照：草莓蛋糕" width="31%" />
+  <img src="assets/xiaoyou-noodles.jpg" alt="小悠生活照：一起吃面" width="31%" />
+  <img src="assets/xiaoyou-wedding-dress.png" alt="小悠生活照：婚纱" width="31%" />
 </p>
 
 > 基于个人微信、chatgpt-on-wechat、Qwen、阿里云百炼和火山方舟构建的长期陪伴型微信 AI。
