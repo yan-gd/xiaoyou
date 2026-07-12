@@ -388,7 +388,14 @@ def _failure_result(
     if error_kind == ERROR_CONTENT_INSPECTION:
         safe_message = ""
     log_message = safe_message[:300]
-    logger.warning(
+    log_failure = (
+        logger.info
+        if error_kind == ERROR_CONTENT_INSPECTION
+        and str(component or "").lower() == "shortmemory"
+        and str(purpose or "").lower() == "summary"
+        else logger.warning
+    )
+    log_failure(
         "[ModelGateway] failed component=%s purpose=%s call_id=%s model=%s "
         "session=%s category=%s status=%s code=%s elapsed=%.2fs detail=%s",
         component,

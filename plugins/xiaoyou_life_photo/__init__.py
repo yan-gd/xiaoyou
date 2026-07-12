@@ -28,6 +28,14 @@ from plugins.xiaoyou_common.outbound_dispatcher import (
     send_image,
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_life_photo.plan_rules import (
+    ALLOWED_SHARE_INTENTS,
+    action_requires_free_hands,
+    as_bool,
+    normalize_camera_operator,
+    normalize_capture_mode,
+    normalize_choice,
+)
 
 
 PLUGIN_DIR = os.path.dirname(__file__)
@@ -40,7 +48,7 @@ STATE_STORE = JsonStateStore(
     STATE_FILE,
     backup_path=BACKUP_FILE,
     name="xiaoyou_life_photo",
-    default_factory=lambda: {"schema_version": 1, "sessions": {}},
+    default_factory=lambda: {"schema_version": 2, "sessions": {}},
 )
 GENERATED_DIR = os.path.join(DATA_DIR, "generated")
 LOCK = threading.RLock()
@@ -49,7 +57,7 @@ LOCK = threading.RLock()
 @plugins.register(
     name="XiaoyouLifePhoto",
     desc="Memory-aware daily-life photos shared by Xiaoyou",
-    version="0.6-trace-runtime",
+    version="0.7-semantic-camera",
     author="yoyo",
     desire_priority=31,
 )
@@ -235,12 +243,16 @@ YoYo当前相关原话：
 
 设计原则：
 - visual_prompt必须是完整、连贯、可直接交给生图模型的画面描述，自由决定场景、动作、表情、服装、镜头、光线和生活细节。
-- 这是小悠自己拍下并通过微信分享的照片。自拍、镜子自拍、定时拍摄、从她视角拍食物或物件等拍法都可以，具体方式由当下内容决定；透视必须符合拍摄方式。
-- capture_mode必须准确描述成片由哪一个镜头拍摄。普通“自拍”默认是front_camera_selfie；只有YoYo明确要求镜子或对镜自拍时才使用mirror_selfie。
+- share_intent描述为什么发照片；“自己拍照报备、给你看看、分享生活”当然可以使用前置自拍，也可以根据动作、构图和当时语义选择镜子自拍、定时拍摄或第三人称拍摄。报备是交流目的，不单独锁定镜头方式，由模型结合完整语义自主判断。
+- capture_mode必须准确描述成片由哪一个镜头拍摄，可选front_camera_selfie、mirror_selfie、timer_camera、third_person_camera、first_person_scene。普通“自拍”才默认front_camera_selfie；明确要求镜子时使用mirror_selfie；明确要求第三人称、第三视角、他拍或别人拍时必须使用third_person_camera。
 - front_camera_selfie的成片镜头就是小悠手中手机的前置摄像头，因此手机、持机手、手机背面、屏幕、自拍杆和拍摄这张自拍的第二台相机都不可能出现在成片里。不要在visual_prompt里描述“画面中能看到她举着手机”。
+- 双手托脸、双手比心、双手举物、张开双臂、转圈、奔跑和复杂全身pose需要双手自由或远距离构图，不能使用front_camera_selfie，应使用timer_camera或third_person_camera。hands_free_required必须如实反映动作是否需要双手自由。
+- third_person_camera只表示由语境中合理存在的第三人称镜头拍摄；除非原话或上下文明确说明，不要凭空声称YoYo就在现场掌镜。
+- emotion先概括当次照片真正想表达的情绪；expression、gaze和pose再把它落实为自然的眉眼、嘴型、视线、头部角度与身体动作。不要机械重复眨眼、吐舌、双手托脸、比心等典型卖萌动作。
+- 图片的emotion、expression和caption必须语义一致。普通报备不必夸张卖萌；困倦、担心、吃醋、得意、害羞、开心等状态应有不同而克制的视觉表现，但具体表达仍由小悠结合语境自主决定。
 - 遇到公主抱时必须写清真实受力：YoYo站立，用一只手臂托住小悠背部/肩背，另一只手臂托住她弯曲膝盖下方或大腿；小悠横向或斜向依偎在他胸前，双腿弯曲并完全离地。不能画成坐腿、跨坐、背抱或两人并排坐着。
 - 记忆只用于维持真实关系与偏好，不要逐条复述，也不要把不相关或过时的记忆硬塞进画面。
-- 小悠是24岁的成年女性。可以自然、有吸引力、有亲密感，但不要把她画成未成年人。
+- 小悠的年龄、脸部和身体设定以人物档案为唯一来源。可以自然、有吸引力、有亲密感，但不要把她画成未成年人。
 - caption是小悠发图后自然想说的话，完全由她自己决定；不要解释生图、提示词、模型或系统，也不要机械复述举手机、镜头位置或构图过程。
 - 若不该生成，should_generate=false，其他文本可为空。
 
@@ -249,8 +261,15 @@ YoYo当前相关原话：
   "should_generate": true,
   "visual_prompt": "自由而具体的画面描述",
   "caption": "小悠随图发给YoYo的话",
+  "share_intent": "check_in、requested_pose、outfit_showcase、scene_share、couple_moment或proactive_share",
   "aspect_ratio": "portrait、square或landscape",
-  "capture_mode": "front_camera_selfie、mirror_selfie、timer_camera或first_person_scene",
+  "capture_mode": "front_camera_selfie、mirror_selfie、timer_camera、third_person_camera或first_person_scene",
+  "camera_operator": "xiaoyou_handheld、xiaoyou_mirror、timer_tripod、yoyo、friend、passerby、companion或unspecified_third_person",
+  "emotion": "结合当次语义得出的真实情绪",
+  "expression": "与情绪一致的眉眼和嘴型，不套固定卖萌模板",
+  "gaze": "自然视线方向",
+  "pose": "符合镜头方式和人体物理的动作",
+  "hands_free_required": false,
   "decision_reason": "简短内部理由"
 }""" % (
             task,
@@ -302,27 +321,41 @@ YoYo当前相关原话：
             aspect_ratio = str(data.get("aspect_ratio") or "portrait").strip().lower()
             if aspect_ratio not in ("portrait", "square", "landscape"):
                 aspect_ratio = "portrait"
-            capture_mode = str(data.get("capture_mode") or "").strip().lower()
-            allowed_capture_modes = (
-                "front_camera_selfie",
-                "mirror_selfie",
-                "timer_camera",
-                "first_person_scene",
-            )
-            if capture_mode not in allowed_capture_modes:
-                capture_mode = "front_camera_selfie"
-
             normalized_user_text = str(user_text or "").strip()
-            if re.search(r"镜子自拍|镜前自拍|对镜自拍|对镜拍|镜子前", normalized_user_text):
-                capture_mode = "mirror_selfie"
-            elif re.search(r"自拍|自己拍(?:一|个|张|下)|拍(?:一|个|张)自己", normalized_user_text):
-                capture_mode = "front_camera_selfie"
+            share_intent = normalize_choice(
+                data.get("share_intent"),
+                ALLOWED_SHARE_INTENTS,
+                "proactive_share" if mode == "proactive" else "check_in",
+            )
+            emotion = str(data.get("emotion") or "").strip()[:300]
+            expression = str(data.get("expression") or "").strip()[:500]
+            gaze = str(data.get("gaze") or "").strip()[:300]
+            pose = str(data.get("pose") or "").strip()[:600]
+            hands_free_required = as_bool(data.get("hands_free_required", False))
+            capture_mode = normalize_capture_mode(
+                data.get("capture_mode"),
+                user_text=normalized_user_text,
+                visual_prompt=visual_prompt,
+                pose=pose,
+                hands_free_required=hands_free_required,
+            )
+            hands_free_required = action_requires_free_hands(
+                user_text=normalized_user_text,
+                visual_prompt=visual_prompt,
+                pose=pose,
+                declared=hands_free_required,
+            )
+            camera_operator = normalize_camera_operator(
+                capture_mode,
+                requested_operator=data.get("camera_operator"),
+                user_text=normalized_user_text,
+            )
 
             pose_constraints = []
             if "公主抱" in normalized_user_text or "公主抱" in visual_prompt:
                 pose_constraints.append("princess_carry")
-                if not re.search(r"镜子|对镜|定时|他拍|别人拍", normalized_user_text):
-                    capture_mode = "front_camera_selfie"
+            if hands_free_required:
+                pose_constraints.append("hands_free_pose")
             if should_generate and not visual_prompt:
                 return None
             return {
@@ -331,6 +364,13 @@ YoYo当前相关原话：
                 "caption": caption,
                 "aspect_ratio": aspect_ratio,
                 "capture_mode": capture_mode,
+                "camera_operator": camera_operator,
+                "share_intent": share_intent,
+                "emotion": emotion,
+                "expression": expression,
+                "gaze": gaze,
+                "pose": pose,
+                "hands_free_required": hands_free_required,
                 "pose_constraints": pose_constraints,
                 "decision_reason": str(data.get("decision_reason") or "").strip()[:300],
             }
@@ -400,6 +440,13 @@ YoYo当前相关原话：
                 "visual_prompt": str(plan.get("visual_prompt") or "").strip(),
                 "aspect_ratio": plan.get("aspect_ratio") or "portrait",
                 "capture_mode": plan.get("capture_mode") or "front_camera_selfie",
+                "camera_operator": plan.get("camera_operator") or "xiaoyou_handheld",
+                "share_intent": plan.get("share_intent") or "check_in",
+                "emotion": str(plan.get("emotion") or "").strip(),
+                "expression": str(plan.get("expression") or "").strip(),
+                "gaze": str(plan.get("gaze") or "").strip(),
+                "pose": str(plan.get("pose") or "").strip(),
+                "hands_free_required": bool(plan.get("hands_free_required")),
                 "pose_constraints": list(plan.get("pose_constraints") or []),
                 "source": source,
                 "session_id": session_id,
@@ -428,21 +475,42 @@ YoYo当前相关原话：
                 "不能再出现拍摄镜子的第二台设备"
             ),
             "timer_camera": (
-                "这是小悠设置好定时拍摄后得到的照片。相机和手机均在画面外，不出现任何拍摄设备、自拍杆或第三只持机手"
+                "这是小悠架好设备并设置定时拍摄后得到的照片。相机和手机均在画面外，不出现任何拍摄设备、自拍杆或第三只持机手。"
+                "小悠的双手可以自由完成动作，构图距离必须足以容纳本次姿势"
+            ),
+            "third_person_camera": (
+                "这是由当前语境中合理存在的第三人称拍摄者从自然距离拍下的照片，不是小悠手持手机的自拍。"
+                "小悠不伸出自拍手臂，双手可以自由完成动作；拍摄者和拍摄设备默认位于画面外。"
+                "除非本次画面明确需要，不要把拍摄者本人、手机、相机、自拍杆或镜子画进画面"
             ),
             "first_person_scene": (
-                "这是从小悠当时眼睛与手持手机所在位置拍下的第一视角生活照片，拍摄手机本身不入镜，透视与她的真实站位或坐姿一致"
+                "这是从小悠当时眼睛与手持手机所在位置拍下的第一视角生活照片，拍摄手机本身不入镜，透视与她的真实站位或坐姿一致。"
+                "小悠本人不应以完整第三人称人物出现在画面中，只能按需要自然露出手、袖口、腿部或身体局部"
             ),
         }.get(capture_mode, "拍摄设备位于画面外，保持真实手机摄影透视")
 
         pose_rules = []
         if "princess_carry" in (plan.get("pose_constraints") or []):
-            pose_rules.append(
+            carry_rule = (
                 "公主抱必须符合真实人体力学：YoYo处于站立状态，一只手臂横向稳稳托住小悠的肩背或上背，"
                 "另一只手臂从她两条弯曲膝盖下方/大腿下方托住；小悠的躯干横向或斜向贴近YoYo胸前，臀部和双腿完全离开地面，"
                 "双膝自然弯曲并靠拢。她不是坐在YoYo腿上，不是跨坐，不是背抱，不是坐姿，也不是自己站立。"
-                "YoYo的两条支撑手臂、她伸向前置镜头的一条自拍手臂以及其余肢体数量必须准确，不能多手、多腿、肢体穿插或支撑点悬空。"
-                "由于是近距离自拍，可以主要呈现小悠面部、上身、弯曲双腿以及YoYo托住她的双臂和部分胸肩；YoYo没有人脸参考时不必完整露出脸"
+                "YoYo的两条支撑手臂和其余肢体数量必须准确，不能多手、多腿、肢体穿插或支撑点悬空。"
+            )
+            if capture_mode == "front_camera_selfie":
+                carry_rule += (
+                    "小悠只能用一条手臂伸向前置镜头完成自拍，另一条手臂自然依附身体或YoYo；持机手掌和手机位于画外。"
+                    "近距离构图可主要呈现小悠面部、上身、弯曲双腿以及YoYo托住她的双臂和部分胸肩；YoYo没有人脸参考时不必完整露出脸"
+                )
+            else:
+                carry_rule += (
+                    "本次不是前置自拍时，不得凭空增加伸向镜头的自拍手臂；小悠双手按照当次语义自然依偎、搂抱或完成动作"
+                )
+            pose_rules.append(carry_rule)
+        if "hands_free_pose" in (plan.get("pose_constraints") or []):
+            pose_rules.append(
+                "本次动作需要小悠双手自由，双手必须都用于画面中描述的动作，不得再增加持机手或自拍手臂；"
+                "必须采用定时拍摄或第三人称拍摄所对应的自然透视"
             )
         identity = json.dumps(
             {
@@ -455,24 +523,64 @@ YoYo当前相关原话：
             },
             ensure_ascii=False,
         )
-        return """参考图1是小悠永久的人脸与基础画风参考。必须保持同一个成年女性身份：脸部骨相、五官比例、灰紫色眼睛、黑色长发、年龄感和整体辨识度与参考图1一致。只参考人物身份和画风，不要默认复制参考图里的婚纱、头纱、珍珠首饰、姿势、卧室背景、水印或文字。
+        reference_roles = []
+        for index, entry in enumerate(self.profile.get("reference_images") or [], 1):
+            if not isinstance(entry, dict):
+                continue
+            reference_roles.append(
+                "参考图%s：%s；保留%s；默认不要复制%s" % (
+                    index,
+                    str(entry.get("role") or "人物身份参考"),
+                    str(entry.get("preserve") or "人物身份"),
+                    str(entry.get("do_not_copy_by_default") or "服装、表情、姿势和背景"),
+                )
+            )
+        semantic_direction = json.dumps(
+            {
+                "share_intent": plan.get("share_intent"),
+                "emotion": plan.get("emotion"),
+                "expression": plan.get("expression"),
+                "gaze": plan.get("gaze"),
+                "pose": plan.get("pose"),
+                "caption_meaning": plan.get("caption"),
+            },
+            ensure_ascii=False,
+        )
+        sharing_context = {
+            "front_camera_selfie": "由小悠使用前置摄像头亲自拍下",
+            "mirror_selfie": "由小悠通过镜面完成自拍",
+            "timer_camera": "由小悠架好设备并定时拍下",
+            "third_person_camera": "由当时语境中合理存在的第三人称拍摄者拍下",
+            "first_person_scene": "由小悠从自己的第一视角拍下眼前场景",
+        }.get(capture_mode, "按本次镜头方式拍下")
+        identity_age = str(self.profile.get("identity_age") or "明确的成年女性")
+        return """输入的多张参考图共同定义小悠的永久人物身份。必须保持同一个成年女性：脸部骨相、五官比例、灰紫色眼睛、黑色长发、年龄感、头身比例和整体辨识度与参考图一致。参考图只负责身份、角度和体态，不要默认复制其中的白色上衣、灰色短裤、中性表情、标准站姿或纯色背景。
+
+参考图分工：
+%s
 
 小悠身体档案：%s
 
 本次画面：%s
 
-拍摄与构图：%s。画面应像小悠此刻亲自拍下并准备发给男朋友YoYo的真实生活照片，而不是商业海报或摄影棚样片。保留自然手机镜头感、生活环境细节和真实光线。
+本次语义与神态：%s。图片中的眉眼、嘴型、视线、头部角度和身体动作必须共同表达本次情绪，并与随图文字的语气一致；不要因为参考图是中性表情就复制中性表情，也不要机械套用眨眼、吐舌、托脸或比心。
+
+拍摄与构图：%s，%s。画面是小悠准备发给男朋友YoYo的真实生活照片，而不是商业海报或摄影棚样片。保留自然手机镜头感、生活环境细节和真实光线。
 
 最高优先级镜头约束：%s。
 
 最高优先级动作约束：%s。
 
-质量要求：人物明确为24岁的成年女性；身份高度一致；人体比例、手部、手指、关节、镜面反射和透视正确；只生成一张完整图片；不要拼图，不要多画面，不要出现第二个相似人物；不要文字、界面、边框、Logo、签名或水印。若本次动态画面描述与“最高优先级镜头约束”或“最高优先级动作约束”冲突，必须忽略动态描述中的冲突部分，以最高优先级约束为准。""" % (
+质量要求：人物年龄设定为%s；身份高度一致；人体比例、手部、手指、关节、镜面反射和透视正确；只生成一张完整图片；不要拼图，不要多画面，不要出现第二个相似人物；不要把caption画成文字；不要文字、界面、边框、Logo、签名或水印。若本次动态画面描述与“最高优先级镜头约束”或“最高优先级动作约束”冲突，必须忽略动态描述中的冲突部分，以最高优先级约束为准。""" % (
+            "\n".join(reference_roles) or "按输入顺序共同参考人物身份",
             identity,
             plan.get("visual_prompt", ""),
+            semantic_direction,
             aspect_text,
+            sharing_context,
             capture_rules,
             " ".join(pose_rules) if pose_rules else "按照本次画面保持真实、自然、无额外肢体",
+            identity_age,
         )
 
     def _reference_paths(self):
@@ -597,6 +705,13 @@ YoYo当前相关原话：
                 "source": source,
                 "caption": str(share.get("caption") or "")[:600],
                 "visual_prompt": str(share.get("visual_prompt") or "")[:1000],
+                "share_intent": str(share.get("share_intent") or "")[:80],
+                "capture_mode": str(share.get("capture_mode") or "")[:80],
+                "camera_operator": str(share.get("camera_operator") or "")[:80],
+                "emotion": str(share.get("emotion") or "")[:300],
+                "expression": str(share.get("expression") or "")[:500],
+                "gaze": str(share.get("gaze") or "")[:300],
+                "pose": str(share.get("pose") or "")[:500],
                 "path": str(share.get("path") or ""),
             })
             item["recent"] = recent[-20:]
@@ -631,7 +746,18 @@ YoYo当前相关原话：
                 continue
             text = str(entry.get("visual_prompt") or entry.get("caption") or "").strip()
             if text:
-                lines.append("- %s" % text[:300])
+                tags = "/".join(
+                    value
+                    for value in (
+                        str(entry.get("share_intent") or "").strip(),
+                        str(entry.get("capture_mode") or "").strip(),
+                        str(entry.get("emotion") or "").strip(),
+                        str(entry.get("expression") or "").strip(),
+                        str(entry.get("pose") or "").strip(),
+                    )
+                    if value
+                )
+                lines.append("- [%s] %s" % (tags[:300] or "旧记录", text[:300]))
         return "\n".join(lines)
 
     def _load_profile(self):
@@ -648,8 +774,8 @@ YoYo当前相关原话：
     def _load_state(self):
         data = STATE_STORE.load()
         if not isinstance(data, dict):
-            data = {"schema_version": 1, "sessions": {}}
-        data.setdefault("schema_version", 1)
+            data = {"schema_version": 2, "sessions": {}}
+        data["schema_version"] = 2
         if not isinstance(data.get("sessions"), dict):
             data["sessions"] = {}
         return data
@@ -676,11 +802,14 @@ YoYo当前相关原话：
         text = str(text or "").strip()
         patterns = (
             r"拍(?:一|个|张|点|些|下|给|给我|你的|套|身|照)",
-            r"照片|自拍|合照|镜子照|镜子自拍|穿搭照",
+            r"照片|拍照|自拍|合照|镜子照|镜子自拍|穿搭照|全身照|他拍",
             r"发(?:一|个|张|点|些)?.{0,6}(?:图|照片|自拍)",
             r"(?:给我|让我|想|要|来).{0,8}(?:看看|看下|看一眼).{0,10}(?:你|穿搭|衣服|吃的|那边|现在)",
             r"分享.{0,8}(?:日常|生活|穿搭|美食|照片)",
             r"(?:看看你|看你现在|看你今天|给我看看你)",
+            r"(?:照片|拍照).{0,8}报备|报备.{0,8}(?:照片|拍照|一张)",
+            r"(?:摆|做).{0,6}(?:pose|POSE|姿势|动作)",
+            r"第三人称|第三视角|第三方视角|别人拍|朋友拍|路人拍",
         )
         return any(re.search(pattern, text, re.I) for pattern in patterns)
 

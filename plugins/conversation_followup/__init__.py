@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ConversationFollowup_v0.7-trace-runtime
+ConversationFollowup_v0.8-soft-presence
 
 小悠 v1.3 聊天中断追问插件。
 
@@ -51,7 +51,7 @@ except Exception:
     desire_priority=9998,
     hidden=False,
     desc="小悠聊天中断后的自然追问",
-    version="0.7-trace-runtime",
+    version="0.8-soft-presence",
     author="YoYo"
 )
 class ConversationFollowup(Plugin):
@@ -67,6 +67,12 @@ class ConversationFollowup(Plugin):
 
         self.max_per_day = self._env_int("CONVERSATION_FOLLOWUP_MAX_PER_DAY", 12)
         self.max_chain = self._env_int("CONVERSATION_FOLLOWUP_MAX_CHAIN", 1)
+        self.soft_fallback_enabled = self._env_bool(
+            "CONVERSATION_FOLLOWUP_SOFT_FALLBACK_ENABLED", True
+        )
+        self.soft_fallback_delay = self._env_int(
+            "CONVERSATION_FOLLOWUP_SOFT_FALLBACK_DELAY_SECONDS", 240
+        )
 
         # 这里只作为模型参考，不做硬拦截
         self.quiet_hours = os.getenv("CONVERSATION_FOLLOWUP_QUIET_HOURS", "02:30-08:00").strip()
@@ -108,7 +114,7 @@ class ConversationFollowup(Plugin):
             t.start()
 
         logger.info(
-            "[ConversationFollowup] ConversationFollowup_v0.7-trace-runtime loaded "
+            "[ConversationFollowup] ConversationFollowup_v0.8-soft-presence loaded "
             f"enabled={self.enabled} "
             f"target_required={self.require_target} "
             f"target_set={bool(self.target_session)} "
@@ -340,6 +346,7 @@ class ConversationFollowup(Plugin):
                 idle_after_user=time.time() - last_user_ts if last_user_ts else 0,
                 recent_image=recent_image,
             )
+            decision, fallback_applied = self._apply_soft_fallback(decision)
 
             with self.lock:
                 s = self._session_state(session_id)
@@ -419,7 +426,9 @@ class ConversationFollowup(Plugin):
                     "trace_id": str(trace_id or "")[:80],
                     "input_id": str(input_id or "")[:80],
                 }
-                s["last_classification"]["status"] = "pending"
+                s["last_classification"]["status"] = (
+                    "pending_soft_fallback" if fallback_applied else "pending"
+                )
                 s["last_classification"]["delay_seconds"] = delay
                 s["last_classification"]["due_ts"] = s["pending"]["due_ts"]
 
@@ -429,7 +438,7 @@ class ConversationFollowup(Plugin):
                     "[ConversationFollowup] pending "
                     f"session={self._mask_session(session_id)} "
                     f"delay={delay}s "
-                    f"source={source} "
+                    f"source={source} fallback={fallback_applied} "
                     f"intent={s['pending'].get('intent', '')[:80]} "
                     f"reason={s['pending'].get('reason', '')[:80]}"
                 )
@@ -659,7 +668,11 @@ class ConversationFollowup(Plugin):
 请判断小悠是否应该在 YoYo 暂时没有继续回复后，再主动发一条消息。
 
 不要套用预设场景或语气分类。请根据完整对话关系、上下文、气氛和当前时间自主判断。
-如果不适合追问，need_followup 必须是 false；模型调用失败时系统也会保持沉默。
+默认把亲密关系中的短暂断聊理解为“稍后可以自然再关心一句”，不要因为小悠上一句已经完整、
+问了问题、让 YoYo 去做某件事，或暂时“轮到对方回复”，就直接判定永远不追问。
+只有出现明确的安静依据时才将 hard_silence 设为 true，例如：YoYo 明确要求别发消息、正在睡觉、
+开会、考试、驾驶，或继续发消息会明显打扰或不安全。普通忙碌、吃饭、洗澡、暂时没回、对话自然
+停顿都不是 hard_silence，仍可在几分钟后轻轻续一句。
 如果适合，请自行决定等待多久，以及届时最自然的表达意图。表达意图使用自由文本，不需要匹配任何标签。
 
 可选延迟范围：{self.min_delay} 到 {self.max_delay} 秒。
@@ -679,6 +692,7 @@ YoYo 在小悠回复前已经停顿约：{int(idle_after_user)} 秒
   "need_followup": true,
   "followup_delay_seconds": 300,
   "followup_intent": "由你根据对话自由决定的表达意图",
+  "hard_silence": false,
   "reason": "..."
 }}
 """.strip()
@@ -713,6 +727,11 @@ YoYo 在小悠回复前已经停顿约：{int(idle_after_user)} 秒
 
         intent = str(data.get("followup_intent", "")).strip()
         reason = str(data.get("reason", "")).strip()
+        hard_silence = data.get("hard_silence", False)
+        if isinstance(hard_silence, str):
+            hard_silence = hard_silence.strip().lower() in ["true", "yes", "1", "y"]
+        else:
+            hard_silence = bool(hard_silence)
 
         need = data.get("need_followup", False)
 
@@ -737,6 +756,7 @@ YoYo 在小悠回复前已经停顿约：{int(idle_after_user)} 秒
             "need_followup": need,
             "followup_delay_seconds": delay,
             "followup_intent": intent[:300],
+            "hard_silence": hard_silence,
             "reason": reason[:300],
         }
 
@@ -745,8 +765,41 @@ YoYo 在小悠回复前已经停顿约：{int(idle_after_user)} 秒
             "need_followup": False,
             "followup_delay_seconds": None,
             "followup_intent": "",
+            "hard_silence": False,
+            # 分类请求失败或结果无效时无法可靠辨认睡眠、会议、驾驶等
+            # 明确静默语境，因此不能套用主动跟进兜底。
+            "allow_soft_fallback": False,
             "reason": str(reason or "")[:300],
         }
+
+    def _apply_soft_fallback(self, decision):
+        """模型没有发现明确打扰依据时，保留一次有上限的自然续聊机会。"""
+        decision = dict(decision or {})
+        if decision.get("need_followup"):
+            return decision, False
+        if (
+            not self.soft_fallback_enabled
+            or decision.get("hard_silence")
+            or decision.get("allow_soft_fallback") is False
+        ):
+            return decision, False
+
+        delay = max(
+            self.min_delay,
+            min(self.max_delay, int(self.soft_fallback_delay or 240)),
+        )
+        original_reason = str(decision.get("reason") or "模型未给出明确理由")[:180]
+        decision.update({
+            "need_followup": True,
+            "followup_delay_seconds": delay,
+            "followup_intent": (
+                "结合最近对话自然续上一句关心、惦记或轻松互动；不要复述上一条，"
+                "不要责怪 YoYo 没有回复"
+            ),
+            "hard_silence": False,
+            "reason": "未发现明确安静依据，启用一次轻量续聊；原判断：" + original_reason,
+        })
+        return decision, True
 
     def _classification_snapshot(self, decision, status):
         return {
@@ -773,7 +826,7 @@ YoYo 在小悠回复前已经停顿约：{int(idle_after_user)} 秒
 你正在以小悠的身份和 YoYo 微信聊天。你刚刚已经发过一条消息，YoYo 暂时没有继续回复。
 
 请完全依据小悠的人设、最近对话、当前时间和你刚才做出的追问判断，自主决定现在最自然的表达。
-不要套用固定句式或预设语气。如果你最终认为此刻不该发送，就不要生成消息。
+不要套用固定句式或预设语气。如果你最终认为此刻确实不该发送，只输出 NO_MESSAGE。
 
 当前时间事实：
 {time_context}
@@ -1173,6 +1226,10 @@ YoYo 已经大约 {idle_seconds} 秒没回。
             return ""
 
         text = text.strip("「」“”\"' ")
+
+        normalized = re.sub(r"[\s_.-]+", "", text).upper()
+        if normalized in ("NOMESSAGE", "NOREPLY", "SILENT", "保持沉默"):
+            return ""
 
         text = re.sub(r"^(小悠[:：]\s*)", "", text)
         text = re.sub(r"^(回复[:：]\s*)", "", text)

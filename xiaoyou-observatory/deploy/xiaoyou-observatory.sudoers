@@ -1,0 +1,9 @@
+# Install as /etc/sudoers.d/xiaoyou-observatory with mode 0440.
+# The service account can execute only the six exact, argument-free controller actions.
+Defaults:xiaoyou-observer !requiretty
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl status
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl stats
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl logs
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl start
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl stop
+xiaoyou-observer ALL=(root) NOPASSWD: /usr/local/sbin/xiaoyou-ctl restart

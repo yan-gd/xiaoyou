@@ -1,0 +1,28 @@
+[Unit]
+Description=Xiaoyou Fatebound Observatory
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=xiaoyou-observer
+Group=xiaoyou-observer
+WorkingDirectory=/opt/xiaoyou-observatory
+EnvironmentFile=/etc/xiaoyou-observatory.env
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStartPre=/usr/bin/sudo -n /usr/local/sbin/xiaoyou-ctl status
+ExecStart=/opt/xiaoyou-observatory/.venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8765 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+UMask=0077
+
+# The service needs setuid sudo for the fixed root-owned helper. The helper and
+# sudoers file are the privilege boundary; sandbox directives that can alter
+# setuid/capability behaviour must not be added to this unit.
+NoNewPrivileges=false
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

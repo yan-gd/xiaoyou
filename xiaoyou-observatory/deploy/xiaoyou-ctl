@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# This file must be owned by root:root and must not be writable by the service user.
+readonly PATH='/usr/sbin:/usr/bin:/sbin:/bin'
+readonly CONTAINER='cow-legacy'
+
+if [[ $# -ne 1 ]]; then
+    echo 'usage: xiaoyou-ctl {status|stats|logs|start|stop|restart}' >&2
+    exit 64
+fi
+
+action="$1"
+
+container_exists() {
+    docker inspect "$CONTAINER" >/dev/null 2>&1
+}
+
+case "$action" in
+    status)
+        if ! container_exists; then
+            printf '%s\n' '{"exists":false,"running":false,"status":"missing","health":"none","started_at":"","finished_at":"","restart_count":0,"image":""}'
+            exit 0
+        fi
+        docker inspect --format '{"exists":true,"running":{{json .State.Running}},"status":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"restart_count":{{json .RestartCount}},"image":{{json .Config.Image}}}' "$CONTAINER"
+        ;;
+    stats)
+        if ! container_exists || [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" != 'true' ]]; then
+            printf '%s\n' '{"cpu_percent":0,"memory_percent":0,"memory_usage":"0B / 0B"}'
+            exit 0
+        fi
+        raw="$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' "$CONTAINER")"
+        IFS='|' read -r cpu memory usage <<<"$raw"
+        cpu="${cpu%%%}"
+        memory="${memory%%%}"
+        [[ "$cpu" =~ ^[0-9]+([.][0-9]+)?$ ]] || cpu='0'
+        [[ "$memory" =~ ^[0-9]+([.][0-9]+)?$ ]] || memory='0'
+        usage="${usage//\\/}"
+        usage="${usage//\"/}"
+        printf '{"cpu_percent":%s,"memory_percent":%s,"memory_usage":"%s"}\n' "$cpu" "$memory" "$usage"
+        ;;
+    logs)
+        if container_exists; then
+            docker logs --tail 900 "$CONTAINER" 2>&1
+        fi
+        ;;
+    start)
+        container_exists || { echo 'cow-legacy container does not exist' >&2; exit 3; }
+        docker start "$CONTAINER" >/dev/null
+        ;;
+    stop)
+        container_exists || { echo 'cow-legacy container does not exist' >&2; exit 3; }
+        docker stop --time 20 "$CONTAINER" >/dev/null
+        ;;
+    restart)
+        container_exists || { echo 'cow-legacy container does not exist' >&2; exit 3; }
+        docker restart --time 20 "$CONTAINER" >/dev/null
+        ;;
+    *)
+        echo 'unsupported action' >&2
+        exit 64
+        ;;
+esac

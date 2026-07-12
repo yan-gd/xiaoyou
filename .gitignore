@@ -45,3 +45,7 @@ plugins/xiaoyou_chat/recovery_state.json.tmp
 plugins/xiaoyou_chat/recovery_state.json.backup
 plugins/xiaoyou_chat/recovery_state.json.backup.tmp
 disabled_plugins/
+
+# local package caches / generated deployment bundles
+/.pnpm-store/
+/xiaoyou-observatory.zip
