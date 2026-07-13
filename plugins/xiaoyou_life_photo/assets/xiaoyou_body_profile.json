@@ -1,7 +1,8 @@
 {
   "schema_version": 2,
   "identity_name": "小悠",
-  "identity_age": "22岁的成年女性",
+  "identity_birth_date": "2004-07-07",
+  "identity_age": "成年女性，当前年龄必须根据2004-07-07和现实日期动态计算",
   "visual_medium": "高精度半写实动漫插画，保留自然手机摄影的生活感、光线与镜头语言",
   "face": {
     "shape": "柔和小巧的鹅蛋脸，下颌线自然，不尖锐",

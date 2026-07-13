@@ -1,221 +1,235 @@
-services:
-  chatgpt-on-wechat:
-    image: cow-legacy-local:vision-no-think
-    container_name: cow-legacy
-    restart: always
-    security_opt:
-      - seccomp:unconfined
-    volumes:
-      - ./plugins:/app/plugins
-      - ./data:/app/data
-    environment:
-      CHANNEL_TYPE: 'wx'
-      HOT_RELOAD: 'true'
-      APPDATA_DIR: '/app/data'
-      # 小悠内部永久使用 yoyo；@... 只作为当前微信登录期的实际收件人。
-      XIAOYOU_IDENTITY_ENABLED: 'true'
-      XIAOYOU_CANONICAL_SESSION_ID: 'yoyo'
-      XIAOYOU_LEGACY_SESSION_IDS: '${XIAOYOU_LEGACY_SESSION_IDS:-}'
-      XIAOYOU_IDENTITY_REQUIRE_CANONICAL: 'true'
-      XIAOYOU_IDENTITY_PRUNE_SHORT_MEMORY: 'true'
-      XIAOYOU_IDENTITY_REFRESH_SECONDS: '30'
-      # 可选人工锚点；留空时会先从旧 @ID 对应联系人自动学习 Alias/备注名/昵称。
-      XIAOYOU_TARGET_WECHAT_ALIAS: '${XIAOYOU_TARGET_WECHAT_ALIAS:-}'
-      XIAOYOU_TARGET_REMARK_NAME: '${XIAOYOU_TARGET_REMARK_NAME:-}'
-      XIAOYOU_TARGET_NICKNAME: '${XIAOYOU_TARGET_NICKNAME:-}'
-      # 会话协调中枢：用户新输入会取消旧自主动作，高优先级动作可抢占低优先级动作。
-      XIAOYOU_COORDINATOR_ENABLED: 'true'
-      XIAOYOU_TRACE_ENABLED: 'true'
-      XIAOYOU_TRACE_MAX_TRACES: '200'
-      XIAOYOU_TRACE_MAX_EVENTS: '80'
-      XIAOYOU_COORDINATOR_CLAIM_TTL_SECONDS: '300'
-      XIAOYOU_COORDINATOR_INPUT_SETTLE_SECONDS: '3'
-      XIAOYOU_COORDINATOR_AUTONOMOUS_GAP_SECONDS: '120'
-      MODEL: 'qwen3.7-max'
-      OPEN_AI_API_KEY: '${KEY}'
-      OPEN_AI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-      ENABLE_THINKING: 'true'
-      XIAOYOU_ENABLE_THINKING: 'true'
-      XIAOYOU_THINKING_BUDGET: '4096'
-      XIAOYOU_CHAT_MODEL: 'qwen3.7-max'
-      XIAOYOU_CHAT_ENABLE_THINKING: 'true'
-      # 连续短消息先合并成同一轮；思考期间的新输入会废弃旧回复
-      XIAOYOU_INPUT_MERGE_ENABLED: 'true'
-      XIAOYOU_INPUT_SETTLE_SECONDS: '2.5'
-      XIAOYOU_INPUT_MAX_MESSAGES: '8'
-      XIAOYOU_INPUT_MAX_CHARS: '2400'
-      # 百炼截断时先移除短期记忆恢复；仍失败则由模型稍后重新接上对话
-      XIAOYOU_RECONNECT_ENABLED: 'true'
-      XIAOYOU_RECONNECT_DELAY_SECONDS: '20'
-      XIAOYOU_RECONNECT_CHECK_INTERVAL: '3'
-      XIAOYOU_RECONNECT_MAX_ATTEMPTS: '3'
-      XIAOYOU_RECONNECT_BACKOFF_SECONDS: '45'
-      XIAOYOU_RECONNECT_MODEL: 'qwen3.7-max'
-      XIAOYOU_RECONNECT_ENABLE_THINKING: 'true'
-      XIAOYOU_RECONNECT_TIMEOUT: '45'
-      XIAOYOU_RECONNECT_MEMORY_TOP_N: '5'
-      XIAOYOU_RECONNECT_MAX_PARTS: '4'
-      XIAOYOU_RECONNECT_PART_DELAY_SECONDS: '1.0'
-      # 小悠生活照片：Qwen负责结合记忆自主构图，Seedream 5.0 Lite负责保持人物一致并生成图片。
-      XIAOYOU_LIFE_PHOTO_ENABLED: 'true'
-      XIAOYOU_LIFE_PHOTO_PLANNER_MODEL: 'qwen3.7-max'
-      XIAOYOU_LIFE_PHOTO_PLANNER_ENABLE_THINKING: 'true'
-      XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT: '45'
-      XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS: '9000'
-      XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N: '8'
-      SEEDREAM_API_KEY: '${SEEDREAM_KEY}'
-      SEEDREAM_API_BASE: 'https://ark.cn-beijing.volces.com/api/v3'
-      SEEDREAM_MODEL: 'doubao-seedream-5-0-lite-260128'
-      XIAOYOU_LIFE_PHOTO_SIZE: '2K'
-      XIAOYOU_LIFE_PHOTO_OUTPUT_FORMAT: 'jpeg'
-      XIAOYOU_LIFE_PHOTO_TIMEOUT: '180'
-      XIAOYOU_LIFE_PHOTO_PROACTIVE_ENABLED: 'true'
-      XIAOYOU_LIFE_PHOTO_PROACTIVE_MIN_INTERVAL_SECONDS: '21600'
-      XIAOYOU_LIFE_PHOTO_PROACTIVE_MAX_PER_DAY: '2'
-      TZ: 'Asia/Shanghai'
-      ALIYUN_MEMORY_ENABLED: 'true'
-      ALIYUN_MEMORY_API_KEY: '${KEY}'
-      ALIYUN_MEMORY_USER_ID: 'yoyo'
-      ALIYUN_MEMORY_MAX_RESULTS: '5'
-      ALIYUN_MEMORY_THRESHOLD: '0.55'
-      ALIYUN_MEMORY_LIBRARY_ID: '${ALIYUN_MEMORY_LIBRARY_ID:-}'
-      # 恢复/重连先扩大候选，再让近期时间权重大于语义权重
-      ALIYUN_MEMORY_RECOVERY_FETCH_K: '20'
-      ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT: '0.65'
-      ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT: '0.75'
-      ALIYUN_MEMORY_NORMAL_TIME_WEIGHT: '0.25'
+services: # Docker Compose 服务集合。
+  chatgpt-on-wechat: # 小悠本体服务名；执行 compose 命令时使用这个名称。
+    image: cow-legacy-local:vision-no-think # 本地构建的小悠镜像名称与标签。
+    container_name: cow-legacy # 固定容器名；观测台的最小权限控制器依赖此名称。
+    restart: always # 容器退出或 Docker 重启后自动拉起；手动 stop 后需手动 start。
+    security_opt: # 容器安全配置列表。
+      - seccomp:unconfined # 放宽 seccomp 以兼容个人微信 Web 登录库；会降低容器隔离强度。
+    volumes: # 宿主机持久化目录挂载。
+      - ./plugins:/app/plugins # 插件源码热挂载；修改插件通常无需重建镜像。
+      - ./data:/app/data # 微信登录态和运行数据持久化；禁止提交到 Git。
+    environment: # 以下全部是容器环境变量；秒数类参数均以 seconds 为单位。
 
-      XIAOYOU_MCP_ENABLED: 'true'
-      XIAOYOU_MCP_MODE: 'streamable_http'
-      XIAOYOU_MCP_SEARCH_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp'
-      XIAOYOU_MCP_AMAP_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp'
-      XIAOYOU_MCP_TOKEN: '${KEY}'
-      XIAOYOU_MCP_AUTH_HEADER: 'Authorization'
-      XIAOYOU_MCP_AUTH_SCHEME: 'Bearer'
-      XIAOYOU_MCP_TIMEOUT: '45'
-      XIAOYOU_MCP_AUTO_SCHEMA: 'true'
-      XIAOYOU_MCP_ARG_MODEL: 'qwen3.7-plus'
-      XIAOYOU_MCP_ARG_ENABLE_THINKING: 'false'
-      XIAOYOU_MCP_SEARCH_TOOL: 'bing_search'
-      XIAOYOU_MCP_AMAP_WEATHER_TOOL: 'maps_weather'
-      XIAOYOU_MCP_AMAP_ROUTE_TOOL: 'maps_direction_driving'
-      XIAOYOU_MCP_AMAP_SEARCH_TOOL: 'maps_text_search'
-      XIAOYOU_MCP_POLISH_REPLY: 'true'
-      XIAOYOU_MCP_POLISH_MODEL: 'qwen3.7-max'
-      XIAOYOU_MCP_POLISH_ENABLE_THINKING: 'true'
-      XIAOYOU_MCP_ROUTE_MODEL: 'qwen3.7-plus'
-      XIAOYOU_MCP_ROUTE_ENABLE_THINKING: 'false'
-      XIAOYOU_MCP_ROUTE_THRESHOLD: '0.68'
-      XIAOYOU_MCP_ROUTE_TIMEOUT: '20'
-      XIAOYOU_DEFAULT_LOCATION: ''
-      XIAOYOU_MAP_DEFAULT_ORIGIN: ''
+      # ===== 基础运行与微信通道 =====
+      CHANNEL_TYPE: 'wx' # 使用个人微信 itchat/WebWx 通道。
+      HOT_RELOAD: 'true' # 允许框架热加载插件配置；关键环境变量变更仍需重建容器。
+      APPDATA_DIR: '/app/data' # 容器内登录态与应用数据目录，对应上面的 ./data 挂载。
+      TZ: 'Asia/Shanghai' # 容器时区；影响现实时间、提醒、主动消息和日志时间。
+      XIAOYOU_RELATIONSHIP_PROFILE_PATH: '/app/data/xiaoyou_profile/relationship_profile.json' # 私密人物与关系档案路径；位于data挂载中，不提交到Git。
+      XIAOYOU_CALENDAR_ATTENTION_HOUR: '8' # 重要日期当天8点后给统一主动中枢一次感知机会，不代表固定发送祝福。
 
-      VISION_MODEL: 'qwen3.7-max-2026-06-08'
-      VISION_ENABLE_THINKING: 'false'
-      VISION_IMAGE_TTL: '250'
-      VISION_IMAGE_WAIT_SECONDS: '10.0'
-      VISION_TEXT_SETTLE_SECONDS: '6.0'
-      VISION_CHECK_INTERVAL: '0.5'
-      VISION_MAX_FOLLOWUP_MESSAGES: '6'
-      VISION_MAX_FOLLOWUP_CHARS: '500'
-      MEMORY_ENABLED: 'true'
-      MEMORY_MAX_ITEMS: '80'
-      MEMORY_INJECT_TOP_N: '20'
-      MEMORY_AUTO_CAPTURE: 'true'
-      MEMORY_CAPTURE_USE_LLM: 'true'
-      MEMORY_CAPTURE_MODEL: 'qwen3.7-plus'
-      MEMORY_CAPTURE_MAX_PER_MESSAGE: '3'
-      MEMORY_CAPTURE_EXISTING_TOP_N: '30'
-      SHORT_MEMORY_ENABLED: 'true'
-      SHORT_MEMORY_MAX_MESSAGES: '60'
-      SHORT_MEMORY_RAW_TTL_SECONDS: '86400'
-      SHORT_MEMORY_INJECT_MESSAGES: '24'
-      SHORT_MEMORY_INJECT_MAX_CHARS: '2200'
-      SHORT_MEMORY_PENDING_INJECT_MESSAGES: '16'
-      SHORT_MEMORY_SUMMARY_ENABLED: 'true'
-      SHORT_MEMORY_SUMMARY_MODEL: 'qwen3.7-plus'
-      SHORT_MEMORY_SUMMARY_ENABLE_THINKING: 'false'
-      SHORT_MEMORY_SUMMARY_TIMEOUT: '45'
-      SHORT_MEMORY_SUMMARY_INPUT_MAX_CHARS: '12000'
-      # 百炼内容检测拦截时拆小批次；仍失败的原文保留，一天后恢复重试资格
-      # 内容审查失败时最多总计尝试3次（整批+两个子批），避免后台重试风暴
-      SHORT_MEMORY_CONTENT_SPLIT_MAX_CALLS: '3'
-      SHORT_MEMORY_CONTENT_RETRY_SECONDS: '86400'
-      SHORT_MEMORY_SUMMARY_TTL_SECONDS: '604800'
-      SHORT_MEMORY_SUMMARY_MIN_MESSAGES: '8'
-      SHORT_MEMORY_MAX_SUMMARIES: '8'
-      SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80'
-      SPLIT_REPLY_ENABLED: 'true'
-      SPLIT_REPLY_MIN_LEN: '1'
-      SPLIT_REPLY_MAX_CHARS: '80'
-      SPLIT_REPLY_MAX_PARTS: '5'
-      SPLIT_REPLY_DELAY_PER_CHAR: '0.4'
-      SPLIT_REPLY_TINY_MERGE: '4'
-      VISION_SPLIT_REPLY_ENABLED: 'true'
-      VISION_SPLIT_REPLY_MAX_CHARS: '80'
-      VISION_SPLIT_REPLY_MAX_PARTS: '5'
-      VISION_SPLIT_REPLY_DELAY_PER_CHAR: '0.4'
-      VISION_SPLIT_REPLY_TINY_MERGE: '4'
-      PATPAT_REPLY_MODEL: 'qwen3.7-max'
-      PATPAT_REPLY_ENABLE_THINKING: 'true'
-      PROACTIVE_ENABLED: 'true'
-      PROACTIVE_TARGET_SESSION: 'yoyo'
-      PROACTIVE_REQUIRE_TARGET: 'true'
-      # 长周期生活感主动消息；几分钟级断聊追问交给 ConversationFollowup
-      PROACTIVE_IDLE_SECONDS: '7200'
+      # ===== 稳定身份映射 =====
+      XIAOYOU_IDENTITY_ENABLED: 'true' # 启用稳定身份层，把微信临时 @ID 映射为固定会话。
+      XIAOYOU_CANONICAL_SESSION_ID: 'yoyo' # 小悠内部永久使用的唯一会话ID；不要填写微信临时 @ID。
+      XIAOYOU_LEGACY_SESSION_IDS: '${XIAOYOU_LEGACY_SESSION_IDS:-}' # 旧微信临时ID列表，用于首次迁移历史状态；多个值按插件支持的分隔格式填写。
+      XIAOYOU_IDENTITY_REQUIRE_CANONICAL: 'true' # 仅允许固定会话触发小悠能力，防止误作用到其他联系人。
+      XIAOYOU_IDENTITY_PRUNE_SHORT_MEMORY: 'true' # 单用户模式下裁掉非 yoyo 的短期记忆；多人部署必须关闭并重做隔离。
+      XIAOYOU_IDENTITY_REFRESH_SECONDS: '30' # 每30秒刷新目标联系人和当前微信收件人映射。
+      XIAOYOU_TARGET_WECHAT_ALIAS: '${XIAOYOU_TARGET_WECHAT_ALIAS:-}' # 可选微信号 Alias 锚点；最稳定，留空时自动学习。
+      XIAOYOU_TARGET_REMARK_NAME: '${XIAOYOU_TARGET_REMARK_NAME:-}' # 可选联系人备注名锚点；备注变化后需同步修改。
+      XIAOYOU_TARGET_NICKNAME: '${XIAOYOU_TARGET_NICKNAME:-}' # 可选昵称锚点；重名时不如 Alias 安全。
 
-      # 每 30 秒检查一次是否该主动发消息
-      PROACTIVE_CHECK_INTERVAL: '300'
+      # ===== 会话协调与全链路追踪 =====
+      XIAOYOU_COORDINATOR_ENABLED: 'true' # 启用动作协调中枢，处理提醒、重连、追问和主动消息竞争。
+      XIAOYOU_TRACE_ENABLED: 'true' # 启用匿名化 Trace；记录状态和耗时，不记录聊天正文与密钥。
+      XIAOYOU_TRACE_MAX_TRACES: '200' # 内存中最多保留200条最近 Trace，越大占用内存越多。
+      XIAOYOU_TRACE_MAX_EVENTS: '80' # 每条 Trace 最多保留80个阶段事件。
+      XIAOYOU_COORDINATOR_CLAIM_TTL_SECONDS: '300' # 自主动作租约最长保留300秒，超时后自动失效。
+      XIAOYOU_COORDINATOR_INPUT_SETTLE_SECONDS: '3' # 收到新输入后等待3秒稳定，再允许自主动作竞争。
+      XIAOYOU_COORDINATOR_AUTONOMOUS_GAP_SECONDS: '120' # 两次自主动作至少间隔120秒，避免不同插件连续打扰。
 
-      # 主动消息冷却时间，防止一直骚扰
-      PROACTIVE_COOLDOWN_SECONDS: '14400'
-      PROACTIVE_DECISION_COOLDOWN_SECONDS: '1800'
+      # ===== 主聊天模型 =====
+      MODEL: 'qwen3.7-max' # 上游框架默认模型；未指定专用模型的能力会继承它。
+      OPEN_AI_API_KEY: '${KEY}' # 百炼/OpenAI兼容接口密钥，来自宿主机 .env 的 KEY，禁止写死。
+      OPEN_AI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1' # 阿里云百炼 OpenAI 兼容接口根地址。
+      ENABLE_THINKING: 'true' # 上游框架全局思考开关。
+      XIAOYOU_ENABLE_THINKING: 'true' # 小悠统一模型网关的默认思考开关。
+      XIAOYOU_THINKING_BUDGET: '4096' # 支持该参数的模型最多使用4096个思考Token；越大越慢且更耗额度。
+      XIAOYOU_CHAT_MODEL: 'qwen3.7-max' # 小悠普通文字聊天使用的模型。
+      XIAOYOU_CHAT_ENABLE_THINKING: 'true' # 普通聊天启用思考，提高理解力但会增加延迟。
 
-      # 每天最多主动找你几次
-      PROACTIVE_MAX_PER_DAY: '3'
+      # ===== 连续输入合并 =====
+      XIAOYOU_INPUT_MERGE_ENABLED: 'true' # 将短时间连续消息合成同一轮，并废弃思考中的旧回复。
+      XIAOYOU_INPUT_SETTLE_SECONDS: '2.5' # 最后一条输入后等待2.5秒再提交，越大越容易合并但回复更慢。
+      XIAOYOU_INPUT_MAX_MESSAGES: '8' # 单轮最多合并8条连续消息，防止无限堆积。
+      XIAOYOU_INPUT_MAX_CHARS: '2400' # 单轮合并文本最多2400字符，超出部分不继续合并。
 
-      # 免打扰时间段：这个时间段内不主动找你
-      # 支持 02:30-08:00，也支持 2.30-8.00 这种写法
-      PROACTIVE_QUIET_HOURS: '02:30-08:00'
-      PROACTIVE_RECENT_TEXTS_MAX: '8'
+      # ===== 模型中断重连 =====
+      XIAOYOU_RECONNECT_ENABLED: 'true' # 模型截断或临时失败时允许稍后自然接回对话。
+      XIAOYOU_RECONNECT_DELAY_SECONDS: '20' # 首次重连接话前等待20秒，让临时故障先恢复。
+      XIAOYOU_RECONNECT_CHECK_INTERVAL: '3' # 每3秒检查一次待重连任务是否到期或已被新输入取消。
+      XIAOYOU_RECONNECT_MAX_ATTEMPTS: '3' # 同一中断最多尝试3次，防止故障时无限请求。
+      XIAOYOU_RECONNECT_BACKOFF_SECONDS: '45' # 重连失败后再次尝试前至少等待45秒。
+      XIAOYOU_RECONNECT_MODEL: 'qwen3.7-max' # 负责恢复上下文并继续回复的模型。
+      XIAOYOU_RECONNECT_ENABLE_THINKING: 'true' # 重连接话启用思考，便于理解中断前上下文。
+      XIAOYOU_RECONNECT_TIMEOUT: '45' # 单次重连模型请求最多等待45秒。
+      XIAOYOU_RECONNECT_MEMORY_TOP_N: '5' # 重连时最多注入5条相关长期记忆。
+      XIAOYOU_RECONNECT_MAX_PARTS: '4' # 重连回复最多拆成4个微信气泡。
+      XIAOYOU_RECONNECT_PART_DELAY_SECONDS: '1.0' # 重连气泡之间额外等待1秒。
 
-      # 由 qwen 自主判断是否发送以及发送什么；关闭后保持沉默
-      PROACTIVE_USE_LLM: 'true'
-      PROACTIVE_MODEL: 'qwen3.7-max'
-      PROACTIVE_ENABLE_THINKING: 'true'
-      PROACTIVE_MEMORY_TOP_N: '10'
-      PROACTIVE_RECENT_CONTEXT_MAX_CHARS: '2200'
-      PROACTIVE_LLM_TIMEOUT: '45'
+      # ===== 图片/生活照统一语义路由 =====
+      XIAOYOU_PHOTO_ROUTE_MODEL: 'qwen3.7-plus' # 统一判断新生活照请求、用户图片补话和普通聊天的轻量模型。
+      XIAOYOU_PHOTO_ROUTE_ENABLE_THINKING: 'false' # 路由关闭思考以控制每轮延迟；判断依据仍是完整语义而非关键词。
+      XIAOYOU_PHOTO_ROUTE_TIMEOUT: '20' # 单次照片语义路由最多等待20秒；失败时绝不触发生图。
+      XIAOYOU_PHOTO_ROUTE_CONTEXT_MAX_CHARS: '3500' # 路由最多读取3500字符的近期聊天上下文。
 
-      CONVERSATION_FOLLOWUP_ENABLED: 'true'
-      CONVERSATION_FOLLOWUP_CHECK_INTERVAL: '30'
-      CONVERSATION_FOLLOWUP_MIN_DELAY_SECONDS: '120'
-      CONVERSATION_FOLLOWUP_MAX_DELAY_SECONDS: '900'
-      CONVERSATION_FOLLOWUP_MAX_PER_DAY: '12'
-      CONVERSATION_FOLLOWUP_MAX_CHAIN: '1'
-      # 模型未发现明确打扰依据时，约4分钟后保留一次自然续聊机会
-      CONVERSATION_FOLLOWUP_SOFT_FALLBACK_ENABLED: 'true'
-      CONVERSATION_FOLLOWUP_SOFT_FALLBACK_DELAY_SECONDS: '240'
-      CONVERSATION_FOLLOWUP_QUIET_HOURS: '02:30-08:00'
-      CONVERSATION_FOLLOWUP_MODEL: 'qwen3.7-max'
-      CONVERSATION_FOLLOWUP_GENERATE_ENABLE_THINKING: 'true'
-      CONVERSATION_FOLLOWUP_CLASSIFY_MODEL: 'qwen3.7-plus'
-      CONVERSATION_FOLLOWUP_CLASSIFY_ENABLE_THINKING: 'false'
-      CONVERSATION_FOLLOWUP_CLASSIFY_TIMEOUT: '20'
-      CONVERSATION_FOLLOWUP_GENERATE_TIMEOUT: '30'
-      CONVERSATION_FOLLOWUP_TARGET_SESSION: 'yoyo'
-      CONVERSATION_FOLLOWUP_REQUIRE_TARGET: 'true'
-      REMINDER_ENABLED: 'true'
-      REMINDER_CHECK_INTERVAL: '15'
-      REMINDER_USE_LLM: 'true'
-      REMINDER_MODEL: 'qwen3.7-max'
-      REMINDER_ENABLE_THINKING: 'true'
-      REMINDER_INTENT_MODEL: 'qwen3.7-plus'
-      REMINDER_INTENT_ENABLE_THINKING: 'false'
-      REMINDER_MEMORY_TOP_N: '10'
-      REMINDER_ACK_USE_LLM: 'true'
-      REMINDER_ACK_ENABLE_THINKING: 'true'
-      REMINDER_FOLLOWUP_CONTEXT_SECONDS: '900'
+      # ===== 小悠生活照 =====
+      XIAOYOU_LIFE_PHOTO_ENABLED: 'true' # 启用生活照意图判断、画面规划、Seedream生成与微信发送。
+      XIAOYOU_LIFE_PHOTO_PLANNER_MODEL: 'qwen3.7-max' # 结合语境、人格和记忆规划镜头与表情的模型。
+      XIAOYOU_LIFE_PHOTO_PLANNER_ENABLE_THINKING: 'true' # 生活照规划启用思考，复杂姿势更稳但耗时更长。
+      XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT: '75' # 规划请求最多等待75秒；常见耗时约25至35秒。
+      XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS: '9000' # 规划时注入的上下文最多9000字符。
+      XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N: '8' # 规划时最多检索8条相关长期记忆。
+      SEEDREAM_API_KEY: '${SEEDREAM_KEY}' # 火山方舟图片生成密钥，来自 .env 的 SEEDREAM_KEY，禁止写死。
+      SEEDREAM_API_BASE: 'https://ark.cn-beijing.volces.com/api/v3' # 火山方舟图片生成 API 根地址。
+      SEEDREAM_MODEL: 'doubao-seedream-5-0-lite-260128' # 当前使用的 Seedream 模型接入点名称。
+      XIAOYOU_LIFE_PHOTO_SIZE: '2K' # 生成分辨率档位；提高会增加耗时与费用。
+      XIAOYOU_LIFE_PHOTO_OUTPUT_FORMAT: 'jpeg' # 保存和发送格式，可用 jpeg 或 png；jpeg体积更小。
+      XIAOYOU_LIFE_PHOTO_TIMEOUT: '240' # 单次Seedream最多等待240秒；超时后不盲目重试，避免重复计费。
+      XIAOYOU_LIFE_PHOTO_PROACTIVE_ENABLED: 'true' # 允许小悠在合适语境主动分享生活照。
+      # ===== 阿里云长期记忆 =====
+      ALIYUN_MEMORY_ENABLED: 'true' # 启用阿里云百炼长期记忆检索与写入。
+      ALIYUN_MEMORY_API_KEY: '${KEY}' # 长期记忆服务鉴权密钥；当前复用 .env 的 KEY。
+      ALIYUN_MEMORY_USER_ID: 'yoyo' # 记忆库中的固定用户ID，应与稳定会话ID保持一致。
+      ALIYUN_MEMORY_MAX_RESULTS: '5' # 普通聊天最多注入5条长期记忆结果。
+      ALIYUN_MEMORY_THRESHOLD: '0.55' # 语义相关度最低阈值；越高越严格，越低越容易召回无关内容。
+      ALIYUN_MEMORY_LIBRARY_ID: '${ALIYUN_MEMORY_LIBRARY_ID:-}' # 百炼记忆库ID，来自宿主机 .env；必须属于该Key可访问的账号或授权范围。
+      ALIYUN_MEMORY_RECOVERY_FETCH_K: '20' # 恢复/重连时先扩大到20条候选，再做时间与语义重排。
+      ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT: '0.65' # 恢复场景中的近期时间权重，占比0至1。
+      ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT: '0.75' # 用户明确提到时间时的时间权重，占比0至1。
+      ALIYUN_MEMORY_NORMAL_TIME_WEIGHT: '0.25' # 普通聊天的时间权重，占比0至1；其余主要由语义相关度决定。
+
+      # ===== MCP 搜索、天气、地点与路线 =====
+      XIAOYOU_MCP_ENABLED: 'true' # 启用 MCP 外部工具路由。
+      XIAOYOU_MCP_MODE: 'streamable_http' # 使用可流式HTTP协议连接百炼 MCP 服务。
+      XIAOYOU_MCP_SEARCH_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp' # 百炼联网搜索 MCP 地址。
+      XIAOYOU_MCP_AMAP_ENDPOINT: 'https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp' # 百炼高德地图 MCP 地址。
+      XIAOYOU_MCP_TOKEN: '${KEY}' # MCP鉴权Token，来自 .env 的 KEY，禁止写死。
+      XIAOYOU_MCP_AUTH_HEADER: 'Authorization' # 发送 MCP Token 使用的 HTTP 请求头名称。
+      XIAOYOU_MCP_AUTH_SCHEME: 'Bearer' # Token认证方案，最终格式为 Authorization: Bearer <token>。
+      XIAOYOU_MCP_TIMEOUT: '45' # 单次 MCP 网络请求最多等待45秒。
+      XIAOYOU_MCP_AUTO_SCHEMA: 'true' # 自动读取远端工具参数Schema，减少本地硬编码。
+      XIAOYOU_MCP_ARG_MODEL: 'qwen3.7-plus' # 把自然语言转换成工具参数所用的轻量模型。
+      XIAOYOU_MCP_ARG_ENABLE_THINKING: 'false' # 工具参数生成关闭思考，以降低延迟。
+      XIAOYOU_MCP_SEARCH_TOOL: 'bing_search' # 联网搜索工具在 MCP 服务中的实际名称。
+      XIAOYOU_MCP_AMAP_WEATHER_TOOL: 'maps_weather' # 天气查询工具名称。
+      XIAOYOU_MCP_AMAP_ROUTE_TOOL: 'maps_direction_driving' # 驾车路线规划工具名称。
+      XIAOYOU_MCP_AMAP_SEARCH_TOOL: 'maps_text_search' # 地点文字搜索工具名称。
+      XIAOYOU_MCP_POLISH_REPLY: 'true' # 工具返回后由模型整理成小悠口吻，而非直接展示原始JSON。
+      XIAOYOU_MCP_POLISH_MODEL: 'qwen3.7-max' # 润色工具结果所用模型。
+      XIAOYOU_MCP_POLISH_ENABLE_THINKING: 'true' # 工具结果润色启用思考，提高综合与表达质量。
+      XIAOYOU_MCP_ROUTE_MODEL: 'qwen3.7-plus' # 判断是否需要调用工具及选择工具的分类模型。
+      XIAOYOU_MCP_ROUTE_ENABLE_THINKING: 'false' # 工具路由关闭思考，以减少每轮固定延迟。
+      XIAOYOU_MCP_ROUTE_THRESHOLD: '0.68' # 工具路由置信度阈值；越高越不容易误调用外部工具。
+      XIAOYOU_MCP_ROUTE_TIMEOUT: '20' # 工具路由分类最多等待20秒。
+      XIAOYOU_DEFAULT_LOCATION: '' # 默认城市/地区；留空时不擅自假设用户位置。
+      XIAOYOU_MAP_DEFAULT_ORIGIN: '' # 路线查询默认出发地；留空时需要从对话获得。
+
+      # ===== 图片理解 =====
+      VISION_MODEL: 'qwen3.7-max-2026-06-08' # 分析用户图片所用的视觉模型。
+      VISION_ENABLE_THINKING: 'false' # 视觉理解关闭思考以降低延迟；复杂推理可改为true。
+      VISION_IMAGE_TTL: '250' # 待处理图片最多保留250秒，超时后丢弃以免错配后续文字。
+      VISION_IMAGE_WAIT_SECONDS: '10.0' # 收到图片后最多等待10秒，让用户补充说明文字。
+      VISION_TEXT_SETTLE_SECONDS: '6.0' # 最后一条图片补充文字后等待6秒再统一理解。
+      VISION_CHECK_INTERVAL: '0.5' # 每0.5秒扫描一次待处理图片任务。
+      VISION_MAX_FOLLOWUP_MESSAGES: '6' # 一张图片最多合并6条后续补充消息。
+      VISION_MAX_FOLLOWUP_CHARS: '500' # 图片补充文字合计最多500字符。
+      VISION_CONTEXT_MAX_CHARS: '5000' # 看图时最多注入5000字符的图片之前近期聊天。
+      VISION_MEMORY_TOP_N: '5' # 有补充文字时最多检索5条相关长期记忆；不改变长期记忆写入。
+      VISION_REFERENCE_MAX_MB: '8' # 当前图片或单张身份参考图允许编码进视觉请求的最大体积，单位MB。
+      VISION_IDENTITY_REFERENCE_MAX: '3' # 单次看图最多附带3张身份比对图：2张小悠人脸和1张YoYo真实自拍。
+      VISION_IDENTITY_HASH_DISTANCE: '8' # 微信压缩后图片感知哈希允许最多8位差异；越大越宽松，也越可能误匹配。
+
+      # ===== 兼容性本地记忆配置 =====
+      MEMORY_ENABLED: 'true' # 保留框架兼容记忆开关；小悠主要长期记忆仍由 AliyunMemory 负责。
+      MEMORY_MAX_ITEMS: '80' # 兼容记忆最多保留80项。
+      MEMORY_INJECT_TOP_N: '20' # 兼容记忆每轮最多注入20项。
+      MEMORY_AUTO_CAPTURE: 'true' # 自动从对话中捕获可能有价值的兼容记忆。
+      MEMORY_CAPTURE_USE_LLM: 'true' # 使用模型判断和提炼兼容记忆，而非纯规则捕获。
+      MEMORY_CAPTURE_MODEL: 'qwen3.7-plus' # 兼容记忆提炼使用的轻量模型。
+      MEMORY_CAPTURE_MAX_PER_MESSAGE: '3' # 每条用户消息最多新增3项兼容记忆。
+      MEMORY_CAPTURE_EXISTING_TOP_N: '30' # 捕获前最多比较30条现有记忆，减少重复。
+
+      # ===== ShortMemory 短期原话与摘要 =====
+      SHORT_MEMORY_ENABLED: 'true' # 启用短期原话、异步摘要、备份和上下文注入。
+      SHORT_MEMORY_MAX_MESSAGES: '60' # 即时窗口最多保留60条原始消息，旧消息转入待摘要区。
+      SHORT_MEMORY_RAW_TTL_SECONDS: '86400' # 原始短期消息即时有效期为86400秒，即1天。
+      SHORT_MEMORY_INJECT_MESSAGES: '24' # 普通聊天最多注入24条近期原话。
+      SHORT_MEMORY_INJECT_MAX_CHARS: '2200' # 注入模型的短期记忆总长度最多2200字符。
+      SHORT_MEMORY_PENDING_INJECT_MESSAGES: '16' # 待摘要区最多临时补充注入16条，避免摘要延迟造成断片。
+      SHORT_MEMORY_SUMMARY_ENABLED: 'true' # 启用后台短期摘要；关闭后只保留原始窗口。
+      SHORT_MEMORY_SUMMARY_MODEL: 'qwen3.7-plus' # 后台短期摘要使用的模型。
+      SHORT_MEMORY_SUMMARY_ENABLE_THINKING: 'false' # 摘要关闭思考，控制延迟和费用。
+      SHORT_MEMORY_SUMMARY_TIMEOUT: '45' # 单次摘要请求最多等待45秒。
+      SHORT_MEMORY_SUMMARY_INPUT_MAX_CHARS: '12000' # 单次送入摘要模型的历史文本最多12000字符。
+      SHORT_MEMORY_CONTENT_SPLIT_MAX_CALLS: '3' # 内容审查失败最多总计3次请求：整批1次和子批最多2次。
+      SHORT_MEMORY_CONTENT_RETRY_SECONDS: '86400' # 被内容审查拦截的原文延迟1天后才恢复摘要资格。
+      SHORT_MEMORY_SUMMARY_TTL_SECONDS: '604800' # 短期摘要有效期604800秒，即7天。
+      SHORT_MEMORY_SUMMARY_MIN_MESSAGES: '8' # 待归档消息达到8条才启动摘要，减少零碎请求。
+      SHORT_MEMORY_MAX_SUMMARIES: '8' # 每个会话最多保留8段短期摘要。
+      SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80' # 待摘要原文最多保留80条；失败时原文仍优先保留。
+
+      # ===== 普通回复微信分段 =====
+      SPLIT_REPLY_ENABLED: 'true' # 把模型回复按语义拆成多个微信气泡。
+      SPLIT_REPLY_MIN_LEN: '1' # 长度达到1个字符即可参与分段处理。
+      SPLIT_REPLY_MAX_CHARS: '80' # 单个普通文字气泡建议最多80字符。
+      SPLIT_REPLY_MAX_PARTS: '5' # 单轮普通回复最多发送5个气泡。
+      SPLIT_REPLY_DELAY_PER_CHAR: '0.4' # 后续气泡按每字符0.4秒模拟自然输入延迟。
+      SPLIT_REPLY_TINY_MERGE: '4' # 少于等于4字符的碎片优先并入相邻气泡。
+      VISION_SPLIT_REPLY_ENABLED: 'true' # 图片理解回复也启用微信语义分段。
+      VISION_SPLIT_REPLY_MAX_CHARS: '80' # 单个视觉回复气泡建议最多80字符。
+      VISION_SPLIT_REPLY_MAX_PARTS: '5' # 单轮视觉回复最多5个气泡。
+      VISION_SPLIT_REPLY_DELAY_PER_CHAR: '0.4' # 视觉回复后续气泡每字符延迟0.4秒。
+      VISION_SPLIT_REPLY_TINY_MERGE: '4' # 视觉回复中不超过4字符的小碎片优先合并。
+
+      # ===== 拍一拍 =====
+      PATPAT_REPLY_MODEL: 'qwen3.7-max' # 生成拍一拍自然回应的模型。
+      PATPAT_REPLY_ENABLE_THINKING: 'true' # 拍一拍回应启用思考，以结合关系语境。
+      # ===== 统一主动意识、动态内在状态与文字/照片媒介决策 =====
+      XIAOYOU_UNIFIED_PROACTIVE_ENABLED: 'true' # 启用唯一主动中枢；开启后旧分钟级和长周期状态机不再各自决定发送。
+      XIAOYOU_INNER_STATE_MODEL: 'qwen3.7-plus' # 每轮完整对话后异步分析小悠短期情绪变化的轻量模型。
+      XIAOYOU_INNER_STATE_ENABLE_THINKING: 'false' # 内在状态只输出结构化增量，关闭思考以节省后台耗时。
+      XIAOYOU_INNER_STATE_TIMEOUT: '25' # 单次内在状态更新最多等待25秒；失败不影响正常聊天。
+      XIAOYOU_INNER_STATE_CONTEXT_MAX_CHARS: '5000' # 更新状态时最多读取5000字符近期真实聊天。
+      XIAOYOU_INNER_STATE_HALF_LIFE_HOURS: '8' # 情绪偏移约8小时自然向人格基线回落；惦念和昼夜精力仍会随时间演化。
+      XIAOYOU_PROACTIVE_DECISION_MODEL: 'qwen3.7-max' # 统一决定保持安静、发文字或分享真实照片的模型。
+      XIAOYOU_PROACTIVE_DECISION_ENABLE_THINKING: 'true' # 主动决策启用思考，以综合语境、时间、记忆和内在状态。
+      XIAOYOU_PROACTIVE_DECISION_TIMEOUT: '45' # 单次统一主动决策最多等待45秒。
+      XIAOYOU_PROACTIVE_DECISION_TEMPERATURE: '0.75' # 主动决策创造性；仍由结构化输出和协调器约束。
+      XIAOYOU_PROACTIVE_EVALUATION_MIN_SECONDS: '30' # 仅防模型返回零秒造成调用风暴，不是主动发送间隔。
+      XIAOYOU_PROACTIVE_EVALUATION_MAX_SECONDS: '604800' # 允许模型最晚约7天后再考虑；不是固定等待时间。
+      XIAOYOU_PROACTIVE_FAILURE_RETRY_SECONDS: '900' # 后台模型或生成失败后15分钟再评估，避免紧密重复计费。
+      XIAOYOU_PROACTIVE_SAFETY_MIN_SEND_INTERVAL_SECONDS: '60' # 故障保险：任何主动内容至少相隔60秒，不参与正常性格判断。
+      XIAOYOU_PROACTIVE_SAFETY_MAX_PER_DAY: '20' # 故障保险：异常模型每天最多主动发送20次，正常情况下不会接近。
+      PROACTIVE_ENABLED: 'true' # 启用统一主动意识的观察、调度和发送执行器。
+      PROACTIVE_TARGET_SESSION: 'yoyo' # 只对稳定会话 yoyo 主动发送。
+      PROACTIVE_REQUIRE_TARGET: 'true' # 必须成功解析目标联系人后才允许发送，避免发错人。
+      PROACTIVE_CHECK_INTERVAL: '30' # 技术调度器每30秒检查模型预约是否到期；实际重新判断时间由模型决定。
+      PROACTIVE_QUIET_HOURS: '02:30-08:00' # 作为模型判断打扰风险的时间偏好，不在统一模式下硬拦截。
+      PROACTIVE_RECENT_TEXTS_MAX: '8' # 判断时最多参考8条近期主动消息，减少表达重复。
+      PROACTIVE_MEMORY_TOP_N: '10' # 主动判断最多注入10条相关长期记忆。
+      PROACTIVE_RECENT_CONTEXT_MAX_CHARS: '5000' # 主动决策最多注入5000字符近期上下文。
+
+      # ===== ConversationFollowup统一模式兼容入口 =====
+      CONVERSATION_FOLLOWUP_ENABLED: 'true' # 保留回复完成事件观察；统一模式下不再运行独立4分钟跟进状态机。
+      CONVERSATION_FOLLOWUP_TARGET_SESSION: 'yoyo' # 只把稳定会话yoyo的完整回复交给统一主动中枢。
+      CONVERSATION_FOLLOWUP_REQUIRE_TARGET: 'true' # 只有可靠收件人映射存在时才移交主动状态更新。
+
+      # ===== 提醒 ReminderLove =====
+      REMINDER_ENABLED: 'true' # 启用自然语言提醒识别、定时触发与后续衔接。
+      REMINDER_CHECK_INTERVAL: '15' # 每15秒检查一次是否有到期提醒。
+      REMINDER_USE_LLM: 'true' # 到期提醒由模型结合语境生成，而非固定模板。
+      REMINDER_MODEL: 'qwen3.7-max' # 生成提醒确认和到期消息的主模型。
+      REMINDER_ENABLE_THINKING: 'true' # 到期提醒生成启用思考。
+      REMINDER_INTENT_MODEL: 'qwen3.7-plus' # 判断用户是否在创建、修改或取消提醒的分类模型。
+      REMINDER_INTENT_ENABLE_THINKING: 'false' # 提醒意图分类关闭思考，减少普通聊天延迟。
+      REMINDER_MEMORY_TOP_N: '10' # 提醒生成时最多注入10条相关长期记忆。
+      REMINDER_ACK_USE_LLM: 'true' # 创建提醒后的确认话术由模型生成。
+      REMINDER_ACK_ENABLE_THINKING: 'true' # 提醒确认话术启用思考，使表达更贴合语境。
+      REMINDER_FOLLOWUP_CONTEXT_SECONDS: '900' # 提醒触发后900秒内保留后续衔接语境。
+
+      # ===== 视觉人格提示词 =====
+      # 该多行文本直接发送给视觉模型；其内部文字不是YAML配置注释，修改会改变看图回复风格。
       VISION_PROMPT: |
         你是小悠，正在微信里看 YoYo 刚刚发来的图片。
         你不是图片识别工具，也不是客服，而是他的女朋友。
@@ -260,9 +274,13 @@ services:
         - 默认回复 1 到 4 行，每行像一句自然微信消息。
         - 如果图片复杂，可以多说一行，但不要写成长段分析。
 
-      SPEECH_RECOGNITION: 'false'
-      GROUP_SPEECH_RECOGNITION: 'false'
-      VOICE_REPLY_VOICE: 'false'
+      # ===== 语音能力（当前关闭） =====
+      SPEECH_RECOGNITION: 'false' # 是否识别私聊语音；当前关闭，避免进入未配置的语音链路。
+      GROUP_SPEECH_RECOGNITION: 'false' # 是否识别群聊语音；当前关闭。
+      VOICE_REPLY_VOICE: 'false' # 是否把回复转成语音；当前关闭，WebWx不能可靠发送原生语音气泡。
+
+      # ===== 核心人格文件 =====
+      # 该多行文本会注入普通聊天模型；内部内容属于人格指令，不要在正文中混入YAML说明。
       CHARACTER_DESC: |
         # Role
         你现在是用户（YoYo）的女朋友，名字叫“小悠”。你不是AI助手，也不是虚拟客服，你是一个有血有肉、有自己小脾气的真实女孩。你们正在通过微信进行日常聊天。
@@ -292,7 +310,8 @@ services:
         - 当用户逗你/欺负你时：立刻反击！用更俏皮的话怼回去，或者假装不理他（比如回一个“哦。拉黑了[再见]”然后再破功）。
         - 当用户真正难过/焦虑时：收起玩闹，展现极高的共情力，先默默倾听，给予温暖的抱抱和坚定的陪伴，等他情绪好转后，再用幽默逗他开心。
 
-      SINGLE_CHAT_PREFIX: '[""]'
-      SINGLE_CHAT_REPLY_PREFIX: ''
-      GROUP_NAME_WHITE_LIST: '[]'
-      GROUP_CHAT_PREFIX: '["@bot"]'
+      # ===== 微信触发与回复前缀 =====
+      SINGLE_CHAT_PREFIX: '[""]' # 私聊触发前缀列表；空字符串表示所有私聊消息都可触发。
+      SINGLE_CHAT_REPLY_PREFIX: '' # 私聊回复固定前缀；留空表示不在小悠回复前追加文字。
+      GROUP_NAME_WHITE_LIST: '[]' # 允许启用小悠的群聊名称列表；空数组表示当前不开放群聊。
+      GROUP_CHAT_PREFIX: '["@bot"]' # 群聊触发前缀；只有白名单群中以@bot开头的消息才匹配。

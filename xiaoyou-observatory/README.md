@@ -192,6 +192,25 @@ find /www/wwwroot/xiaoyou-observatory -type d -exec chmod 0755 {} \;
 find /www/wwwroot/xiaoyou-observatory -type f -exec chmod 0644 {} \;
 ```
 
+### 视频 CDN（推荐独立媒体域名）
+
+前端支持把两段背景视频放到独立 CDN，同时让登录、状态、日志、二维码和容器操作继续直连观测台，不经过静态资源缓存。
+
+1. 建立 `media.yoyoyan.cn`，先在“仅DNS”状态下申请源站证书，再开启CDN代理；宝塔生成的证书与 `well-known` 自动续签段必须保留，可参考 `deploy/xiaoyou-media.nginx.conf` 收紧公开路径；
+2. CDN 只缓存 `xiaoyou-desktop.mp4` 与 `xiaoyou-mobile.mp4`，必须支持 HTTPS、HTTP Range 和查询字符串缓存键；主站 `xiaoyou.yoyoyan.cn` 可保持仅DNS，不让管理接口经过CDN；
+3. 在服务器网页根目录的 `observatory-config.js` 中填写：
+
+```javascript
+window.__XIAOYOU_OBSERVATORY__ = Object.freeze({
+  mediaBaseUrl: "https://media.yoyoyan.cn",
+  mediaVersion: "20260713-cdn1"
+});
+```
+
+以后替换视频时只需修改 `mediaVersion`，浏览器和 CDN 就会请求新版本，不必重新构建 React。CDN 请求失败时页面会自动回退到 `/xiaoyou-desktop.mp4` 或 `/xiaoyou-mobile.mp4`。`observatory-config.js` 中只能放公开配置，禁止写密码、TOTP 密钥、Cookie 或 API Key。
+
+若使用 Cloudflare，可只把 `media.yoyoyan.cn` 设为橙云：为两条精确MP4路径建立 Cache Rule，设置 `Eligible for cache`、Edge TTL 30天、Browser TTL 1天，并使用 `Full (strict)` 连接持有有效证书的源站。主站保持灰云时无需为 `/api/*` 建缓存规则。源站视频返回 `Accept-Ranges: bytes`，可避免每次缓冲都重新下载整个文件；首次请求 `cf-cache-status` 通常为 `MISS`，再次请求应为 `HIT`。
+
 ## 8. 在宝塔申请免费 HTTPS
 
 你已经将 `xiaoyou.yoyoyan.cn` 解析到服务器，可直接使用免费的 Let's Encrypt：

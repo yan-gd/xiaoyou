@@ -2,6 +2,7 @@
 import os
 import time
 import base64
+import json
 import mimetypes
 import threading
 import re
@@ -15,10 +16,18 @@ from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
 from plugins.xiaoyou_common.context_service import (
+    build_context_snapshot,
     build_time_context,
     extract_current_user_text,
 )
+from plugins.xiaoyou_common.photo_intent_service import (
+    ROUTE_IMAGE_FOLLOWUP,
+    classify_photo_semantics,
+)
 from plugins.xiaoyou_common.trace_service import activate_context_trace
+from plugins.xiaoyou_common.relationship_profile_service import (
+    get_relationship_profile_service,
+)
 
 
 # session_id -> pending image context
@@ -30,7 +39,7 @@ THREAD_STARTED = False
 @plugins.register(
     name="QwenVision",
     desc="Use Qwen VLM to understand WeChat images with following user question",
-    version="1.0-trace-runtime",
+    version="1.2-couple-visual-identity",
     author="yoyo",
     desire_priority=980,
 )
@@ -91,11 +100,11 @@ class QwenVision(Plugin):
                 }
 
             logger.info(
-                "[QwenVision] cached image for session=%s keys=%s receiver=%s path=%s ttl=%ss",
-                session_id,
-                session_keys,
-                receiver,
-                img_path,
+                "[QwenVision] cached image session=%s key_count=%s receiver=%s file=%s ttl=%ss",
+                self._mask_id(session_id),
+                len(session_keys),
+                self._mask_id(receiver),
+                os.path.basename(str(img_path or "")),
                 ttl,
             )
 
@@ -120,18 +129,21 @@ class QwenVision(Plugin):
         if not user_text:
             return
 
-        # 明确是在让小悠拍自己/分享她的日常时，不把这句话误吞成上一张用户图片的补充说明。
-        if self._looks_like_xiaoyou_photo_request(user_text):
-            with LOCK:
-                PENDING_IMAGES.pop(session_id, None)
-                for key, pending in list(PENDING_IMAGES.items()):
-                    if receiver and pending.get("receiver") == receiver:
-                        PENDING_IMAGES.pop(key, None)
-            logger.info(
-                "[QwenVision] pending user image cancelled by Xiaoyou photo request session=%s",
-                session_id,
+        if self._has_pending_user_image(session_id, receiver):
+            semantic_route = classify_photo_semantics(
+                text=user_text,
+                session_id=session_id,
+                pending_user_image=True,
+                context=context,
             )
-            return
+            if semantic_route.route != ROUTE_IMAGE_FOLLOWUP:
+                self._cancel_pending_user_image(session_id, receiver)
+                logger.info(
+                    "[QwenVision] pending image closed by semantic route session=%s route=%s",
+                    self._mask_id(session_id),
+                    semantic_route.route,
+                )
+                return
 
         now = time.time()
         matched_key = None
@@ -186,7 +198,7 @@ class QwenVision(Plugin):
             ttl = float(matched_item.get("ttl") or 180)
 
             if now - ts > ttl or not img_path or not os.path.exists(img_path):
-                logger.info("[QwenVision] pending image expired or missing for text session=%s", session_id)
+                logger.info("[QwenVision] pending image expired or missing session=%s", self._mask_id(session_id))
                 if matched_key:
                     PENDING_IMAGES.pop(matched_key, None)
                 return
@@ -206,12 +218,12 @@ class QwenVision(Plugin):
             PENDING_IMAGES[matched_key] = matched_item
 
         logger.info(
-            "[QwenVision] appended follow-up text matched_by=%s image_session=%s text_session=%s receiver=%s text=%r",
+            "[QwenVision] appended follow-up matched_by=%s image_session=%s text_session=%s receiver=%s chars=%s",
             matched_by,
-            matched_key,
-            session_id,
-            receiver,
-            user_text[:100],
+            self._mask_id(matched_key),
+            self._mask_id(session_id),
+            self._mask_id(receiver),
+            len(user_text),
         )
 
         self._record_user_short_memory(matched_key or session_id, user_text)
@@ -224,16 +236,24 @@ class QwenVision(Plugin):
     def _clean_followup_text(self, content):
         return extract_current_user_text(content)
 
-    def _looks_like_xiaoyou_photo_request(self, text):
-        text = str(text or "").strip()
-        patterns = (
-            r"(?:给我|让我|想看|要看).{0,8}(?:你|小悠).{0,10}(?:自拍|照片|穿搭|现在)",
-            r"(?:你|小悠).{0,8}(?:拍|发).{0,8}(?:自拍|照片|穿搭|日常)",
-            r"(?:拍|发).{0,8}(?:你|你的|小悠).{0,8}(?:自拍|照片|穿搭)",
-            r"(?:给我|来|发|拍).{0,6}(?:一张|张|个)?.{0,4}(?:照片|自拍|穿搭照)",
-            r"(?:看看你|看你现在|看你今天|给我看看你)",
-        )
-        return any(re.search(pattern, text, re.I) for pattern in patterns)
+    def _has_pending_user_image(self, session_id, receiver):
+        with LOCK:
+            item = PENDING_IMAGES.get(session_id)
+            if item and item.get("status") in ("waiting", "sending"):
+                return True
+            return any(
+                pending.get("status") in ("waiting", "sending")
+                and receiver
+                and pending.get("receiver") == receiver
+                for pending in PENDING_IMAGES.values()
+            )
+
+    def _cancel_pending_user_image(self, session_id, receiver):
+        with LOCK:
+            PENDING_IMAGES.pop(session_id, None)
+            for key, pending in list(PENDING_IMAGES.items()):
+                if receiver and pending.get("receiver") == receiver:
+                    PENDING_IMAGES.pop(key, None)
 
     def _loop(self):
         while True:
@@ -264,7 +284,7 @@ class QwenVision(Plugin):
                 texts = item.get("texts") or []
 
                 if now - ts > ttl or not img_path or not os.path.exists(img_path):
-                    logger.info("[QwenVision] drop expired pending image session=%s", session_id)
+                    logger.info("[QwenVision] drop expired pending image session=%s", self._mask_id(session_id))
                     PENDING_IMAGES.pop(session_id, None)
                     continue
 
@@ -294,24 +314,39 @@ class QwenVision(Plugin):
         keep_pending = False
 
         try:
-            prompt = self._build_prompt(texts)
-            answer = self._ask_vision(img_path, prompt)
+            identity_context = self._vision_identity_context(session_id, img_path)
+            prompt = self._build_prompt(session_id, texts, identity_context)
+            reference_images = (
+                []
+                if identity_context.get("provenance", {}).get("matched")
+                else identity_context.get("reference_images", [])
+            )
+            answer = self._ask_vision(
+                img_path,
+                prompt,
+                reference_images=reference_images,
+            )
             answer = self._clean_answer(answer)
 
             if not answer:
-                logger.warning("[QwenVision] model returned empty vision reply; keep silent session=%s", session_id)
+                logger.warning("[QwenVision] model returned empty reply session=%s", self._mask_id(session_id))
                 return
 
             if not self._vision_snapshot_current(session_id, pending_id, revision, item):
                 keep_pending = True
                 logger.info(
                     "[QwenVision] stale vision result discarded session=%s revision=%s",
-                    session_id,
+                    self._mask_id(session_id),
                     revision,
                 )
                 return
 
-            logger.info("[QwenVision] sending vision reply session=%s receiver=%s text=%r", session_id, receiver, answer[:100])
+            logger.info(
+                "[QwenVision] sending vision reply session=%s receiver=%s chars=%s",
+                self._mask_id(session_id),
+                self._mask_id(receiver),
+                len(answer),
+            )
             send_result = self._send_text_with_split_delay(
                 answer,
                 receiver,
@@ -324,7 +359,7 @@ class QwenVision(Plugin):
             keep_pending = bool(send_result.get("stale"))
 
         except Exception:
-            logger.exception("[QwenVision] async vision answer failed session=%s", session_id)
+            logger.exception("[QwenVision] async vision answer failed session=%s", self._mask_id(session_id))
 
         finally:
             with LOCK:
@@ -427,7 +462,7 @@ class QwenVision(Plugin):
         logger.info(
             "[QwenVision] split_send tag=%s receiver=%s parts=%s delay_per_char=%s",
             tag,
-            receiver,
+            self._mask_id(receiver),
             len(parts),
             delay_per_char,
         )
@@ -574,6 +609,12 @@ class QwenVision(Plugin):
             result.append(value)
         return result
 
+    def _mask_id(self, value):
+        value = str(value or "")
+        if len(value) <= 10:
+            return value or "-"
+        return value[:5] + "..." + value[-4:]
+
     def _find_pending_item_locked(self, session_keys):
         keys = self._merge_unique([], session_keys)
         for key in keys:
@@ -610,7 +651,7 @@ class QwenVision(Plugin):
 
     def _get_image_path(self, context):
         content = context.content
-        logger.info("[QwenVision] get image content=%r", content)
+        logger.info("[QwenVision] locating image file=%s", os.path.basename(str(content or "")))
 
         def exists(path):
             return path and os.path.exists(path) and os.path.getsize(path) > 0
@@ -630,17 +671,23 @@ class QwenVision(Plugin):
 
         for path in candidate_paths(content):
             if exists(path):
-                logger.info("[QwenVision] image exists before prepare: %s size=%s", path, os.path.getsize(path))
+                logger.info(
+                    "[QwenVision] image exists before prepare file=%s size=%s",
+                    os.path.basename(path),
+                    os.path.getsize(path),
+                )
                 return path
 
         kwargs = getattr(context, "kwargs", {}) or {}
         msg = kwargs.get("msg")
-        logger.info("[QwenVision] wrapped msg=%r", msg)
-        logger.info("[QwenVision] wrapped msg dict=%r", getattr(msg, "__dict__", {}))
+        logger.info("[QwenVision] wrapped message available=%s", msg is not None)
 
         if msg is not None:
             msg_content = getattr(msg, "content", None)
-            logger.info("[QwenVision] msg.content=%r", msg_content)
+            logger.info(
+                "[QwenVision] wrapped message has local content=%s",
+                bool(str(msg_content or "").strip()),
+            )
 
             os.makedirs("/app/tmp", exist_ok=True)
             os.makedirs("tmp", exist_ok=True)
@@ -661,30 +708,77 @@ class QwenVision(Plugin):
             for value in [content, msg_content]:
                 for path in candidate_paths(value):
                     if exists(path):
-                        logger.info("[QwenVision] image prepared: %s size=%s", path, os.path.getsize(path))
+                        logger.info(
+                            "[QwenVision] image prepared file=%s size=%s",
+                            os.path.basename(path),
+                            os.path.getsize(path),
+                        )
                         return path
 
         logger.error(
-            "[QwenVision] cannot locate image after prepare. cwd=%s content=%r kwargs=%r",
-            os.getcwd(), content, kwargs
+            "[QwenVision] cannot locate image after prepare cwd=%s content_name=%s",
+            os.getcwd(),
+            os.path.basename(str(content or "")),
         )
         raise RuntimeError("cannot locate image file, content=%r" % (content,))
 
-    def _build_prompt(self, followup_texts):
+    def _vision_identity_context(self, session_id, image_path):
+        manager = getattr(plugins, "instance", None)
+        instances = getattr(manager, "instances", {}) if manager else {}
+        life_photo = instances.get("XIAOYOULIFEPHOTO") if isinstance(instances, dict) else None
+        if life_photo is None:
+            relationship = get_relationship_profile_service()
+            yoyo_reference = relationship.yoyo_reference_path()
+            return {
+                "profile": {},
+                "yoyo_profile": relationship.yoyo_visual_profile(),
+                "recent_photos": [],
+                "reference_paths": [],
+                "reference_images": ([{
+                    "path": yoyo_reference,
+                    "identity": "yoyo",
+                    "label": "YoYo本人真实人脸身份参考",
+                }] if yoyo_reference else []),
+                "provenance": {"matched": False},
+            }
+        try:
+            loader = getattr(life_photo, "get_vision_identity_context", None)
+            identifier = getattr(life_photo, "identify_incoming_image", None)
+            identity = loader(session_id) if callable(loader) else {}
+            identity = identity if isinstance(identity, dict) else {}
+            provenance = identifier(session_id, image_path) if callable(identifier) else {"matched": False}
+            identity["provenance"] = provenance if isinstance(provenance, dict) else {"matched": False}
+            return identity
+        except Exception:
+            logger.exception("[QwenVision] failed to load Xiaoyou visual identity context")
+            return {"profile": {}, "yoyo_profile": {}, "recent_photos": [], "reference_paths": [], "reference_images": [], "provenance": {"matched": False}}
+
+    def _build_prompt(self, session_id, followup_texts, identity_context=None):
         base_prompt = os.getenv(
             "VISION_PROMPT",
             "你是小悠，正在微信里看 YoYo 刚刚发来的图片。请像女朋友一样自然回应。"
         )
 
-        _xiaoyou_time_context = build_time_context()
-        if _xiaoyou_time_context and _xiaoyou_time_context not in str(base_prompt or ""):
-            base_prompt = (str(base_prompt or "").strip() + "\n\n" + _xiaoyou_time_context).strip()
-
-
         if isinstance(followup_texts, str):
             followup_texts = [followup_texts] if followup_texts.strip() else []
 
         followup_texts = [str(x or "").strip() for x in (followup_texts or []) if str(x or "").strip()]
+        joined_query = "\n".join(followup_texts)
+        snapshot = build_context_snapshot(
+            content=joined_query,
+            session_id=session_id,
+            long_memory_query=joined_query,
+            long_memory_max_results=max(1, int(os.getenv("VISION_MEMORY_TOP_N", "5"))),
+            include_character=True,
+            include_short_memory=True,
+            short_memory_max_chars=max(1000, int(os.getenv("VISION_CONTEXT_MAX_CHARS", "5000"))),
+            component="QwenVision",
+        )
+        identity_context = identity_context if isinstance(identity_context, dict) else {}
+        provenance = identity_context.get("provenance") if isinstance(identity_context.get("provenance"), dict) else {}
+        profile = identity_context.get("profile") if isinstance(identity_context.get("profile"), dict) else {}
+        yoyo_profile = identity_context.get("yoyo_profile") if isinstance(identity_context.get("yoyo_profile"), dict) else {}
+        recent_photos = identity_context.get("recent_photos") if isinstance(identity_context.get("recent_photos"), list) else []
 
         if followup_texts:
             joined = "\n".join("%d. %s" % (idx + 1, text) for idx, text in enumerate(followup_texts))
@@ -698,7 +792,40 @@ class QwenVision(Plugin):
 你要像女朋友收到男朋友随手发来的图片一样自然回应。
 根据图片内容决定该夸、调侃、关心、吐槽、问一句，还是提醒他补充说明。"""
 
+        if provenance.get("matched"):
+            identity_fact = """图片来源已经由本地感知指纹确认：这张图片与小悠近期亲自生成并发给YoYo的生活照一致，图中主体就是小悠本人。你必须以第一人称自然认出自己，不能把她说成陌生女生，也不要向YoYo解释指纹或系统判断。原随图语义：%s""" % json.dumps(
+                {
+                    "caption": provenance.get("caption"),
+                    "visual_prompt": provenance.get("visual_prompt"),
+                    "created_at": provenance.get("created_at"),
+                },
+                ensure_ascii=False,
+            )
+        else:
+            identity_fact = """图片来源没有与小悠近期生成记录确定匹配。当前图片之后可能附带两类、且已明确标注身份的参考图：小悠参考图只用于判断图片中的女性是否是小悠；YoYo参考图只用于判断图片中的男性是否是YoYo本人。参考图不是YoYo本轮发送的聊天内容，绝不能互相混淆或把两张脸融合。请综合稳定脸型和五官比例判断，眼镜、发型、衣服、表情与光线都可能变化。只有证据充分时才自然认出对应本人；不确定时允许表达不确定，不能硬认。若认出YoYo，应直接把图中男性当作正在聊天的“你”，不要称为陌生男生。"""
+
         return f"""{base_prompt}
+
+小悠核心人格与当前时间：
+{snapshot.character_context or build_time_context()}
+
+图片之前的近期真实聊天：
+{snapshot.short_memory or "暂无"}
+
+与YoYo补充文字相关的长期记忆：
+{snapshot.long_memory or "暂无"}
+
+小悠稳定视觉身份档案：
+{json.dumps(profile, ensure_ascii=False)}
+
+YoYo稳定视觉身份档案：
+{json.dumps(yoyo_profile, ensure_ascii=False)}
+
+小悠近期亲自分享过的生活照记录：
+{json.dumps(recent_photos, ensure_ascii=False)}
+
+当前图片身份事实：
+{identity_fact}
 
 {situation}
 
@@ -711,35 +838,66 @@ class QwenVision(Plugin):
 6. 如果图片看不清，只说哪里影响判断，并自然让他再发清楚一点。
 7. 默认 1 到 3 句，短一点，像微信消息。
 8. 不要写标题，不要列清单，不要像分析报告。
-9. 不要说自己是 AI、模型、图片识别工具。"""
+9. 不要说自己是 AI、模型、图片识别工具。
+10. 回复必须承接图片之前的聊天，不要把同一场景、同一穿搭或刚刚由小悠发出的照片当成毫无关系的新图片。"""
 
     def _clean_answer(self, text):
         text = str(text or "").strip()
         text = text.strip("\"“”")
         return text[:500]
 
-    def _ask_vision(self, image_path, prompt):
+    def _ask_vision(self, image_path, prompt, reference_paths=None, reference_images=None):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         model = os.getenv("VISION_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
 
         if not api_key:
             raise RuntimeError("OPEN_AI_API_KEY missing")
 
-        mime = mimetypes.guess_type(image_path)[0] or "image/jpeg"
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        data_url = "data:%s;base64,%s" % (mime, b64)
+        data_url = self._image_data_url(image_path)
+        if not data_url:
+            raise RuntimeError("current image unavailable")
+        content = [
+            {
+                "type": "text",
+                "text": prompt + "\n\n多图顺序说明：紧接着的第一张图片是YoYo当前发送、需要你回应的图片。后面的图片若存在，都是带明确身份标签的比对参考，不能当成本轮聊天图片来描述，也不能跨身份融合五官。",
+            },
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+        normalized_references = []
+        for item in list(reference_images or []):
+            if isinstance(item, dict):
+                normalized_references.append(item)
+        if not normalized_references:
+            normalized_references = [
+                {"path": path, "identity": "xiaoyou", "label": "小悠人脸身份参考"}
+                for path in list(reference_paths or [])
+            ]
+        reference_count = 0
+        maximum = max(1, int(os.getenv("VISION_IDENTITY_REFERENCE_MAX", "3")))
+        for item in normalized_references[:maximum]:
+            path = item.get("path")
+            reference_url = self._image_data_url(path)
+            if not reference_url:
+                continue
+            reference_count += 1
+            content.extend([
+                {
+                    "type": "text",
+                    "text": "以下第%s张参考图身份标签：%s（identity=%s）。只用于比对该身份。" % (
+                        reference_count,
+                        str(item.get("label") or "人物身份参考"),
+                        str(item.get("identity") or "unknown"),
+                    ),
+                },
+                {"type": "image_url", "image_url": {"url": reference_url}},
+            ])
 
         payload = {
             "model": model,
             "messages": [
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
+                    "content": content,
                 }
             ],
             "max_tokens": 800,
@@ -747,7 +905,11 @@ class QwenVision(Plugin):
             **build_thinking_payload("VISION"),
         }
 
-        logger.info("[QwenVision] ask vision model=%s image=%s", model, image_path)
+        logger.info(
+            "[QwenVision] ask vision model=%s identity_references=%s",
+            model,
+            reference_count,
+        )
         result = chat_completion(
             component="QwenVision",
             purpose="vision_understanding",
@@ -761,3 +923,20 @@ class QwenVision(Plugin):
                 % (result.error_kind, result.status_code, result.error_code)
             )
         return result.content.strip()
+
+    def _image_data_url(self, path):
+        path = os.path.realpath(str(path or ""))
+        if not path or not os.path.isfile(path):
+            return ""
+        try:
+            max_bytes = max(1, int(os.getenv("VISION_REFERENCE_MAX_MB", "8"))) * 1024 * 1024
+            if os.path.getsize(path) > max_bytes:
+                logger.warning("[QwenVision] image exceeds configured payload limit")
+                return ""
+            mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+            with open(path, "rb") as handle:
+                encoded = base64.b64encode(handle.read()).decode("ascii")
+            return "data:%s;base64,%s" % (mime, encoded)
+        except Exception:
+            logger.exception("[QwenVision] failed to encode image")
+            return ""

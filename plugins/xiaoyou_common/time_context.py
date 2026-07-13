@@ -59,7 +59,7 @@ def build_time_context():
     weekday = weekday_map.get(now.weekday(), "")
     day_type = "周末" if now.weekday() >= 5 else "工作日"
 
-    return """[当前现实时间]
+    base_context = """[当前现实时间]
 当前时区：%s
 当前日期：%s
 当前时间：%s
@@ -76,8 +76,20 @@ def build_time_context():
 6. 回复仍然完全按照小悠的人设和当前聊天语境自由生成。""" % (
         tz_name,
         now.strftime("%Y-%m-%d"),
-        now.strftime("%H:%M"),
-        weekday,
-        day_type,
-        day_part,
+    now.strftime("%H:%M"),
+    weekday,
+    day_type,
+    day_part,
     )
+    try:
+        from plugins.xiaoyou_common.relationship_profile_service import (
+            get_relationship_profile_service,
+        )
+
+        relationship_context = get_relationship_profile_service().build_context(now=now)
+        if relationship_context:
+            return (base_context + "\n\n" + relationship_context).strip()
+    except Exception:
+        # 私密档案缺失或损坏不能影响普通聊天的现实时间能力。
+        pass
+    return base_context

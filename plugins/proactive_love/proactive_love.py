@@ -17,6 +17,11 @@ from plugins.xiaoyou_common.outbound_dispatcher import (
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.conversation_coordinator import claim_action
+from plugins.xiaoyou_common.inner_state_service import get_inner_state_service
+from plugins.xiaoyou_common.proactive_decision_service import decide_proactive_action
+from plugins.xiaoyou_common.relationship_profile_service import (
+    get_relationship_profile_service,
+)
 import plugins
 from plugins import *
 from bridge.context import ContextType
@@ -35,8 +40,8 @@ THREAD_STARTED = False
 
 @plugins.register(
     name="ProactiveLove",
-    desc="Long-cycle life-like proactive messages from Xiaoyou",
-    version="1.0-trace-runtime",
+    desc="Unified context-aware proactive consciousness for Xiaoyou",
+    version="2.0-inner-state",
     author="yoyo",
     desire_priority=10,
 )
@@ -44,6 +49,8 @@ class ProactiveLove(Plugin):
     def __init__(self):
         global THREAD_STARTED
         super().__init__()
+        self.inner_state = get_inner_state_service()
+        self.relationship_profile = get_relationship_profile_service()
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self._migrate_identity_state()
         logger.info("[ProactiveLove] inited")
@@ -55,28 +62,29 @@ class ProactiveLove(Plugin):
             logger.info("[ProactiveLove] background thread started")
 
     def on_handle_context(self, e_context: EventContext):
-        if not self._enabled():
-            return
+        return self.observe_user_context(e_context["context"])
 
-        context = e_context["context"]
+    def observe_user_context(self, context):
+        if not self._enabled():
+            return False
 
         # 只记录私聊，不碰群聊
         kwargs = getattr(context, "kwargs", {}) or {}
         if kwargs.get("isgroup"):
-            return
+            return False
 
         if context.type not in [
             ContextType.TEXT,
             ContextType.IMAGE,
             ContextType.VOICE,
         ]:
-            return
+            return False
 
         session_id = self._get_session_id(context)
         receiver = self._get_receiver(context)
 
         if not session_id or not receiver:
-            return
+            return False
 
         target_session = self._target_session()
         target_receiver = self._target_receiver()
@@ -84,11 +92,11 @@ class ProactiveLove(Plugin):
         # 如果配置了唯一目标，只记录这个目标，避免把旧 session / 其他联系人写入主动消息候选池。
         if target_session and session_id != target_session:
             logger.info("[ProactiveLove] ignore non-target session activity session=%s target_session=%s", session_id, target_session)
-            return
+            return False
 
         if target_receiver and receiver != target_receiver:
             logger.info("[ProactiveLove] ignore non-target receiver activity receiver=%s target_receiver=%s", receiver, target_receiver)
-            return
+            return False
 
         text = ""
         if context.type == ContextType.TEXT:
@@ -99,16 +107,31 @@ class ProactiveLove(Plugin):
             text = "[用户发来了一条语音]"
 
         now = int(time.time())
+        input_id = str(kwargs.get("xiaoyou_input_id") or "")[:80]
+        signature = "%s:%s" % (str(context.type), text[:500])
 
         with LOCK:
             data = self._load_all()
             item = data.get(session_id, {})
+            if input_id and input_id == str(item.get("last_observed_input_id") or ""):
+                return True
+            if (
+                not input_id
+                and signature == str(item.get("last_user_signature") or "")
+                and now - int(item.get("last_user_ts") or 0) <= 2
+            ):
+                return True
             item["session_id"] = session_id
             item["receiver"] = receiver
             item["last_user_ts"] = now
-            item["last_user_text"] = text[:200]
+            item["last_user_text"] = text[:1200]
+            item["next_evaluation_ts"] = 0
+            item["conversation_revision"] = int(item.get("conversation_revision") or 0) + 1
+            item["schedule_reason"] = "waiting_for_current_reply"
             item["trace_id"] = str(kwargs.get("xiaoyou_trace_id") or "")[:80]
-            item["input_id"] = str(kwargs.get("xiaoyou_input_id") or "")[:80]
+            item["input_id"] = input_id
+            item["last_observed_input_id"] = input_id
+            item["last_user_signature"] = signature
             item.setdefault("last_proactive_ts", 0)
             item.setdefault("last_proactive_decision_ts", 0)
             item.setdefault("today", self._today())
@@ -122,7 +145,104 @@ class ProactiveLove(Plugin):
             data[session_id] = item
             self._save_all(data)
 
-        logger.info("[ProactiveLove] updated activity session=%s receiver=%s text=%r", session_id, receiver, text[:50])
+        logger.info(
+            "[ProactiveLove] observed user activity session=%s receiver=%s chars=%s",
+            self._mask_session(session_id),
+            self._mask_session(receiver),
+            len(text),
+        )
+        return True
+
+    def observe_assistant_reply(
+        self,
+        session_id,
+        receiver,
+        text,
+        *,
+        trace_id="",
+        input_id="",
+    ):
+        """Receive a completed reply from ConversationFollowup's event hook.
+
+        The affect update and next-evaluation planning run in a background
+        thread, so normal replies never wait for the proactive system.
+        """
+        if not self._enabled() or not self._unified_enabled():
+            return False
+        session_id = str(session_id or "").strip()
+        receiver = str(receiver or "").strip()
+        text = str(text or "").strip()
+        if not session_id or not receiver or not text:
+            return False
+        if self._target_session() and session_id != self._target_session():
+            return False
+
+        now = int(time.time())
+        with LOCK:
+            data = self._load_all()
+            item = data.get(session_id, {})
+            if (
+                input_id
+                and input_id == str(item.get("last_assistant_input_id") or "")
+                and now - int(item.get("last_assistant_ts") or 0) < 120
+            ):
+                return True
+            if (
+                str(item.get("last_assistant_text") or "") == text
+                and now - int(item.get("last_assistant_ts") or 0) < 120
+            ):
+                return True
+            item["session_id"] = session_id
+            item["receiver"] = receiver
+            item["last_assistant_text"] = text[:1200]
+            item["last_assistant_ts"] = now
+            item["last_assistant_input_id"] = str(input_id or "")[:80]
+            item["trace_id"] = str(trace_id or item.get("trace_id") or "")[:80]
+            item["input_id"] = str(input_id or item.get("input_id") or "")[:80]
+            item["conversation_revision"] = int(item.get("conversation_revision") or 0) + 1
+            revision = item["conversation_revision"]
+            item["next_evaluation_ts"] = 0
+            item["schedule_reason"] = "updating_inner_state"
+            data[session_id] = item
+            self._save_all(data)
+            snapshot = dict(item)
+
+        threading.Thread(
+            target=self._update_inner_state_and_schedule,
+            args=(session_id, revision, snapshot),
+            daemon=True,
+        ).start()
+        return True
+
+    def _update_inner_state_and_schedule(self, session_id, revision, activity):
+        try:
+            result = self.inner_state.update_from_exchange(
+                session_id,
+                user_text=activity.get("last_user_text", ""),
+                assistant_text=activity.get("last_assistant_text", ""),
+                last_user_ts=activity.get("last_user_ts", 0),
+            )
+            delay = self.inner_state.normalize_delay(result.get("next_evaluation_seconds"))
+            with LOCK:
+                data = self._load_all()
+                current = data.get(session_id, {})
+                if int(current.get("conversation_revision") or 0) != int(revision):
+                    logger.info(
+                        "[ProactiveLove] inner-state schedule stale session=%s",
+                        self._mask_session(session_id),
+                    )
+                    return
+                current["next_evaluation_ts"] = int(time.time()) + delay
+                current["schedule_reason"] = "model_chosen_after_exchange"
+                data[session_id] = current
+                self._save_all(data)
+            logger.info(
+                "[ProactiveLove] next autonomous evaluation session=%s delay=%ss",
+                self._mask_session(session_id),
+                delay,
+            )
+        except Exception:
+            logger.exception("[ProactiveLove] inner-state update failed")
 
     def _loop(self):
         while True:
@@ -138,14 +258,18 @@ class ProactiveLove(Plugin):
         if not self._enabled():
             return
 
-        if not self._can_send_now():
+        if not self._unified_enabled():
             return
 
         now = int(time.time())
-        idle_seconds = int(os.getenv("PROACTIVE_IDLE_SECONDS", "7200"))
-        cooldown_seconds = int(os.getenv("PROACTIVE_COOLDOWN_SECONDS", str(idle_seconds)))
-        decision_cooldown_seconds = int(os.getenv("PROACTIVE_DECISION_COOLDOWN_SECONDS", "1800"))
-        max_per_day = int(os.getenv("PROACTIVE_MAX_PER_DAY", "3"))
+        safety_min_interval = max(
+            0,
+            int(os.getenv("XIAOYOU_PROACTIVE_SAFETY_MIN_SEND_INTERVAL_SECONDS", "60")),
+        )
+        safety_max_per_day = max(
+            1,
+            int(os.getenv("XIAOYOU_PROACTIVE_SAFETY_MAX_PER_DAY", "20")),
+        )
 
         with LOCK:
             data = self._load_all()
@@ -169,7 +293,13 @@ class ProactiveLove(Plugin):
                 receiver = resolve_receiver(session_id, item.get("receiver"))
                 last_user_ts = int(item.get("last_user_ts") or 0)
                 last_proactive_ts = int(item.get("last_proactive_ts") or 0)
-                last_decision_ts = int(item.get("last_proactive_decision_ts") or 0)
+                due_ts = int(item.get("next_evaluation_ts") or 0)
+                source_revision = int(item.get("conversation_revision") or 0)
+                calendar_key = self.relationship_profile.calendar_attention_key()
+                calendar_due = bool(
+                    calendar_key
+                    and calendar_key != str(item.get("last_calendar_attention_key") or "")
+                )
 
                 if not receiver or not last_user_ts:
                     continue
@@ -188,19 +318,11 @@ class ProactiveLove(Plugin):
 
                 sent_today = int(item.get("sent_today") or 0)
 
-                idle = now - last_user_ts
-                cooldown = now - last_proactive_ts
-
-                if idle < idle_seconds:
+                if not calendar_due and (due_ts <= 0 or now < due_ts):
                     continue
-
-                if cooldown < cooldown_seconds:
+                if now - last_proactive_ts < safety_min_interval:
                     continue
-
-                if now - last_decision_ts < decision_cooldown_seconds:
-                    continue
-
-                if sent_today >= max_per_day:
+                if sent_today >= safety_max_per_day:
                     continue
 
                 lease = claim_action(
@@ -223,12 +345,19 @@ class ProactiveLove(Plugin):
                     )
                     continue
 
-                # 只限制模型判断调用频率；是否发送、发送什么由模型决定。
+                # 先写入失败重试时间，避免进程并发或异常造成紧密重复调用。
+                fallback_delay = self.inner_state.normalize_delay(
+                    os.getenv("XIAOYOU_PROACTIVE_FAILURE_RETRY_SECONDS", "900")
+                )
                 item["last_proactive_decision_ts"] = now
+                item["next_evaluation_ts"] = now + fallback_delay
+                item["schedule_reason"] = "decision_in_progress"
                 with LOCK:
                     fresh = self._load_all()
                     current = fresh.get(session_id, {})
                     current["last_proactive_decision_ts"] = now
+                    current["next_evaluation_ts"] = now + fallback_delay
+                    current["schedule_reason"] = "decision_in_progress"
                     fresh[session_id] = current
                     decision_persisted = self._save_all(fresh)
 
@@ -239,22 +368,83 @@ class ProactiveLove(Plugin):
                     )
                     continue
 
-                photo_share = self._create_proactive_photo_share(session_id, item)
-                if photo_share:
+                inner_state = self.inner_state.get(session_id)
+                decision = decide_proactive_action(
+                    session_id=session_id,
+                    activity=item,
+                    inner_state=inner_state,
+                    normalize_delay=self.inner_state.normalize_delay,
+                )
+                decision_at = int(time.time())
+                with LOCK:
+                    fresh = self._load_all()
+                    current = fresh.get(session_id, {})
+                    current["next_evaluation_ts"] = decision_at + decision.next_evaluation_seconds
+                    current["schedule_reason"] = "model_chosen_after_decision"
+                    current["last_decision"] = {
+                        "ts": decision_at,
+                        "action": decision.action,
+                        "confidence": decision.confidence,
+                        "reason": decision.reason[:300],
+                    }
+                    if calendar_due:
+                        current["last_calendar_attention_key"] = calendar_key
+                    fresh[session_id] = current
+                    self._save_all(fresh)
+
+                if decision.action == "none":
+                    self.inner_state.apply_decision_feedback(
+                        session_id,
+                        action="none",
+                        delivered=False,
+                        deltas=decision.state_deltas,
+                        reason=decision.reason,
+                    )
+                    lease.cancel("model_chose_silence")
+                    logger.info(
+                        "[ProactiveLove] model chose silence session=%s next=%ss calendar=%s",
+                        self._mask_session(session_id),
+                        decision.next_evaluation_seconds,
+                        bool(calendar_due),
+                    )
+                    continue
+
+                if decision.action == "photo":
+                    photo_activity = dict(item)
+                    photo_activity["proactive_intent"] = decision.photo_intent
+                    photo_activity["inner_state"] = inner_state
+                    photo_activity["decision_reason"] = decision.reason
+                    photo_share = self._create_proactive_photo_share(session_id, photo_activity)
+                    if not photo_share:
+                        self.inner_state.apply_decision_feedback(
+                            session_id,
+                            action="photo",
+                            delivered=False,
+                            deltas=decision.state_deltas,
+                            reason="photo generation unavailable: " + decision.reason,
+                        )
+                        lease.cancel("photo_generation_unavailable")
+                        logger.warning(
+                            "[ProactiveLove] real photo unavailable; no placeholder sent session=%s",
+                            self._mask_session(session_id),
+                        )
+                        continue
                     parts = self._split_message(photo_share.get("caption", ""))
                 else:
-                    msg = self._generate_message(session_id, item)
-                    parts = self._split_message(msg)
+                    parts = self._split_message(decision.text)
 
                 if not photo_share and not parts:
-                    logger.warning("[ProactiveLove] no model-generated proactive text, skip sending")
+                    lease.cancel("empty_decision_content")
                     continue
 
                 # 生成消息期间 YoYo 可能已经回来了；此时主动消息必须取消。
                 with LOCK:
                     latest = self._load_all().get(session_id, {})
 
-                if int(latest.get("last_user_ts") or 0) > last_user_ts:
+                if (
+                    int(latest.get("last_user_ts") or 0) > last_user_ts
+                    or int(latest.get("conversation_revision") or 0) != source_revision
+                ):
                     if photo_share:
                         self._discard_proactive_photo(photo_share)
                     logger.info(
@@ -278,7 +468,7 @@ class ProactiveLove(Plugin):
                     parts=parts,
                     receiver=send_receiver,
                     freshness_check=lambda: self._proactive_snapshot_current(
-                        session_id, last_user_ts
+                        session_id, last_user_ts, source_revision
                     ) and lease.current(),
                     delay_before_part=lambda index, _part: (
                         random.uniform(0.8, 2.2) if index > 0 else 0.0
@@ -330,6 +520,8 @@ class ProactiveLove(Plugin):
                     current["today"] = self._today()
                     current["receiver"] = send_receiver
                     current["recent_proactive_texts"] = item["recent_proactive_texts"]
+                    current["next_evaluation_ts"] = now2 + decision.next_evaluation_seconds
+                    current["schedule_reason"] = "model_chosen_after_sent_action"
                     fresh[session_id] = current
                     if not self._save_all(fresh):
                         logger.error(
@@ -337,6 +529,13 @@ class ProactiveLove(Plugin):
                             session_id,
                             receipt.action_id,
                         )
+                self.inner_state.apply_decision_feedback(
+                    session_id,
+                    action=decision.action,
+                    delivered=receipt.delivered,
+                    deltas=decision.state_deltas,
+                    reason=decision.reason,
+                )
 
             except Exception:
                 if photo_share and not photo_recorded:
@@ -586,10 +785,21 @@ YoYo 上次说的是：{last_text if last_text else "没有记录"}
     def _target_session(self):
         return os.getenv("PROACTIVE_TARGET_SESSION", "").strip()
 
-    def _proactive_snapshot_current(self, session_id, source_last_user_ts):
+    def _proactive_snapshot_current(
+        self,
+        session_id,
+        source_last_user_ts,
+        source_revision=None,
+    ):
         with LOCK:
             latest = self._load_all().get(session_id, {})
-        return int(latest.get("last_user_ts") or 0) <= int(source_last_user_ts or 0)
+        if int(latest.get("last_user_ts") or 0) > int(source_last_user_ts or 0):
+            return False
+        if source_revision is not None and int(
+            latest.get("conversation_revision") or 0
+        ) != int(source_revision):
+            return False
+        return True
 
     def _target_receiver(self):
         return os.getenv("PROACTIVE_TARGET_RECEIVER", "").strip()
@@ -599,6 +809,15 @@ YoYo 上次说的是：{last_text if last_text else "没有记录"}
 
     def _enabled(self):
         return os.getenv("PROACTIVE_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+
+    def _unified_enabled(self):
+        return os.getenv("XIAOYOU_UNIFIED_PROACTIVE_ENABLED", "true").strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+
+    def _mask_session(self, value):
+        value = str(value or "")
+        return value if len(value) <= 10 else value[:5] + "..." + value[-4:]
 
     def _today(self):
         return datetime.now().strftime("%Y-%m-%d")

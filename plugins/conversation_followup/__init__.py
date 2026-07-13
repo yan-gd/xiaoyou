@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ConversationFollowup_v0.8-soft-presence
+ConversationFollowup_v0.9-unified-delegate
 
 小悠 v1.3 聊天中断追问插件。
 
@@ -51,7 +51,7 @@ except Exception:
     desire_priority=9998,
     hidden=False,
     desc="小悠聊天中断后的自然追问",
-    version="0.8-soft-presence",
+    version="0.9-unified-delegate",
     author="YoYo"
 )
 class ConversationFollowup(Plugin):
@@ -59,6 +59,7 @@ class ConversationFollowup(Plugin):
         super().__init__()
 
         self.enabled = self._env_bool("CONVERSATION_FOLLOWUP_ENABLED", True)
+        self.unified_enabled = self._env_bool("XIAOYOU_UNIFIED_PROACTIVE_ENABLED", True)
 
         self.check_interval = self._env_int("CONVERSATION_FOLLOWUP_CHECK_INTERVAL", 30)
         self.min_delay = self._env_int("CONVERSATION_FOLLOWUP_MIN_DELAY_SECONDS", 120)
@@ -109,13 +110,14 @@ class ConversationFollowup(Plugin):
         if hasattr(Event, "ON_SEND_REPLY"):
             self.handlers[Event.ON_SEND_REPLY] = self.on_send_reply
 
-        if self.enabled:
+        if self.enabled and not self.unified_enabled:
             t = threading.Thread(target=self._loop, daemon=True)
             t.start()
 
         logger.info(
-            "[ConversationFollowup] ConversationFollowup_v0.8-soft-presence loaded "
+            "[ConversationFollowup] ConversationFollowup_v0.9-unified-delegate loaded "
             f"enabled={self.enabled} "
+            f"unified_delegate={self.unified_enabled} "
             f"target_required={self.require_target} "
             f"target_set={bool(self.target_session)} "
             f"classify_model={self.classify_model} "
@@ -136,6 +138,12 @@ class ConversationFollowup(Plugin):
 
         context = self._event_get(e_context, "context")
         if not context:
+            return
+
+        # 高优先级入口先把用户活动交给统一中枢。这样即使后续图片、
+        # 生活照或提醒插件截断事件，动态状态仍能看见这轮交流。
+        if self.unified_enabled:
+            self._delegate_user_context(context)
             return
 
         session_id = self._get_session_id(context)
@@ -249,6 +257,20 @@ class ConversationFollowup(Plugin):
         trace_id = str(context_kwargs.get("xiaoyou_trace_id") or "")
         input_id = str(context_kwargs.get("xiaoyou_input_id") or "")
 
+        if self.unified_enabled:
+            if self._delegate_completed_reply(
+                session_id,
+                receiver,
+                text,
+                trace_id=trace_id,
+                input_id=input_id,
+            ):
+                logger.info(
+                    "[ConversationFollowup] completed reply delegated session=%s",
+                    self._mask_session(session_id),
+                )
+            return
+
         with self.lock:
             s = self._session_state(session_id)
             self._roll_day(s)
@@ -316,6 +338,46 @@ class ConversationFollowup(Plugin):
             daemon=True,
         )
         t.start()
+
+    def _delegate_completed_reply(
+        self,
+        session_id,
+        receiver,
+        text,
+        *,
+        trace_id="",
+        input_id="",
+    ):
+        try:
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            proactive = instances.get("PROACTIVELOVE") if isinstance(instances, dict) else None
+            observe = getattr(proactive, "observe_assistant_reply", None)
+            if callable(observe):
+                return bool(
+                    observe(
+                        session_id,
+                        receiver,
+                        text,
+                        trace_id=trace_id,
+                        input_id=input_id,
+                    )
+                )
+        except Exception:
+            logger.exception("[ConversationFollowup] unified delegation failed")
+        return False
+
+    def _delegate_user_context(self, context):
+        try:
+            manager = getattr(plugins, "instance", None)
+            instances = getattr(manager, "instances", {}) if manager else {}
+            proactive = instances.get("PROACTIVELOVE") if isinstance(instances, dict) else None
+            observe = getattr(proactive, "observe_user_context", None)
+            if callable(observe):
+                return bool(observe(context))
+        except Exception:
+            logger.exception("[ConversationFollowup] user activity delegation failed")
+        return False
 
     def _classify_and_set_pending(
         self,

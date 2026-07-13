@@ -1,6 +1,7 @@
 # -*- coding:utf-8 -*-
 import base64
 import copy
+import hashlib
 import json
 import mimetypes
 import os
@@ -23,11 +24,15 @@ from plugins.xiaoyou_common.context_service import (
 )
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.photo_intent_service import classify_photo_semantics
 from plugins.xiaoyou_common.outbound_dispatcher import (
     record_assistant_message,
     send_image,
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.relationship_profile_service import (
+    get_relationship_profile_service,
+)
 from plugins.xiaoyou_life_photo.plan_rules import (
     ALLOWED_SHARE_INTENTS,
     action_requires_free_hands,
@@ -35,6 +40,7 @@ from plugins.xiaoyou_life_photo.plan_rules import (
     normalize_camera_operator,
     normalize_capture_mode,
     normalize_choice,
+    normalize_constraints,
 )
 
 
@@ -57,13 +63,14 @@ LOCK = threading.RLock()
 @plugins.register(
     name="XiaoyouLifePhoto",
     desc="Memory-aware daily-life photos shared by Xiaoyou",
-    version="0.7-semantic-camera",
+    version="0.9-couple-visual-identity",
     author="yoyo",
     desire_priority=31,
 )
 class XiaoyouLifePhoto(Plugin):
     def __init__(self):
         super().__init__()
+        self.relationship_profile = get_relationship_profile_service()
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.profile = self._load_profile()
         self.state = self._load_state()
@@ -92,7 +99,16 @@ class XiaoyouLifePhoto(Plugin):
             return
 
         current_text = extract_current_user_text(context.content)
-        if not current_text or not self._looks_like_photo_candidate(current_text):
+        if not current_text:
+            return
+
+        semantic_route = classify_photo_semantics(
+            text=current_text,
+            session_id=session_id,
+            pending_user_image=False,
+            context=context,
+        )
+        if not semantic_route.should_generate:
             return
 
         plan = self._plan_photo(
@@ -100,6 +116,7 @@ class XiaoyouLifePhoto(Plugin):
             session_id=session_id,
             user_text=current_text,
             context_text=str(context.content or ""),
+            semantic_route=semantic_route,
         )
         if not plan or not plan.get("should_generate"):
             return
@@ -151,10 +168,11 @@ class XiaoyouLifePhoto(Plugin):
 
         activity = activity if isinstance(activity, dict) else {}
         last_user_text = str(activity.get("last_user_text") or "").strip()
+        proactive_intent = str(activity.get("proactive_intent") or "").strip()
         plan = self._plan_photo(
             mode="proactive",
             session_id=session_id,
-            user_text=last_user_text,
+            user_text=proactive_intent or last_user_text,
             activity=activity,
         )
         if not plan or not plan.get("should_generate"):
@@ -177,16 +195,26 @@ class XiaoyouLifePhoto(Plugin):
             logger.exception("[XiaoyouLifePhoto] failed to discard unsent photo")
             return False
 
-    def _plan_photo(self, mode, session_id, user_text="", context_text="", activity=None):
+    def _plan_photo(
+        self,
+        mode,
+        session_id,
+        user_text="",
+        context_text="",
+        activity=None,
+        semantic_route=None,
+    ):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
             logger.warning("[XiaoyouLifePhoto] planner api key missing")
             return None
 
         activity = activity if isinstance(activity, dict) else {}
-        query = ""
-        if mode == "proactive":
-            query = user_text or "小悠此刻可能自然分享给YoYo的近期生活、喜好与关系细节"
+        query = user_text or (
+            "小悠此刻可能自然分享给YoYo的近期生活、喜好与关系细节"
+            if mode == "proactive"
+            else ""
+        )
         context_snapshot = build_context_snapshot(
             content=user_text,
             session_id=session_id,
@@ -196,19 +224,19 @@ class XiaoyouLifePhoto(Plugin):
                 int(os.getenv("XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N", "8")),
             ),
             include_character=False,
-            include_short_memory=mode == "proactive",
+            include_short_memory=True,
+            short_memory_max_chars=max(
+                1200,
+                int(os.getenv("XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS", "9000")),
+            ),
             component="XiaoyouLifePhoto",
         )
 
-        if mode == "proactive":
-            long_memory = context_snapshot.long_memory
-            short_memory = context_snapshot.short_memory
-            context_block = "长期记忆：\n%s\n\n最近聊天：\n%s" % (
-                long_memory or "暂无",
-                short_memory or "暂无",
-            )
-        else:
-            context_block = str(context_text or "").strip()
+        context_block = "当前输入与框架上下文：\n%s\n\n最近聊天：\n%s\n\n相关长期记忆：\n%s" % (
+            str(context_text or user_text or "暂无").strip(),
+            context_snapshot.short_memory or "暂无",
+            context_snapshot.long_memory or "暂无",
+        )
 
         max_context = max(1000, int(os.getenv("XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS", "9000")))
         context_block = context_block[-max_context:]
@@ -218,9 +246,27 @@ class XiaoyouLifePhoto(Plugin):
         character_desc = os.getenv("CHARACTER_DESC", "").strip()
 
         if mode == "proactive":
-            task = """这是一次主动分享判断。你可以决定不发照片；只有当此刻像真实女朋友一样自然想把某个生活瞬间拍给YoYo看时才生成。不要按固定题材轮播，也不要为了完成任务硬凑自拍、美食或穿搭。"""
+            task = """统一主动决策中枢已经结合完整语境和小悠当前内在状态选择了photo。你现在负责把这份真实分享意图规划成照片，而不是重新用关键词判断媒介。若语境已经明显失效或意图不安全可返回should_generate=false，否则应忠实实现。不要按固定题材轮播，也不要为了完成任务硬凑自拍、美食或穿搭。
+
+统一主动决策事实：
+%s""" % json.dumps(
+                {
+                    "photo_intent": activity.get("proactive_intent", ""),
+                    "decision_reason": activity.get("decision_reason", ""),
+                    "inner_state": activity.get("inner_state", {}),
+                },
+                ensure_ascii=False,
+            )
         else:
-            task = """这是YoYo当前提出的请求。判断他是否真的在让小悠拍照、自拍、展示穿搭或用照片分享眼前事物；若是，理解完整上下文后为这一次请求设计画面。否定、转述、讨论图片技术而非索要照片时不要生成。"""
+            task = """统一语义路由已经把当前输入判断为“此刻要求小悠生成一张新照片”。你仍需结合完整上下文复核：只有现在确实应该执行才生成；未来安排、回忆、假设、否定、转述或讨论拍照都必须should_generate=false。不要依靠任何单个词判断。语义路由事实：%s""" % json.dumps(
+                {
+                    "route": getattr(semantic_route, "route", ""),
+                    "time_scope": getattr(semantic_route, "time_scope", ""),
+                    "subject": getattr(semantic_route, "subject", ""),
+                    "reason": getattr(semantic_route, "reason", ""),
+                },
+                ensure_ascii=False,
+            )
 
         prompt = """你是小悠的视觉导演，也是小悠本人。你的工作不是套模板，而是结合她的人格、身体档案、与YoYo的关系、当前时间、聊天和记忆，自主决定一张她真正愿意发给男朋友的生活照片。
 
@@ -250,6 +296,8 @@ YoYo当前相关原话：
 - third_person_camera只表示由语境中合理存在的第三人称镜头拍摄；除非原话或上下文明确说明，不要凭空声称YoYo就在现场掌镜。
 - emotion先概括当次照片真正想表达的情绪；expression、gaze和pose再把它落实为自然的眉眼、嘴型、视线、头部角度与身体动作。不要机械重复眨眼、吐舌、双手托脸、比心等典型卖萌动作。
 - 图片的emotion、expression和caption必须语义一致。普通报备不必夸张卖萌；困倦、担心、吃醋、得意、害羞、开心等状态应有不同而克制的视觉表现，但具体表达仍由小悠结合语境自主决定。
+- include_yoyo必须依据完整语义判断成片里是否真实出现YoYo本人。YoYo只是拍摄者、被提到或不在现场时为false；情侣合照、拥抱、公主抱等明确同框时为true。禁止靠单个词判断。
+- physical_constraints必须由完整语义决定，可选princess_carry、hands_free_pose、distant_full_body；没有对应物理要求时返回空数组。不要因为命中某个词就选择约束。
 - 遇到公主抱时必须写清真实受力：YoYo站立，用一只手臂托住小悠背部/肩背，另一只手臂托住她弯曲膝盖下方或大腿；小悠横向或斜向依偎在他胸前，双腿弯曲并完全离地。不能画成坐腿、跨坐、背抱或两人并排坐着。
 - 记忆只用于维持真实关系与偏好，不要逐条复述，也不要把不相关或过时的记忆硬塞进画面。
 - 小悠的年龄、脸部和身体设定以人物档案为唯一来源。可以自然、有吸引力、有亲密感，但不要把她画成未成年人。
@@ -269,7 +317,9 @@ YoYo当前相关原话：
   "expression": "与情绪一致的眉眼和嘴型，不套固定卖萌模板",
   "gaze": "自然视线方向",
   "pose": "符合镜头方式和人体物理的动作",
+  "include_yoyo": false,
   "hands_free_required": false,
+  "physical_constraints": ["princess_carry | hands_free_pose | distant_full_body"],
   "decision_reason": "简短内部理由"
 }""" % (
             task,
@@ -299,7 +349,7 @@ YoYo当前相关原话：
                 component="XiaoyouLifePhoto",
                 purpose="photo_planner",
                 payload=payload,
-                timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT", "45")),
+                timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT", "75")),
                 api_key=api_key,
             )
             if not result.ok:
@@ -321,7 +371,6 @@ YoYo当前相关原话：
             aspect_ratio = str(data.get("aspect_ratio") or "portrait").strip().lower()
             if aspect_ratio not in ("portrait", "square", "landscape"):
                 aspect_ratio = "portrait"
-            normalized_user_text = str(user_text or "").strip()
             share_intent = normalize_choice(
                 data.get("share_intent"),
                 ALLOWED_SHARE_INTENTS,
@@ -331,30 +380,27 @@ YoYo当前相关原话：
             expression = str(data.get("expression") or "").strip()[:500]
             gaze = str(data.get("gaze") or "").strip()[:300]
             pose = str(data.get("pose") or "").strip()[:600]
-            hands_free_required = as_bool(data.get("hands_free_required", False))
+            include_yoyo = as_bool(data.get("include_yoyo", False))
+            pose_constraints = normalize_constraints(data.get("physical_constraints"))
+            hands_free_required = (
+                as_bool(data.get("hands_free_required", False))
+                or "hands_free_pose" in pose_constraints
+            )
+            distant_camera_required = "distant_full_body" in pose_constraints
             capture_mode = normalize_capture_mode(
                 data.get("capture_mode"),
-                user_text=normalized_user_text,
-                visual_prompt=visual_prompt,
-                pose=pose,
                 hands_free_required=hands_free_required,
+                distant_camera_required=distant_camera_required,
             )
             hands_free_required = action_requires_free_hands(
-                user_text=normalized_user_text,
-                visual_prompt=visual_prompt,
-                pose=pose,
                 declared=hands_free_required,
             )
             camera_operator = normalize_camera_operator(
                 capture_mode,
                 requested_operator=data.get("camera_operator"),
-                user_text=normalized_user_text,
             )
 
-            pose_constraints = []
-            if "公主抱" in normalized_user_text or "公主抱" in visual_prompt:
-                pose_constraints.append("princess_carry")
-            if hands_free_required:
+            if hands_free_required and "hands_free_pose" not in pose_constraints:
                 pose_constraints.append("hands_free_pose")
             if should_generate and not visual_prompt:
                 return None
@@ -370,6 +416,7 @@ YoYo当前相关原话：
                 "expression": expression,
                 "gaze": gaze,
                 "pose": pose,
+                "include_yoyo": include_yoyo,
                 "hands_free_required": hands_free_required,
                 "pose_constraints": pose_constraints,
                 "decision_reason": str(data.get("decision_reason") or "").strip()[:300],
@@ -384,7 +431,9 @@ YoYo当前相关原话：
             logger.warning("[XiaoyouLifePhoto] Seedream api key missing")
             return None
 
-        reference_images = self._reference_data_urls()
+        reference_images = self._reference_data_urls(
+            include_yoyo=bool(plan.get("include_yoyo"))
+        )
         if not reference_images:
             logger.warning("[XiaoyouLifePhoto] no valid identity reference image")
             return None
@@ -414,7 +463,7 @@ YoYo当前相关原话：
                 base + "/images/generations",
                 headers=headers,
                 json=payload,
-                timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_TIMEOUT", "180")),
+                timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_TIMEOUT", "240")),
             )
             if response.status_code >= 400:
                 logger.warning(
@@ -446,6 +495,7 @@ YoYo当前相关原话：
                 "expression": str(plan.get("expression") or "").strip(),
                 "gaze": str(plan.get("gaze") or "").strip(),
                 "pose": str(plan.get("pose") or "").strip(),
+                "include_yoyo": bool(plan.get("include_yoyo")),
                 "hands_free_required": bool(plan.get("hands_free_required")),
                 "pose_constraints": list(plan.get("pose_constraints") or []),
                 "source": source,
@@ -500,7 +550,7 @@ YoYo当前相关原话：
             if capture_mode == "front_camera_selfie":
                 carry_rule += (
                     "小悠只能用一条手臂伸向前置镜头完成自拍，另一条手臂自然依附身体或YoYo；持机手掌和手机位于画外。"
-                    "近距离构图可主要呈现小悠面部、上身、弯曲双腿以及YoYo托住她的双臂和部分胸肩；YoYo没有人脸参考时不必完整露出脸"
+                    "近距离构图可主要呈现小悠面部、上身、弯曲双腿以及YoYo托住她的双臂和部分胸肩"
                 )
             else:
                 carry_rule += (
@@ -512,9 +562,14 @@ YoYo当前相关原话：
                 "本次动作需要小悠双手自由，双手必须都用于画面中描述的动作，不得再增加持机手或自拍手臂；"
                 "必须采用定时拍摄或第三人称拍摄所对应的自然透视"
             )
+        current_age = self.relationship_profile.xiaoyou_current_age()
         identity = json.dumps(
             {
-                "identity_age": self.profile.get("identity_age"),
+                "identity_age": (
+                    "%s岁的成年女性" % current_age
+                    if current_age is not None
+                    else self.profile.get("identity_age")
+                ),
                 "visual_medium": self.profile.get("visual_medium"),
                 "face": self.profile.get("face"),
                 "hair": self.profile.get("hair"),
@@ -535,6 +590,13 @@ YoYo当前相关原话：
                     str(entry.get("do_not_copy_by_default") or "服装、表情、姿势和背景"),
                 )
             )
+        include_yoyo = bool(plan.get("include_yoyo"))
+        yoyo_profile = self.relationship_profile.yoyo_visual_profile() if include_yoyo else {}
+        if include_yoyo and self.relationship_profile.yoyo_reference_path():
+            reference_roles.append(
+                "最后一张额外参考图：YoYo永久人脸身份参考；只保留YoYo的脸型、五官关系和身份辨识度；"
+                "眼镜、发型整理、衣服、表情、背景和自拍畸变不是固定设定。绝不能把YoYo参考图融合到小悠脸上"
+            )
         semantic_direction = json.dumps(
             {
                 "share_intent": plan.get("share_intent"),
@@ -543,6 +605,7 @@ YoYo当前相关原话：
                 "gaze": plan.get("gaze"),
                 "pose": plan.get("pose"),
                 "caption_meaning": plan.get("caption"),
+                "include_yoyo": include_yoyo,
             },
             ensure_ascii=False,
         )
@@ -553,8 +616,20 @@ YoYo当前相关原话：
             "third_person_camera": "由当时语境中合理存在的第三人称拍摄者拍下",
             "first_person_scene": "由小悠从自己的第一视角拍下眼前场景",
         }.get(capture_mode, "按本次镜头方式拍下")
-        identity_age = str(self.profile.get("identity_age") or "明确的成年女性")
-        return """输入的多张参考图共同定义小悠的永久人物身份。必须保持同一个成年女性：脸部骨相、五官比例、灰紫色眼睛、黑色长发、年龄感、头身比例和整体辨识度与参考图一致。参考图只负责身份、角度和体态，不要默认复制其中的白色上衣、灰色短裤、中性表情、标准站姿或纯色背景。
+        identity_age = (
+            "%s岁的成年女性" % current_age
+            if current_age is not None
+            else str(self.profile.get("identity_age") or "明确的成年女性")
+        )
+        couple_identity_rule = (
+            "本次包含YoYo。前面的小悠参考图只定义小悠，最后的YoYo自拍只定义YoYo；必须生成两个清晰不同且各自身份一致的人，严禁换脸、融脸、性别混淆或把YoYo的眼镜与五官复制给小悠。YoYo视觉档案：%s。"
+            % json.dumps(yoyo_profile, ensure_ascii=False)
+            if include_yoyo
+            else "本次不包含YoYo本人，不要因为聊天提到他或他可能是拍摄者就额外生成男性人物。"
+        )
+        return """输入的前几张参考图共同定义小悠的永久人物身份。必须保持同一个成年女性：脸部骨相、五官比例、灰紫色眼睛、黑色长发、年龄感、头身比例和整体辨识度与参考图一致。参考图只负责身份、角度和体态，不要默认复制其中的白色上衣、灰色短裤、中性表情、标准站姿或纯色背景。
+
+情侣身份规则：%s
 
 参考图分工：
 %s
@@ -572,6 +647,7 @@ YoYo当前相关原话：
 最高优先级动作约束：%s。
 
 质量要求：人物年龄设定为%s；身份高度一致；人体比例、手部、手指、关节、镜面反射和透视正确；只生成一张完整图片；不要拼图，不要多画面，不要出现第二个相似人物；不要把caption画成文字；不要文字、界面、边框、Logo、签名或水印。若本次动态画面描述与“最高优先级镜头约束”或“最高优先级动作约束”冲突，必须忽略动态描述中的冲突部分，以最高优先级约束为准。""" % (
+            couple_identity_rule,
             "\n".join(reference_roles) or "按输入顺序共同参考人物身份",
             identity,
             plan.get("visual_prompt", ""),
@@ -602,7 +678,7 @@ YoYo当前相关原话：
                 paths.append(real_path)
         return paths[:4]
 
-    def _reference_data_urls(self):
+    def _reference_data_urls(self, include_yoyo=False):
         results = []
         max_bytes = max(1, int(os.getenv("XIAOYOU_LIFE_PHOTO_REFERENCE_MAX_MB", "8"))) * 1024 * 1024
         for path in self._reference_paths():
@@ -616,7 +692,164 @@ YoYo当前相关原话：
                 results.append("data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")))
             except Exception:
                 logger.exception("[XiaoyouLifePhoto] failed to read reference image path=%s", path)
+        if include_yoyo:
+            path = self.relationship_profile.yoyo_reference_path()
+            try:
+                if path and os.path.getsize(path) <= max_bytes:
+                    with open(path, "rb") as handle:
+                        raw = handle.read()
+                    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+                    results.append("data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")))
+            except Exception:
+                logger.exception("[XiaoyouLifePhoto] failed to read private YoYo reference")
         return results
+
+    def get_vision_identity_context(self, session_id):
+        """Expose read-only visual identity facts to QwenVision."""
+        with LOCK:
+            state = self._load_state()
+            item = copy.deepcopy(state.setdefault("sessions", {}).get(session_id, {}))
+        recent = []
+        for entry in (item.get("recent") or [])[-4:]:
+            if not isinstance(entry, dict):
+                continue
+            recent.append({
+                "ts": int(entry.get("ts") or 0),
+                "caption": str(entry.get("caption") or "")[:300],
+                "visual_prompt": str(entry.get("visual_prompt") or "")[:500],
+                "capture_mode": str(entry.get("capture_mode") or "")[:80],
+                "emotion": str(entry.get("emotion") or "")[:160],
+                "include_yoyo": bool(entry.get("include_yoyo")),
+            })
+        current_age = self.relationship_profile.xiaoyou_current_age()
+        profile = {
+            "identity_name": self.profile.get("identity_name"),
+            "identity_age": (
+                "%s岁的成年女性" % current_age
+                if current_age is not None
+                else self.profile.get("identity_age")
+            ),
+            "visual_medium": self.profile.get("visual_medium"),
+            "face": self.profile.get("face"),
+            "hair": self.profile.get("hair"),
+            "body": self.profile.get("body"),
+            "immutable_identity": self.profile.get("immutable_identity"),
+        }
+        face_references = [
+            path
+            for path in self._reference_paths()
+            if "face" in os.path.basename(path).lower()
+        ][:2]
+        reference_images = [
+            {"path": path, "identity": "xiaoyou", "label": "小悠人脸身份参考"}
+            for path in face_references
+        ]
+        yoyo_reference = self.relationship_profile.yoyo_reference_path()
+        if yoyo_reference:
+            reference_images.append({
+                "path": yoyo_reference,
+                "identity": "yoyo",
+                "label": "YoYo本人真实人脸身份参考",
+            })
+        return {
+            "profile": profile,
+            "yoyo_profile": self.relationship_profile.yoyo_visual_profile(),
+            "recent_photos": recent,
+            "reference_paths": face_references,
+            "reference_images": reference_images,
+        }
+
+    def identify_incoming_image(self, session_id, image_path):
+        """Recognize a recently generated Xiaoyou image without another model call."""
+        incoming = self._image_fingerprints(image_path)
+        if not incoming.get("sha256"):
+            return {"matched": False}
+
+        with LOCK:
+            state = self._load_state()
+            entries = copy.deepcopy(
+                state.setdefault("sessions", {}).get(session_id, {}).get("recent") or []
+            )
+
+        best = None
+        for entry in reversed(entries[-20:]):
+            if not isinstance(entry, dict):
+                continue
+            fingerprints = {
+                "sha256": str(entry.get("sha256") or ""),
+                "dhash": str(entry.get("dhash") or ""),
+            }
+            if not fingerprints["sha256"]:
+                fingerprints = self._image_fingerprints(entry.get("path"))
+            if incoming["sha256"] == fingerprints.get("sha256"):
+                best = ("exact_hash", 0, entry)
+                break
+            distance = self._hash_distance(incoming.get("dhash"), fingerprints.get("dhash"))
+            threshold = max(
+                0,
+                min(64, int(os.getenv("VISION_IDENTITY_HASH_DISTANCE", "8"))),
+            )
+            if distance is not None and distance <= threshold:
+                if best is None or distance < best[1]:
+                    best = ("perceptual_hash", distance, entry)
+
+        if best is None:
+            return {"matched": False}
+        match_type, distance, entry = best
+        return {
+            "matched": True,
+            "match_type": match_type,
+            "distance": distance,
+            "fact": "这张图片与小悠近期亲自生成并发给YoYo的生活照一致，图中主体就是小悠本人。",
+            "caption": str(entry.get("caption") or "")[:500],
+            "visual_prompt": str(entry.get("visual_prompt") or "")[:800],
+            "created_at": int(entry.get("ts") or 0),
+        }
+
+    def _image_fingerprints(self, path):
+        path = os.path.realpath(str(path or ""))
+        if not path or not os.path.isfile(path):
+            return {"sha256": "", "dhash": ""}
+        try:
+            digest = hashlib.sha256()
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            sha256 = digest.hexdigest()
+        except Exception:
+            logger.exception("[XiaoyouLifePhoto] failed to hash image")
+            return {"sha256": "", "dhash": ""}
+
+        dhash = ""
+        try:
+            from PIL import Image
+
+            with Image.open(path) as image:
+                resampling = getattr(Image, "Resampling", Image)
+                pixels = list(
+                    image.convert("L")
+                    .resize((9, 8), resampling.LANCZOS)
+                    .getdata()
+                )
+            value = 0
+            for row in range(8):
+                offset = row * 9
+                for column in range(8):
+                    value = (value << 1) | int(
+                        pixels[offset + column] > pixels[offset + column + 1]
+                    )
+            dhash = "%016x" % value
+        except Exception:
+            logger.info("[XiaoyouLifePhoto] perceptual hash unavailable; exact hash remains active")
+        return {"sha256": sha256, "dhash": dhash}
+
+    def _hash_distance(self, left, right):
+        try:
+            if not left or not right:
+                return None
+            return (int(left, 16) ^ int(right, 16)).bit_count()
+        except Exception:
+            return None
 
     def _decode_image_result(self, item):
         encoded = item.get("b64_json") or item.get("b64")
@@ -685,6 +918,7 @@ YoYo当前相关原话：
 
     def _mark_sent(self, session_id, share, source):
         now = int(time.time())
+        fingerprints = self._image_fingerprints(share.get("path"))
         with LOCK:
             state = self._load_state()
             sessions = state.setdefault("sessions", {})
@@ -712,7 +946,10 @@ YoYo当前相关原话：
                 "expression": str(share.get("expression") or "")[:500],
                 "gaze": str(share.get("gaze") or "")[:300],
                 "pose": str(share.get("pose") or "")[:500],
+                "include_yoyo": bool(share.get("include_yoyo")),
                 "path": str(share.get("path") or ""),
+                "sha256": fingerprints.get("sha256", ""),
+                "dhash": fingerprints.get("dhash", ""),
             })
             item["recent"] = recent[-20:]
             sessions[session_id] = item
@@ -721,6 +958,12 @@ YoYo当前相关原话：
         self._record_photo_memory(session_id, share, source)
 
     def _can_send_proactive(self, session_id):
+        if os.getenv("XIAOYOU_UNIFIED_PROACTIVE_ENABLED", "true").strip().lower() in (
+            "1", "true", "yes", "on"
+        ):
+            # 统一中枢已经依据语境、状态和近期分享作出媒介决策；旧的
+            # 6小时/每日2张属于行为时间表，在统一模式下不再拦截。
+            return True
         with LOCK:
             state = self._load_state()
             item = state.setdefault("sessions", {}).get(session_id, {})
@@ -797,21 +1040,6 @@ YoYo当前相关原话：
                 return json.loads(match.group(0))
             except Exception:
                 return None
-
-    def _looks_like_photo_candidate(self, text):
-        text = str(text or "").strip()
-        patterns = (
-            r"拍(?:一|个|张|点|些|下|给|给我|你的|套|身|照)",
-            r"照片|拍照|自拍|合照|镜子照|镜子自拍|穿搭照|全身照|他拍",
-            r"发(?:一|个|张|点|些)?.{0,6}(?:图|照片|自拍)",
-            r"(?:给我|让我|想|要|来).{0,8}(?:看看|看下|看一眼).{0,10}(?:你|穿搭|衣服|吃的|那边|现在)",
-            r"分享.{0,8}(?:日常|生活|穿搭|美食|照片)",
-            r"(?:看看你|看你现在|看你今天|给我看看你)",
-            r"(?:照片|拍照).{0,8}报备|报备.{0,8}(?:照片|拍照|一张)",
-            r"(?:摆|做).{0,6}(?:pose|POSE|姿势|动作)",
-            r"第三人称|第三视角|第三方视角|别人拍|朋友拍|路人拍",
-        )
-        return any(re.search(pattern, text, re.I) for pattern in patterns)
 
     def _attach_generation_failure_fact(self, context):
         context.content = "%s\n\n[本轮图片发送状态事实]\n照片没有成功生成或发送。不要声称已经发出图片；由小悠结合当前聊天自行决定如何自然回应。" % str(
