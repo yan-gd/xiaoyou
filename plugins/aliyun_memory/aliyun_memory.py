@@ -33,11 +33,9 @@ class AliyunMemory(Plugin):
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.handlers[Event.ON_DECORATE_REPLY] = self.on_decorate_reply
 
-        self.api_key = (
-            os.getenv("ALIYUN_MEMORY_API_KEY")
-            or os.getenv("DASHSCOPE_API_KEY")
-            or os.getenv("OPEN_AI_API_KEY")
-        )
+        # 长期记忆库可以与聊天模型分属不同百炼账号。这里只接受专用
+        # 环境变量，避免配置遗漏时静默回退到模型 Key 并访问错误账号。
+        self.api_key = os.getenv("ALIYUN_MEMORY_API_KEY", "").strip()
         self.user_id = os.getenv("ALIYUN_MEMORY_USER_ID", "yoyo")
         self.memory_library_id = os.getenv("ALIYUN_MEMORY_LIBRARY_ID", "").strip()
         self.max_results = int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "5"))
@@ -47,6 +45,11 @@ class AliyunMemory(Plugin):
         self.base_url = "https://dashscope.aliyuncs.com/api/v2/apps/memory"
         self.last_user_msg = {}
 
+        if self.enabled and not self.api_key:
+            logger.warning(
+                "[AliyunMemory] disabled: ALIYUN_MEMORY_API_KEY is missing; "
+                "model API keys will not be used as fallback"
+            )
         logger.info("[AliyunMemory] inited")
 
     def _headers(self):

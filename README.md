@@ -159,8 +159,11 @@ plugins/short_memory/short_memory.json.backup
 长期记忆存储在阿里云百炼记忆服务，不在本地 JSON 中。读取时会结合语义相关度、明确时间表达和近期时间权重排序。
 
 ```env
+ALIYUN_MEMORY_KEY=your_memory_library_account_api_key_here
 ALIYUN_MEMORY_LIBRARY_ID=your_bailian_memory_library_id_here
 ```
+
+`KEY` 用于聊天、视觉和分类等模型调用；`ALIYUN_MEMORY_KEY` 必须填写创建该记忆库的百炼账号 Key。两个 Key 可以属于不同账号，不能用模型账号 Key 替代记忆库账号 Key。记忆专用 Key 缺失时插件会明确报警且不发起云记忆请求，不会静默回退到模型 Key。
 
 ### 稳定身份
 
@@ -257,6 +260,7 @@ XIAOYOU_IDENTITY_PRUNE_SHORT_MEMORY: 'true'
 - 星空、命轨粒子、光晕与全屏角色电影背景组成的小悠个性化展示页面
 - PC端使用“角色画面 + 固定命轨侧翼”双区结构，移动端使用“视频上屏 + 信息舱”响应式布局
 - 桌面与手机分别使用横版、竖版视频，双缓冲播放器会提前解码下一层并在运动中交叉衔接
+- 页面底部提供循环命轨声场，使用 Web Audio 实时频谱驱动长条氛围动画；浏览器阻止有声自动播放时会在首次页面交互后启动
 - 视频可通过公开的独立媒体域名接入CDN；CDN错误或连续停滞时自动回退源站本地文件
 
 权限边界：
@@ -322,6 +326,7 @@ cp .env.example .env
 ```env
 KEY=your_bailian_api_key_here
 SEEDREAM_KEY=your_volcengine_ark_api_key_here
+ALIYUN_MEMORY_KEY=your_memory_library_account_api_key_here
 ALIYUN_MEMORY_LIBRARY_ID=your_bailian_memory_library_id_here
 ```
 

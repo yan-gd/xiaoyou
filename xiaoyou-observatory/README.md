@@ -178,6 +178,8 @@ ss -lntp | grep 8765
 
 最终应存在 `/www/wwwroot/xiaoyou-observatory/index.html`，不要多套一层 `dist` 目录。
 
+前端构建会同时包含 `music.mp3`。页面底部的命轨声场会循环播放，并使用实时音频频谱驱动氛围条；由于Chrome、Safari和微信内置浏览器会阻止首次有声自动播放，第一次访问通常需要点击页面或音乐条一次，之后可直接在氛围条暂停或继续。
+
 ### 方法 B：在服务器构建
 
 Vite 7 需要 Node.js 20.19+ 或 22.12+：

@@ -53,3 +53,4 @@ disabled_plugins/
 # local source videos; deployable/website copies live under frontend/public
 /xiaoyou.mp4
 /xiaoyou2.mp4
+/music.mp3

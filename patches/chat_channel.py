@@ -429,7 +429,11 @@ class ChatChannel(Channel):
             if self._is_versioned_input(context):
                 version = int(self.input_versions.get(session_id, 0)) + 1
                 self.input_versions[session_id] = version
-                self._set_context_input_metadata(context, version=version)
+                self._set_context_input_metadata(
+                    context,
+                    version=version,
+                    session_key=session_id,
+                )
                 if context.get("xiaoyou_trace_id"):
                     trace_event(
                         "input_versioned",
@@ -448,12 +452,17 @@ class ChatChannel(Channel):
                         "first_ts": now,
                         "last_ts": now,
                         "version": context.get("xiaoyou_input_version"),
+                        "session_key": session_id,
                         "force_flush": False,
                     }
 
                 batch["contexts"].append(context)
                 batch["last_ts"] = now
                 batch["version"] = context.get("xiaoyou_input_version")
+                batch["session_key"] = (
+                    (getattr(context, "kwargs", {}) or {}).get("xiaoyou_input_session_key")
+                    or session_id
+                )
 
                 max_messages = max(1, int(os.getenv("XIAOYOU_INPUT_MAX_MESSAGES", "8")))
                 max_chars = max(1, int(os.getenv("XIAOYOU_INPUT_MAX_CHARS", "2400")))
@@ -546,6 +555,7 @@ class ChatChannel(Channel):
             version=batch.get("version"),
             messages=messages,
             first_ts=batch.get("first_ts"),
+            session_key=batch.get("session_key"),
         )
         if context.get("xiaoyou_trace_id"):
             trace_event(
@@ -569,11 +579,22 @@ class ChatChannel(Channel):
 
         return context
 
-    def _set_context_input_metadata(self, context, version=None, messages=None, first_ts=None):
+    def _set_context_input_metadata(
+        self,
+        context,
+        version=None,
+        messages=None,
+        first_ts=None,
+        session_key=None,
+    ):
         kwargs = getattr(context, "kwargs", {}) or {}
 
         if version is not None:
             kwargs["xiaoyou_input_version"] = int(version)
+        if session_key:
+            # 身份插件会把 context.session_id 从微信临时ID改为稳定ID。
+            # 版本号必须始终使用 produce() 时的原始计数键，不能随身份改写漂移。
+            kwargs["xiaoyou_input_session_key"] = str(session_key)
         if messages is not None:
             kwargs["xiaoyou_input_messages"] = list(messages)
             kwargs["xiaoyou_input_batch_size"] = len(messages)
@@ -612,8 +633,9 @@ class ChatChannel(Channel):
         if context is None:
             return True
 
-        session_id = context.get("session_id")
-        version = context.get("xiaoyou_input_version")
+        kwargs = getattr(context, "kwargs", {}) or {}
+        session_id = kwargs.get("xiaoyou_input_session_key") or context.get("session_id")
+        version = kwargs.get("xiaoyou_input_version", context.get("xiaoyou_input_version"))
 
         if not session_id or version is None:
             return True

@@ -89,7 +89,7 @@ services: # Docker Compose 服务集合。
       XIAOYOU_LIFE_PHOTO_PROACTIVE_ENABLED: 'true' # 允许小悠在合适语境主动分享生活照。
       # ===== 阿里云长期记忆 =====
       ALIYUN_MEMORY_ENABLED: 'true' # 启用阿里云百炼长期记忆检索与写入。
-      ALIYUN_MEMORY_API_KEY: '${KEY}' # 长期记忆服务鉴权密钥；当前复用 .env 的 KEY。
+      ALIYUN_MEMORY_API_KEY: '${ALIYUN_MEMORY_KEY}' # 长期记忆库所属百炼账号的Key；与模型账号KEY独立，禁止混用。
       ALIYUN_MEMORY_USER_ID: 'yoyo' # 记忆库中的固定用户ID，应与稳定会话ID保持一致。
       ALIYUN_MEMORY_MAX_RESULTS: '5' # 普通聊天最多注入5条长期记忆结果。
       ALIYUN_MEMORY_THRESHOLD: '0.55' # 语义相关度最低阈值；越高越严格，越低越容易召回无关内容。

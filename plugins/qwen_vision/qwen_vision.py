@@ -311,7 +311,6 @@ class QwenVision(Plugin):
         pending_id = item.get("id")
         revision = int(item.get("revision") or 0)
         texts = item.get("texts") or []
-        keep_pending = False
 
         try:
             identity_context = self._vision_identity_context(session_id, img_path)
@@ -333,9 +332,8 @@ class QwenVision(Plugin):
                 return
 
             if not self._vision_snapshot_current(session_id, pending_id, revision, item):
-                keep_pending = True
                 logger.info(
-                    "[QwenVision] stale vision result discarded session=%s revision=%s",
+                    "[QwenVision] stale vision result discarded session=%s revision=%s retry=False",
                     self._mask_id(session_id),
                     revision,
                 )
@@ -355,8 +353,12 @@ class QwenVision(Plugin):
                 channel=item.get("channel"),
                 turn_context=item.get("turn_context"),
             )
-            sent_text = send_result.get("text", "")
-            keep_pending = bool(send_result.get("stale"))
+            if send_result.get("stale"):
+                logger.info(
+                    "[QwenVision] stale vision delivery stopped session=%s revision=%s retry=False",
+                    self._mask_id(session_id),
+                    revision,
+                )
 
         except Exception:
             logger.exception("[QwenVision] async vision answer failed session=%s", self._mask_id(session_id))
@@ -366,11 +368,12 @@ class QwenVision(Plugin):
                 current = PENDING_IMAGES.get(session_id)
                 if current and current.get("id") == pending_id:
                     current_revision = int(current.get("revision") or 0)
-                    if keep_pending or current_revision != revision or current.get("dirty"):
+                    # 只有模型生成期间真的收到新补充（revision/dirty变化）才重算。
+                    # 同一revision的context一旦stale就永远不会重新变新，重新排队只会
+                    # 造成“调用成功→丢弃→再次调用”的付费死循环。
+                    if current_revision != revision or current.get("dirty"):
                         current["status"] = "waiting"
                         current["dirty"] = False
-                        if keep_pending and current_revision == revision:
-                            current["last_update"] = time.time()
                         PENDING_IMAGES[session_id] = current
                     else:
                         PENDING_IMAGES.pop(session_id, None)

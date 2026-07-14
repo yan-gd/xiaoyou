@@ -313,6 +313,135 @@ function Brand({ compact = false }: { compact?: boolean }) {
   )
 }
 
+const spectrumBars = Array.from({ length: 88 }, (_, index) => index)
+
+function MusicAtmosphere({ scene }: { scene: AppScene }) {
+  const audioRef = useRef<HTMLAudioElement>(null)
+  const spectrumRef = useRef<HTMLSpanElement>(null)
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const sourceRef = useRef<MediaElementAudioSourceNode | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [awaitingGesture, setAwaitingGesture] = useState(true)
+  const [unavailable, setUnavailable] = useState(false)
+
+  const ensureAudioGraph = async () => {
+    const AudioContextClass = window.AudioContext || (window as typeof window & {
+      webkitAudioContext?: typeof AudioContext
+    }).webkitAudioContext
+    if (!AudioContextClass || !audioRef.current) return
+
+    if (!audioContextRef.current) {
+      const context = new AudioContextClass()
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = .68
+      const source = context.createMediaElementSource(audioRef.current)
+      source.connect(analyser)
+      analyser.connect(context.destination)
+      audioContextRef.current = context
+      analyserRef.current = analyser
+      sourceRef.current = source
+    }
+    if (audioContextRef.current.state === 'suspended') await audioContextRef.current.resume()
+  }
+
+  const startPlayback = async () => {
+    const audio = audioRef.current
+    if (!audio) return
+    try {
+      await ensureAudioGraph()
+      await audio.play()
+      setUnavailable(false)
+      setAwaitingGesture(false)
+    } catch {
+      setAwaitingGesture(true)
+    }
+  }
+
+  const togglePlayback = () => {
+    const audio = audioRef.current
+    if (!audio) return
+    if (audio.paused) void startPlayback()
+    else audio.pause()
+  }
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+    audio.volume = .34
+
+    const unlockOnFirstInteraction = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.music-atmosphere')) return
+      void startPlayback()
+    }
+    window.addEventListener('pointerdown', unlockOnFirstInteraction, { capture: true, once: true })
+
+    return () => {
+      window.removeEventListener('pointerdown', unlockOnFirstInteraction, true)
+      void audioContextRef.current?.close()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!playing || !analyserRef.current || !spectrumRef.current || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const analyser = analyserRef.current
+    const values = new Uint8Array(analyser.frequencyBinCount)
+    const bars = Array.from(spectrumRef.current.querySelectorAll('i'))
+    let frame = 0
+    const renderSpectrum = () => {
+      analyser.getByteFrequencyData(values)
+      bars.forEach((bar, index) => {
+        const center = (bars.length - 1) / 2
+        const distanceFromCenter = Math.abs(index - center) / center
+        const sampleIndex = Math.min(
+          values.length - 1,
+          2 + Math.floor(Math.pow(distanceFromCenter, 1.18) * values.length * .66),
+        )
+        const level = Math.min(1.12, .18 + Math.pow(values[sampleIndex] / 180, .82) * .96)
+        bar.style.setProperty('--level', level.toFixed(3))
+      })
+      frame = window.requestAnimationFrame(renderSpectrum)
+    }
+    renderSpectrum()
+    return () => {
+      window.cancelAnimationFrame(frame)
+      bars.forEach((bar) => bar.style.removeProperty('--level'))
+    }
+  }, [playing])
+
+  const statusCopy = unavailable
+    ? '声场暂时不可用'
+    : playing
+      ? '命轨声场共鸣中'
+      : awaitingGesture
+        ? '轻触唤醒命轨声场'
+        : '命轨声场已静默'
+  const hasLiveSpectrum = playing && !!analyserRef.current && audioContextRef.current?.state === 'running'
+
+  return (
+    <div className={`music-atmosphere scene-${scene} ${playing ? 'is-playing' : 'is-idle'} ${hasLiveSpectrum ? 'has-spectrum' : 'spectrum-fallback'}`}>
+      <button type="button" className="music-rail" onClick={togglePlayback} aria-label={playing ? '暂停背景音乐' : '播放背景音乐'}>
+        <span className="music-copy"><b>{statusCopy}</b><small>FATEBOUND AMBIENCE · LOOP</small></span>
+        <span className="music-spectrum" ref={spectrumRef} aria-hidden="true">
+          {spectrumBars.map((index) => <i key={index} style={{ animationDelay: `${-index * 43}ms` }} />)}
+        </span>
+        <span className="music-state"><i />{playing ? 'ON AIR' : 'PLAY'}</span>
+      </button>
+      <audio
+        ref={audioRef}
+        src="/music.mp3"
+        loop
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onError={() => { setPlaying(false); setUnavailable(true) }}
+      />
+    </div>
+  )
+}
+
 function LoginPage({ onAuthenticated }: { onAuthenticated: (auth: AuthState) => void }) {
   const [guardianOpen, setGuardianOpen] = useState(false)
   const [username, setUsername] = useState('yoyo')
@@ -673,5 +802,5 @@ export default function App() {
     return <Dashboard auth={auth} onLogout={() => setAuth(null)} />
   }, [auth, loading])
 
-  return <div className={`app scene-${scene}`}><VideoStage scene={scene} /><div className="stellar-noise" aria-hidden="true" />{content}</div>
+  return <div className={`app scene-${scene}`}><VideoStage scene={scene} /><div className="stellar-noise" aria-hidden="true" />{content}<MusicAtmosphere scene={scene} /></div>
 }
