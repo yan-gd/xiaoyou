@@ -97,42 +97,83 @@ const fallbackPulse: ServicePulse = {
   last_event_at: '',
 }
 
+const desktopVideoFiles = ['xiaoyou-desktop.mp4', 'xiaoyou3.mp4', 'xiaoyou4.mp4'] as const
+const mobileVideoFiles = ['xiaoyou-mobile.mp4', 'xiaoyou3.mp4', 'xiaoyou4.mp4'] as const
+
 function VideoStage({ scene }: { scene: AppScene }) {
   const stageRef = useRef<HTMLDivElement>(null)
   const videoARef = useRef<HTMLVideoElement>(null)
   const videoBRef = useRef<HTMLVideoElement>(null)
   const transitionTimer = useRef(0)
-  const mediaStallTimer = useRef(0)
+  const mediaStallTimers = useRef<[number, number]>([0, 0])
   const activeBuffer = useRef<0 | 1>(0)
+  const bufferPlaylistPositions = useRef<[number, number]>([0, 1])
+  const bufferReady = useRef<[boolean, boolean]>([false, false])
+  const playlistRef = useRef<readonly string[]>(desktopVideoFiles)
+  const failedRemoteFiles = useRef(new Set<string>())
   const transitioning = useRef(false)
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width: 720px), (orientation: portrait)').matches)
   const [reduced, setReduced] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const [ready, setReady] = useState(false)
-  const [failedRemoteSource, setFailedRemoteSource] = useState('')
 
-  const videoFile = mobile ? 'xiaoyou-mobile.mp4' : 'xiaoyou-desktop.mp4'
-  const localSource = `/${videoFile}`
-  const remoteSource = remoteMediaUrl(videoFile)
-  const source = remoteSource && failedRemoteSource !== remoteSource ? remoteSource : localSource
+  const playlist = mobile ? mobileVideoFiles : desktopVideoFiles
   const poster = mobile ? '/xiaoyou-mobile-poster.png' : '/xiaoyou-desktop-poster.png'
   const still = mobile ? '/xiaoyou-mobile-still.png' : '/xiaoyou-desktop-still.png'
-  const loopStartSeconds = 1
   const crossfadeSeconds = 1.05
 
-  const handleVideoError = () => {
-    if (remoteSource && source === remoteSource) setFailedRemoteSource(remoteSource)
+  const videoAt = (index: 0 | 1) => index === 0 ? videoARef.current : videoBRef.current
+
+  const clearMediaStall = (index?: 0 | 1) => {
+    const indexes: Array<0 | 1> = index === undefined ? [0, 1] : [index]
+    indexes.forEach((item) => {
+      window.clearTimeout(mediaStallTimers.current[item])
+      mediaStallTimers.current[item] = 0
+    })
   }
 
-  const clearMediaStall = () => {
-    window.clearTimeout(mediaStallTimer.current)
-    mediaStallTimer.current = 0
+  const sourceForFile = (fileName: string) => {
+    const remote = remoteMediaUrl(fileName)
+    if (remote && !failedRemoteFiles.current.has(fileName)) return { source: remote, origin: 'cdn' }
+    return { source: `/${fileName}`, origin: 'local' }
   }
 
-  const guardRemoteStall = () => {
-    if (!remoteSource || source !== remoteSource || mediaStallTimer.current) return
-    mediaStallTimer.current = window.setTimeout(() => {
-      mediaStallTimer.current = 0
-      setFailedRemoteSource(remoteSource)
+  const setBufferSource = (bufferIndex: 0 | 1, playlistPosition: number) => {
+    const video = videoAt(bufferIndex)
+    const files = playlistRef.current
+    if (!video || !files.length) return
+    const normalizedPosition = ((playlistPosition % files.length) + files.length) % files.length
+    const fileName = files[normalizedPosition]
+    const media = sourceForFile(fileName)
+    clearMediaStall(bufferIndex)
+    bufferPlaylistPositions.current[bufferIndex] = normalizedPosition
+    bufferReady.current[bufferIndex] = false
+    video.pause()
+    video.dataset.mediaFile = fileName
+    video.dataset.mediaOrigin = media.origin
+    video.src = media.source
+    video.load()
+    if (activeBuffer.current === bufferIndex && stageRef.current) stageRef.current.dataset.mediaOrigin = media.origin
+  }
+
+  const fallbackBufferToLocal = (index: 0 | 1) => {
+    const video = videoAt(index)
+    const fileName = video?.dataset.mediaFile
+    if (!video || !fileName || video.dataset.mediaOrigin !== 'cdn') return
+    failedRemoteFiles.current.add(fileName)
+    setBufferSource(index, bufferPlaylistPositions.current[index])
+  }
+
+  const handleVideoError = (index: 0 | 1) => {
+    const video = videoAt(index)
+    if (video?.dataset.mediaOrigin === 'cdn') fallbackBufferToLocal(index)
+  }
+
+  const guardRemoteStall = (index: 0 | 1) => {
+    const video = videoAt(index)
+    if (!video || video.dataset.mediaOrigin !== 'cdn' || mediaStallTimers.current[index]) return
+    mediaStallTimers.current[index] = window.setTimeout(() => {
+      mediaStallTimers.current[index] = 0
+      fallbackBufferToLocal(index)
     }, 4000)
   }
 
@@ -153,6 +194,9 @@ function VideoStage({ scene }: { scene: AppScene }) {
     window.clearTimeout(transitionTimer.current)
     clearMediaStall()
     activeBuffer.current = 0
+    bufferPlaylistPositions.current = [0, 1]
+    bufferReady.current = [false, false]
+    playlistRef.current = playlist
     transitioning.current = false
     setReady(false)
     const stage = stageRef.current
@@ -162,13 +206,9 @@ function VideoStage({ scene }: { scene: AppScene }) {
       stage.classList.remove('is-crossfading')
     }
     if (reduced) return
-    const videos = [videoARef.current, videoBRef.current]
-    videos.forEach((video) => {
-      if (!video) return
-      video.pause()
-      video.load()
-    })
-  }, [source, reduced])
+    setBufferSource(0, 0)
+    setBufferSource(1, 1)
+  }, [mobile, reduced])
 
   useEffect(() => {
     const onVisibility = () => {
@@ -190,7 +230,7 @@ function VideoStage({ scene }: { scene: AppScene }) {
   }, [])
 
   const prepareBuffer = (index: 0 | 1) => {
-    const video = index === 0 ? videoARef.current : videoBRef.current
+    const video = videoAt(index)
     if (!video) return
     if (index === activeBuffer.current && !ready) {
       video.currentTime = 0
@@ -198,41 +238,45 @@ function VideoStage({ scene }: { scene: AppScene }) {
       return
     }
     video.pause()
-    if (Math.abs(video.currentTime - loopStartSeconds) > .15) video.currentTime = loopStartSeconds
+    if (video.currentTime > .15) video.currentTime = 0
   }
 
   const beginBufferCrossfade = (fromIndex: 0 | 1) => {
     if (transitioning.current || activeBuffer.current !== fromIndex) return
-    const current = fromIndex === 0 ? videoARef.current : videoBRef.current
+    const current = videoAt(fromIndex)
     const nextIndex: 0 | 1 = fromIndex === 0 ? 1 : 0
-    const next = nextIndex === 0 ? videoARef.current : videoBRef.current
+    const next = videoAt(nextIndex)
     const stage = stageRef.current
     if (!current || !next || !stage) return
 
     transitioning.current = true
-    if (Math.abs(next.currentTime - loopStartSeconds) > .18) next.currentTime = loopStartSeconds
+    if (!bufferReady.current[nextIndex] && next.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) next.load()
+    if (next.currentTime > .18) next.currentTime = 0
     void next.play().then(() => {
       // 第二层已经真正开始解码并播放后才交叉淡化。旧层在整个过渡期
       // 仍保持运动，因此网络、seek和首帧准备都不会暴露给观看者。
       activeBuffer.current = nextIndex
       stage.dataset.active = nextIndex === 0 ? 'a' : 'b'
+      stage.dataset.mediaOrigin = next.dataset.mediaOrigin || 'local'
       stage.classList.add('is-crossfading')
       transitionTimer.current = window.setTimeout(() => {
         current.pause()
-        current.currentTime = loopStartSeconds
         stage.classList.remove('is-crossfading')
         transitioning.current = false
+        const nextPlaylistPosition = bufferPlaylistPositions.current[nextIndex]
+        setBufferSource(fromIndex, nextPlaylistPosition + 1)
       }, Math.round(crossfadeSeconds * 1000) + 80)
     }).catch(() => {
       transitioning.current = false
-      current.currentTime = loopStartSeconds
+      if (next.dataset.mediaOrigin === 'cdn') fallbackBufferToLocal(nextIndex)
+      current.currentTime = 0
       void current.play().catch(() => undefined)
     })
   }
 
   const updatePhase = (index: 0 | 1) => {
     if (activeBuffer.current !== index) return
-    const video = index === 0 ? videoARef.current : videoBRef.current
+    const video = videoAt(index)
     const stage = stageRef.current
     if (!video || !stage) return
     const phase = video.currentTime < 3 ? 'awakening' : video.currentTime < 7.4 ? 'gaze' : 'reaching'
@@ -246,7 +290,7 @@ function VideoStage({ scene }: { scene: AppScene }) {
       data-scene={scene}
       data-phase="awakening"
       data-active="a"
-      data-media-origin={source === localSource ? 'local' : 'cdn'}
+      data-media-origin={mediaBaseUrl ? 'cdn' : 'local'}
       ref={stageRef}
       aria-hidden="true"
     >
@@ -258,40 +302,44 @@ function VideoStage({ scene }: { scene: AppScene }) {
           <video
             className="video-buffer buffer-a"
             ref={videoARef}
-            src={source}
             poster={poster}
             autoPlay
             muted
             playsInline
             preload="auto"
             onLoadedMetadata={() => prepareBuffer(0)}
-            onCanPlay={clearMediaStall}
+            onCanPlay={() => {
+              bufferReady.current[0] = true
+              clearMediaStall(0)
+            }}
             onPlaying={() => {
-              clearMediaStall()
+              clearMediaStall(0)
               setReady(true)
             }}
-            onWaiting={guardRemoteStall}
-            onStalled={guardRemoteStall}
+            onWaiting={() => guardRemoteStall(0)}
+            onStalled={() => guardRemoteStall(0)}
             onTimeUpdate={() => updatePhase(0)}
             onEnded={() => beginBufferCrossfade(0)}
-            onError={handleVideoError}
+            onError={() => handleVideoError(0)}
           />
           <video
             className="video-buffer buffer-b"
             ref={videoBRef}
-            src={source}
             poster={poster}
             muted
             playsInline
             preload="auto"
             onLoadedMetadata={() => prepareBuffer(1)}
-            onCanPlay={clearMediaStall}
-            onPlaying={clearMediaStall}
-            onWaiting={guardRemoteStall}
-            onStalled={guardRemoteStall}
+            onCanPlay={() => {
+              bufferReady.current[1] = true
+              clearMediaStall(1)
+            }}
+            onPlaying={() => clearMediaStall(1)}
+            onWaiting={() => guardRemoteStall(1)}
+            onStalled={() => guardRemoteStall(1)}
             onTimeUpdate={() => updatePhase(1)}
             onEnded={() => beginBufferCrossfade(1)}
-            onError={handleVideoError}
+            onError={() => handleVideoError(1)}
           />
         </>
       )}

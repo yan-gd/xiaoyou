@@ -1,6 +1,6 @@
 from app.controller import ContainerController
 from app.config import Settings
-from app.runtime import analyze_logs, redact_log_line
+from app.runtime import analyze_logs, redact_log_line, redact_logs
 
 
 def settings(tmp_path, **overrides):
@@ -45,6 +45,33 @@ def test_sensitive_config_and_login_url_are_redacted():
     assert "secret-value" not in redact_log_line("api_key=secret-value")
     assert "login.weixin.qq.com" not in redact_log_line("https://login.weixin.qq.com/l/abc==")
     assert "已隐藏" in redact_log_line("https://login.weixin.qq.com/l/abc==")
+
+
+def test_chat_content_lines_are_removed_from_observatory_logs():
+    raw = """
+[INFO][2026-07-15 11:30:54][reminder_love.py:755] - [ReminderLove] intent judge text='这是一条用户聊天正文' ans='NO'
+[INFO][2026-07-15 11:30:59][xiaoyou_mcp.py:128] - [XiaoyouMCP] llm route text='另一条用户正文' kind=none confidence=0.98 reason=普通聊天
+[INFO][2026-07-15 11:31:16][split_reply.py:67] - [SplitReply] split reply into 2 bubbles: ['回复正文一', '回复正文二']
+[INFO][2026-07-15 11:31:16][trace_service.py:380] - [Trace] stage=model_call_completed status=ok component=xiaoyouchat has_content=True
+"""
+    lines = redact_logs(raw)
+    rendered = "\n".join(lines)
+    assert "用户聊天正文" not in rendered
+    assert "另一条用户正文" not in rendered
+    assert "回复正文" not in rendered
+    assert len(lines) == 1
+    assert "stage=model_call_completed" in lines[0]
+
+
+def test_hot_login_activity_confirms_online_without_login_banner():
+    raw = """
+[INFO][2026-07-15 11:30:50][trace_service.py:380] - [Trace] stage=input_received status=accepted source=wechat_receive
+[INFO][2026-07-15 11:31:38][trace_service.py:380] - [Trace] stage=outbound_completed status=ok delivered=True
+"""
+    analysis = analyze_logs(raw, True)
+    assert analysis.qr.available is False
+    assert analysis.qr.status == "online"
+    assert analysis.wechat.state == "healthy"
 
 
 def test_mock_controller_has_fixed_state(tmp_path):

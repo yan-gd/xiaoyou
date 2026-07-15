@@ -4,5 +4,5 @@ window.__XIAOYOU_OBSERVATORY__ = Object.freeze({
   mediaBaseUrl: "",
 
   // Change this value after replacing a CDN video to bypass old edge/browser caches.
-  mediaVersion: "20260713-cdn1"
+  mediaVersion: "20260715-playlist1"
 });

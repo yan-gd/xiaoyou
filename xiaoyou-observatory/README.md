@@ -196,22 +196,22 @@ find /www/wwwroot/xiaoyou-observatory -type f -exec chmod 0644 {} \;
 
 ### 视频 CDN（推荐独立媒体域名）
 
-前端支持把两段背景视频放到独立 CDN，同时让登录、状态、日志、二维码和容器操作继续直连观测台，不经过静态资源缓存。
+前端支持把四个背景视频文件放到独立 CDN，同时让登录、状态、日志、二维码和容器操作继续直连观测台，不经过静态资源缓存。PC 与手机都会按照“对应设备的原视频 → `xiaoyou3.mp4` → `xiaoyou4.mp4`”循环，并提前用空闲视频层预解码下一段后交叉淡入。
 
 1. 建立 `media.yoyoyan.cn`，先在“仅DNS”状态下申请源站证书，再开启CDN代理；宝塔生成的证书与 `well-known` 自动续签段必须保留，可参考 `deploy/xiaoyou-media.nginx.conf` 收紧公开路径；
-2. CDN 只缓存 `xiaoyou-desktop.mp4` 与 `xiaoyou-mobile.mp4`，必须支持 HTTPS、HTTP Range 和查询字符串缓存键；主站 `xiaoyou.yoyoyan.cn` 可保持仅DNS，不让管理接口经过CDN；
+2. CDN 只缓存 `xiaoyou-desktop.mp4`、`xiaoyou-mobile.mp4`、`xiaoyou3.mp4` 与 `xiaoyou4.mp4`，必须支持 HTTPS、HTTP Range 和查询字符串缓存键；主站 `xiaoyou.yoyoyan.cn` 可保持仅DNS，不让管理接口经过CDN；
 3. 在服务器网页根目录的 `observatory-config.js` 中填写：
 
 ```javascript
 window.__XIAOYOU_OBSERVATORY__ = Object.freeze({
   mediaBaseUrl: "https://media.yoyoyan.cn",
-  mediaVersion: "20260713-cdn1"
+  mediaVersion: "20260715-playlist1"
 });
 ```
 
-以后替换视频时只需修改 `mediaVersion`，浏览器和 CDN 就会请求新版本，不必重新构建 React。CDN 请求失败时页面会自动回退到 `/xiaoyou-desktop.mp4` 或 `/xiaoyou-mobile.mp4`。`observatory-config.js` 中只能放公开配置，禁止写密码、TOTP 密钥、Cookie 或 API Key。
+以后替换视频时只需修改 `mediaVersion`，浏览器和 CDN 就会请求新版本，不必重新构建 React。任一 CDN 视频请求失败时，页面只把该片段回退到主站同名文件，不影响播放列表中的其他片段。`observatory-config.js` 中只能放公开配置，禁止写密码、TOTP 密钥、Cookie 或 API Key。
 
-若使用 Cloudflare，可只把 `media.yoyoyan.cn` 设为橙云：为两条精确MP4路径建立 Cache Rule，设置 `Eligible for cache`、Edge TTL 30天、Browser TTL 1天，并使用 `Full (strict)` 连接持有有效证书的源站。主站保持灰云时无需为 `/api/*` 建缓存规则。源站视频返回 `Accept-Ranges: bytes`，可避免每次缓冲都重新下载整个文件；首次请求 `cf-cache-status` 通常为 `MISS`，再次请求应为 `HIT`。
+若使用 Cloudflare，可只把 `media.yoyoyan.cn` 设为橙云：为上述四条精确 MP4 路径建立 Cache Rule，设置 `Eligible for cache`、Edge TTL 30天、Browser TTL 1天，并使用 `Full (strict)` 连接持有有效证书的源站。主站保持灰云时无需为 `/api/*` 建缓存规则。源站视频返回 `Accept-Ranges: bytes`，可避免每次缓冲都重新下载整个文件；首次请求 `cf-cache-status` 通常为 `MISS`，再次请求应为 `HIT`。
 
 ## 8. 在宝塔申请免费 HTTPS
 
@@ -290,6 +290,12 @@ backend/app/schemas.py
 backend/app/main.py
 backend/app/runtime.py
 deploy/xiaoyou-observatory.service
+```
+
+本次日志修复还更新了固定容器助手。覆盖代码后必须重新安装它，否则热登录时启动阶段的插件注册记录仍可能被近期日志挤出：
+
+```bash
+install -o root -g root -m 0755 deploy/xiaoyou-ctl /usr/local/sbin/xiaoyou-ctl
 ```
 
 然后将新版 `frontend/dist/` 的全部内容覆盖到 `/www/wwwroot/xiaoyou-observatory/`：

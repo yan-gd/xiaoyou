@@ -15,6 +15,25 @@ TIMESTAMP_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})]")
 LOGIN_URL_RE = re.compile(r"https://login\.weixin\.qq\.com/l/[A-Za-z0-9_\-=/+%]+")
 PLUGIN_RE = re.compile(r"Plugin\s+([A-Za-z0-9_.-]+)\s+registered")
 
+# The container has a few legacy/debug log statements that include the user's
+# text or the assistant's reply.  The observatory never needs those payloads:
+# health is derived from Trace metadata instead.  Drop the whole line rather
+# than trying to partially mask arbitrary natural language.
+PRIVATE_CONTENT_FIELD_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:current_text|user_text|raw_text|text|content|prompt|reply|caption|task|tool_result)\s*[:=]",
+    re.I,
+)
+PRIVATE_CONTENT_MARKERS = (
+    "split reply into",
+    " bubbles:",
+    "session query=",
+    "ready to handle context:",
+    "ready to decorate reply:",
+    "ready to send reply:",
+    "real patpat detected",
+    "no model-generated reminder text, keep pending:",
+)
+
 SENSITIVE_LINE_RE = re.compile(
     r"(?:api[_ -]?key|access[_ -]?key|secret|authorization|bearer\s+|character_desc|"
     r"override config by environ args.*(?:key|token|secret)|ALIYUN_MEMORY_LIBRARY_ID)",
@@ -48,8 +67,20 @@ def _handled_background_failure(line: str) -> bool:
     )
 
 
+def _contains_private_content(line: str) -> bool:
+    value = str(line or "")
+    lowered = value.lower()
+    if " - [wx]" in lowered or "[chatgpt] session query=" in lowered:
+        return True
+    if PRIVATE_CONTENT_FIELD_RE.search(value):
+        return True
+    return any(marker in lowered for marker in PRIVATE_CONTENT_MARKERS)
+
+
 def redact_log_line(line: str) -> str:
     line = str(line or "").replace("\x00", "")
+    if _contains_private_content(line):
+        return ""
     if LOGIN_URL_RE.search(line):
         return LOGIN_URL_RE.sub("[微信登录地址已隐藏，请使用重连之门]", line)
     if SENSITIVE_LINE_RE.search(line):
@@ -85,7 +116,15 @@ def analyze_logs(raw: str, container_running: bool) -> LogAnalysis:
     qr_index, qr_line = _last_line(lines, lambda value: bool(LOGIN_URL_RE.search(value)))
     online_index, online_line = _last_line(
         lines,
-        lambda value: "Wechat login success" in value or "Start auto replying" in value,
+        lambda value: (
+            "Wechat login success" in value
+            or "Start auto replying" in value
+            # A hot login may emit neither of the messages above.  A real
+            # accepted input or successful delivery is stronger evidence that
+            # the retained WeChat session is already usable.
+            or ("stage=input_received" in value and "status=accepted" in value)
+            or ("stage=outbound_completed" in value and "status=ok" in value)
+        ),
     )
     waiting_index, waiting_line = _last_line(
         lines,

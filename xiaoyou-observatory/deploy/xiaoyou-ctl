@@ -41,7 +41,25 @@ case "$action" in
         ;;
     logs)
         if container_exists; then
-            docker logs --tail 900 "$CONTAINER" 2>&1
+            # Registration and initialization happen at the very beginning of
+            # a container run and quickly fall outside the recent tail.  Keep
+            # only lifecycle lines from the first ten minutes, then append the
+            # recent operational tail.  This also covers cached/hot WeChat
+            # logins that do not print a new QR-code flow.
+            started_at="$(docker inspect --format '{{.State.StartedAt}}' "$CONTAINER")"
+            started_epoch="$(date -d "$started_at" +%s 2>/dev/null || true)"
+            if [[ "$started_epoch" =~ ^[0-9]+$ ]]; then
+                startup_until="$(date -u -d "@$((started_epoch + 600))" '+%Y-%m-%dT%H:%M:%SZ')"
+                docker logs --since "$started_at" --until "$startup_until" "$CONTAINER" 2>&1 \
+                    | while IFS= read -r line; do
+                        case "$line" in
+                            *"Plugin "*" registered"*|*" inited"*|*"Wechat login success"*|*"Start auto replying"*|*"Ready to login"*|*"Getting uuid of QR code"*|*"https://login.weixin.qq.com/l/"*)
+                                printf '%s\n' "$line"
+                                ;;
+                        esac
+                    done
+            fi
+            docker logs --since "$started_at" --tail 900 "$CONTAINER" 2>&1
         fi
         ;;
     start)
