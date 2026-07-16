@@ -16,7 +16,7 @@
 
 ```text
 版本：v1.3 + Fatebound Observatory
-基础镜像：zhayujie/chatgpt-on-wechat:1.7.3
+上游基线：仓库内固化的 chatgpt-on-wechat 1.7.3 源码（提交 22d67b3）
 微信通道：个人微信 wx / itchat
 主聊天模型：qwen3.7-max
 分类与摘要模型：qwen3.7-plus
@@ -303,7 +303,9 @@ cow-legacy/
 │  ├─ xiaoyou_life_photo/
 │  └─ xiaoyou_mcp/
 ├─ tests/                        # 核心策略回归测试
+├─ vendor/                       # 固化的 chatgpt-on-wechat 1.7.3 上游源码
 ├─ xiaoyou-observatory/         # 命轨观测台前后端与部署文件
+├─ .dockerignore                 # 仅把上游源码和小悠补丁送入镜像构建上下文
 ├─ .env.example
 ├─ Dockerfile
 └─ docker-compose.yml
@@ -342,10 +344,14 @@ XIAOYOU_TARGET_NICKNAME=
 ### 2. 构建与启动
 
 ```bash
-docker build -t cow-legacy-local:vision-no-think .
+docker compose build chatgpt-on-wechat
 docker compose up -d
 docker logs -f cow-legacy
 ```
+
+镜像会从仓库内的 `vendor/chatgpt-on-wechat-1.7.3/` 直接重建，不再拉取
+`zhayujie/chatgpt-on-wechat:1.7.3`。该源码固定于上游发布标签 `1.7.3`、提交
+`22d67b3a596f8c96cc2f8b2e5ed58a47c8bb53bb`，并保留原 MIT 许可证。
 
 根据日志扫码登录个人微信小号。
 
@@ -355,7 +361,7 @@ docker logs -f cow-legacy
 
 ```bash
 git pull --ff-only
-docker build -t cow-legacy-local:vision-no-think .
+docker compose build chatgpt-on-wechat
 docker compose up -d --force-recreate
 ```
 
@@ -373,9 +379,27 @@ docker compose config
 重新构建：
 
 ```bash
-docker build --no-cache -t cow-legacy-local:vision-no-think .
+docker compose build --no-cache chatgpt-on-wechat
 docker compose up -d --force-recreate
 ```
+
+离线保留当前可运行成品镜像：
+
+```bash
+docker image save -o xiaoyou-local-image.tar cow-legacy-local:vision-no-think
+sha256sum xiaoyou-local-image.tar > xiaoyou-local-image.tar.sha256
+```
+
+需要恢复时：
+
+```bash
+sha256sum -c xiaoyou-local-image.tar.sha256
+docker image load -i xiaoyou-local-image.tar
+docker compose up -d --no-build
+```
+
+镜像归档可能包含运行程序和依赖，但不包含挂载在宿主机的 `.env`、`data/`
+与插件状态文件；这些内容仍须单独备份。归档文件体积较大且不应提交 Git。
 
 ## 运行态数据
 

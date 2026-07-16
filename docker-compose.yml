@@ -1,5 +1,8 @@
 services: # Docker Compose 服务集合。
   chatgpt-on-wechat: # 小悠本体服务名；执行 compose 命令时使用这个名称。
+    build: # 直接从仓库内固化的 chatgpt-on-wechat 1.7.3 源码构建，不依赖上游成品镜像。
+      context: .
+      dockerfile: Dockerfile
     image: cow-legacy-local:vision-no-think # 本地构建的小悠镜像名称与标签。
     container_name: cow-legacy # 固定容器名；观测台的最小权限控制器依赖此名称。
     restart: always # 容器退出或 Docker 重启后自动拉起；手动 stop 后需手动 start。

@@ -1,0 +1,8 @@
+**
+!Dockerfile
+!.dockerignore
+!patches/
+!patches/**
+!vendor/
+!vendor/chatgpt-on-wechat-1.7.3/
+!vendor/chatgpt-on-wechat-1.7.3/**

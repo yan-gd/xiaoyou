@@ -49,6 +49,8 @@ disabled_plugins/
 # local package caches / generated deployment bundles
 /.pnpm-store/
 /xiaoyou-observatory.zip
+/xiaoyou-local-image.tar
+/xiaoyou-local-image.tar.sha256
 
 # local source videos; deployable/website copies live under frontend/public
 /xiaoyou.mp4
