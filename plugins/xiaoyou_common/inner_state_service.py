@@ -181,7 +181,7 @@ YoYo本轮原话：
             str(assistant_text or "")[:1200] or "暂无",
         )
         payload = {
-            "model": os.getenv("XIAOYOU_INNER_STATE_MODEL", "qwen3.7-plus"),
+            "model": os.getenv("XIAOYOU_INNER_STATE_MODEL", "qwen3.7-max"),
             "messages": [
                 {
                     "role": "system",

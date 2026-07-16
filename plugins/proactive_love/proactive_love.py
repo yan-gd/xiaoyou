@@ -570,7 +570,7 @@ class ProactiveLove(Plugin):
             content=last_text,
             session_id=session_id,
             long_memory_query=memory_query,
-            long_memory_max_results=int(os.getenv("PROACTIVE_MEMORY_TOP_N", "10")),
+            long_memory_max_results=int(os.getenv("PROACTIVE_MEMORY_TOP_N", "20")),
             include_short_memory=True,
             short_memory_max_chars=int(
                 os.getenv("PROACTIVE_RECENT_CONTEXT_MAX_CHARS", "2200")

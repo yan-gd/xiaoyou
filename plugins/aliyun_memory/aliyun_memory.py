@@ -38,7 +38,7 @@ class AliyunMemory(Plugin):
         self.api_key = os.getenv("ALIYUN_MEMORY_API_KEY", "").strip()
         self.user_id = os.getenv("ALIYUN_MEMORY_USER_ID", "yoyo")
         self.memory_library_id = os.getenv("ALIYUN_MEMORY_LIBRARY_ID", "").strip()
-        self.max_results = int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "5"))
+        self.max_results = int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "10"))
         self.similarity_threshold = float(os.getenv("ALIYUN_MEMORY_THRESHOLD", "0.55"))
         self.enabled = os.getenv("ALIYUN_MEMORY_ENABLED", "true").lower() == "true"
 
@@ -83,7 +83,7 @@ class AliyunMemory(Plugin):
         if retrieval_mode == "recovery":
             fetch_k = max(
                 result_limit,
-                int(os.getenv("ALIYUN_MEMORY_RECOVERY_FETCH_K", "20")),
+                int(os.getenv("ALIYUN_MEMORY_RECOVERY_FETCH_K", "40")),
             )
         else:
             fetch_k = max(result_limit, self.max_results)

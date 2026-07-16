@@ -771,7 +771,7 @@ class QwenVision(Plugin):
             content=joined_query,
             session_id=session_id,
             long_memory_query=joined_query,
-            long_memory_max_results=max(1, int(os.getenv("VISION_MEMORY_TOP_N", "5"))),
+            long_memory_max_results=max(1, int(os.getenv("VISION_MEMORY_TOP_N", "10"))),
             include_character=True,
             include_short_memory=True,
             short_memory_max_chars=max(1000, int(os.getenv("VISION_CONTEXT_MAX_CHARS", "5000"))),

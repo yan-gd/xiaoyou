@@ -902,7 +902,7 @@ YoYo 刚刚说：
             query += "：" + task[:300]
         return load_long_memory_context(
             query,
-            max_results=max(0, int(os.getenv("REMINDER_MEMORY_TOP_N", "10"))),
+            max_results=max(0, int(os.getenv("REMINDER_MEMORY_TOP_N", "20"))),
             component="ReminderLove",
         )
 

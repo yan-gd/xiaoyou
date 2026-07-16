@@ -36,7 +36,7 @@ def decide_proactive_action(*, session_id, activity, inner_state, normalize_dela
             "YoYo最近的状态、约定、情绪和小悠此刻是否适合主动联系："
             + last_user_text[:300]
         ),
-        long_memory_max_results=max(1, int(os.getenv("PROACTIVE_MEMORY_TOP_N", "10"))),
+        long_memory_max_results=max(1, int(os.getenv("PROACTIVE_MEMORY_TOP_N", "20"))),
         include_character=True,
         include_short_memory=True,
         short_memory_max_chars=max(

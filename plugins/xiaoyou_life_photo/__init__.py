@@ -221,7 +221,7 @@ class XiaoyouLifePhoto(Plugin):
             long_memory_query=query,
             long_memory_max_results=max(
                 1,
-                int(os.getenv("XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N", "8")),
+                int(os.getenv("XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N", "16")),
             ),
             include_character=False,
             include_short_memory=True,

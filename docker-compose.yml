@@ -63,7 +63,7 @@ services: # Docker Compose 服务集合。
       XIAOYOU_RECONNECT_MODEL: 'qwen3.7-max' # 负责恢复上下文并继续回复的模型。
       XIAOYOU_RECONNECT_ENABLE_THINKING: 'true' # 重连接话启用思考，便于理解中断前上下文。
       XIAOYOU_RECONNECT_TIMEOUT: '45' # 单次重连模型请求最多等待45秒。
-      XIAOYOU_RECONNECT_MEMORY_TOP_N: '5' # 重连时最多注入5条相关长期记忆。
+      XIAOYOU_RECONNECT_MEMORY_TOP_N: '10' # 重连时最多注入10条相关长期记忆。
       XIAOYOU_RECONNECT_MAX_PARTS: '4' # 重连回复最多拆成4个微信气泡。
       XIAOYOU_RECONNECT_PART_DELAY_SECONDS: '1.0' # 重连气泡之间额外等待1秒。
 
@@ -79,7 +79,7 @@ services: # Docker Compose 服务集合。
       XIAOYOU_LIFE_PHOTO_PLANNER_ENABLE_THINKING: 'true' # 生活照规划启用思考，复杂姿势更稳但耗时更长。
       XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT: '75' # 规划请求最多等待75秒；常见耗时约25至35秒。
       XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS: '9000' # 规划时注入的上下文最多9000字符。
-      XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N: '8' # 规划时最多检索8条相关长期记忆。
+      XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N: '16' # 规划时最多检索16条相关长期记忆。
       SEEDREAM_API_KEY: '${SEEDREAM_KEY}' # 火山方舟图片生成密钥，来自 .env 的 SEEDREAM_KEY，禁止写死。
       SEEDREAM_API_BASE: 'https://ark.cn-beijing.volces.com/api/v3' # 火山方舟图片生成 API 根地址。
       SEEDREAM_MODEL: 'doubao-seedream-5-0-lite-260128' # 当前使用的 Seedream 模型接入点名称。
@@ -91,10 +91,10 @@ services: # Docker Compose 服务集合。
       ALIYUN_MEMORY_ENABLED: 'true' # 启用阿里云百炼长期记忆检索与写入。
       ALIYUN_MEMORY_API_KEY: '${ALIYUN_MEMORY_KEY}' # 长期记忆库所属百炼账号的Key；与模型账号KEY独立，禁止混用。
       ALIYUN_MEMORY_USER_ID: 'yoyo' # 记忆库中的固定用户ID，应与稳定会话ID保持一致。
-      ALIYUN_MEMORY_MAX_RESULTS: '5' # 普通聊天最多注入5条长期记忆结果。
+      ALIYUN_MEMORY_MAX_RESULTS: '10' # 普通聊天最多注入10条长期记忆结果。
       ALIYUN_MEMORY_THRESHOLD: '0.55' # 语义相关度最低阈值；越高越严格，越低越容易召回无关内容。
       ALIYUN_MEMORY_LIBRARY_ID: '${ALIYUN_MEMORY_LIBRARY_ID:-}' # 百炼记忆库ID，来自宿主机 .env；必须属于该Key可访问的账号或授权范围。
-      ALIYUN_MEMORY_RECOVERY_FETCH_K: '20' # 恢复/重连时先扩大到20条候选，再做时间与语义重排。
+      ALIYUN_MEMORY_RECOVERY_FETCH_K: '40' # 恢复/重连时先扩大到40条候选，再做时间与语义重排。
       ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT: '0.65' # 恢复场景中的近期时间权重，占比0至1。
       ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT: '0.75' # 用户明确提到时间时的时间权重，占比0至1。
       ALIYUN_MEMORY_NORMAL_TIME_WEIGHT: '0.25' # 普通聊天的时间权重，占比0至1；其余主要由语义相关度决定。
@@ -135,7 +135,7 @@ services: # Docker Compose 服务集合。
       VISION_MAX_FOLLOWUP_MESSAGES: '6' # 一张图片最多合并6条后续补充消息。
       VISION_MAX_FOLLOWUP_CHARS: '500' # 图片补充文字合计最多500字符。
       VISION_CONTEXT_MAX_CHARS: '5000' # 看图时最多注入5000字符的图片之前近期聊天。
-      VISION_MEMORY_TOP_N: '5' # 有补充文字时最多检索5条相关长期记忆；不改变长期记忆写入。
+      VISION_MEMORY_TOP_N: '10' # 有补充文字时最多检索10条相关长期记忆；不改变长期记忆写入。
       VISION_REFERENCE_MAX_MB: '8' # 当前图片或单张身份参考图允许编码进视觉请求的最大体积，单位MB。
       VISION_IDENTITY_REFERENCE_MAX: '3' # 单次看图最多附带3张身份比对图：2张小悠人脸和1张YoYo真实自拍。
       VISION_IDENTITY_HASH_DISTANCE: '8' # 微信压缩后图片感知哈希允许最多8位差异；越大越宽松，也越可能误匹配。
@@ -187,9 +187,10 @@ services: # Docker Compose 服务集合。
       PATPAT_REPLY_ENABLE_THINKING: 'true' # 拍一拍回应启用思考，以结合关系语境。
       # ===== 统一主动意识、动态内在状态与文字/照片媒介决策 =====
       XIAOYOU_UNIFIED_PROACTIVE_ENABLED: 'true' # 启用唯一主动中枢；开启后旧分钟级和长周期状态机不再各自决定发送。
-      XIAOYOU_INNER_STATE_MODEL: 'qwen3.7-plus' # 每轮完整对话后异步分析小悠短期情绪变化的轻量模型。
-      XIAOYOU_INNER_STATE_ENABLE_THINKING: 'false' # 内在状态只输出结构化增量，关闭思考以节省后台耗时。
-      XIAOYOU_INNER_STATE_TIMEOUT: '25' # 单次内在状态更新最多等待25秒；失败不影响正常聊天。
+      XIAOYOU_INNER_STATE_MODEL: 'qwen3.7-max' # 每轮完整对话后异步分析小悠短期情绪变化的主模型。
+      XIAOYOU_INNER_STATE_ENABLE_THINKING: 'true' # 内在状态开启受限思考，更细致地理解关系语境与情绪变化。
+      XIAOYOU_INNER_STATE_THINKING_BUDGET: '2048' # 中度思考上限；避免每轮状态更新继承全局4096造成过度耗时与费用。
+      XIAOYOU_INNER_STATE_TIMEOUT: '45' # Max中度思考最多等待45秒；失败不影响正常聊天。
       XIAOYOU_INNER_STATE_CONTEXT_MAX_CHARS: '5000' # 更新状态时最多读取5000字符近期真实聊天。
       XIAOYOU_INNER_STATE_HALF_LIFE_HOURS: '8' # 情绪偏移约8小时自然向人格基线回落；惦念和昼夜精力仍会随时间演化。
       XIAOYOU_PROACTIVE_DECISION_MODEL: 'qwen3.7-max' # 统一决定保持安静、发文字或分享真实照片的模型。
@@ -207,7 +208,7 @@ services: # Docker Compose 服务集合。
       PROACTIVE_CHECK_INTERVAL: '30' # 技术调度器每30秒检查模型预约是否到期；实际重新判断时间由模型决定。
       PROACTIVE_QUIET_HOURS: '02:30-08:00' # 作为模型判断打扰风险的时间偏好，不在统一模式下硬拦截。
       PROACTIVE_RECENT_TEXTS_MAX: '8' # 判断时最多参考8条近期主动消息，减少表达重复。
-      PROACTIVE_MEMORY_TOP_N: '10' # 主动判断最多注入10条相关长期记忆。
+      PROACTIVE_MEMORY_TOP_N: '20' # 主动判断最多注入20条相关长期记忆。
       PROACTIVE_RECENT_CONTEXT_MAX_CHARS: '5000' # 主动决策最多注入5000字符近期上下文。
 
       # ===== ConversationFollowup统一模式兼容入口 =====
@@ -223,7 +224,7 @@ services: # Docker Compose 服务集合。
       REMINDER_ENABLE_THINKING: 'true' # 到期提醒生成启用思考。
       REMINDER_INTENT_MODEL: 'qwen3.7-plus' # 判断用户是否在创建、修改或取消提醒的分类模型。
       REMINDER_INTENT_ENABLE_THINKING: 'false' # 提醒意图分类关闭思考，减少普通聊天延迟。
-      REMINDER_MEMORY_TOP_N: '10' # 提醒生成时最多注入10条相关长期记忆。
+      REMINDER_MEMORY_TOP_N: '20' # 提醒生成时最多注入20条相关长期记忆。
       REMINDER_ACK_USE_LLM: 'true' # 创建提醒后的确认话术由模型生成。
       REMINDER_ACK_ENABLE_THINKING: 'true' # 提醒确认话术启用思考，使表达更贴合语境。
       REMINDER_FOLLOWUP_CONTEXT_SECONDS: '900' # 提醒触发后900秒内保留后续衔接语境。

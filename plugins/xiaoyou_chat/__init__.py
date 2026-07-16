@@ -559,7 +559,7 @@ class XiaoyouChat(Plugin):
         query = str(query or "当前会话刚刚发生的事件，以及 YoYo 和小悠最近的关系状态").strip()
         return load_long_memory_context(
             query,
-            max_results=max(0, int(os.getenv("XIAOYOU_RECONNECT_MEMORY_TOP_N", "5"))),
+            max_results=max(0, int(os.getenv("XIAOYOU_RECONNECT_MEMORY_TOP_N", "10"))),
             retrieval_mode=retrieval_mode,
             component="XiaoyouChat",
         )
