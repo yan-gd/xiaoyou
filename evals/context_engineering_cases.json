@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "emotional-needs-working-memory",
+      "messages": ["今天真的好累，抱抱我"],
+      "expected": {"mode": "emotional", "use_long_memory": false, "max_results": 0}
+    },
+    {
+      "id": "short-continuation-no-cloud-recall",
+      "messages": ["嗯嗯继续呀"],
+      "expected": {"mode": "continuation", "use_long_memory": false, "max_results": 0}
+    },
+    {
+      "id": "explicit-episodic-recall",
+      "messages": ["你还记得我们上次聊无头微信是什么时候吗"],
+      "expected": {"mode": "recall", "use_long_memory": true, "retrieval_mode": "recovery", "types_include": ["episodic", "relationship"]}
+    },
+    {
+      "id": "preference-update",
+      "messages": ["记住，我喜欢你回复短一点但不要敷衍"],
+      "expected": {"mode": "preference", "use_long_memory": true, "types_include": ["semantic", "correction"]}
+    },
+    {
+      "id": "explicit-correction",
+      "messages": ["纠正一下，我现在不想把微信作为唯一入口"],
+      "expected": {"mode": "correction", "use_long_memory": true, "types_include": ["correction", "project"]}
+    },
+    {
+      "id": "project-deployment",
+      "messages": ["继续处理小悠服务器容器部署的报错"],
+      "expected": {"mode": "project", "use_long_memory": true, "types_include": ["project", "pending"]}
+    },
+    {
+      "id": "batched-project-followup",
+      "messages": ["刚才服务器部署报错了", "继续吧"],
+      "expected": {"mode": "project", "use_long_memory": true, "types_include": ["project", "pending"]}
+    },
+    {
+      "id": "relationship-recall",
+      "messages": ["你记得我们以前定下的约定吗"],
+      "expected": {"mode": "recall", "use_long_memory": true, "types_include": ["relationship"]}
+    },
+    {
+      "id": "general-long-message",
+      "messages": ["我在想明天也许可以换一种方式聊聊，这个想法还不确定，你先听我说说"],
+      "expected": {"mode": "general", "use_long_memory": true, "max_results": 3}
+    },
+    {
+      "id": "correction-wins-over-project",
+      "messages": ["纠正一下，以后不要把这个项目叫旧名字"],
+      "expected": {"mode": "correction", "use_long_memory": true, "types_include": ["correction"]}
+    }
+  ]
+}

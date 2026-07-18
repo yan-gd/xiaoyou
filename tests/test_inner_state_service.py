@@ -118,6 +118,25 @@ class InnerStateServiceTest(unittest.TestCase):
         self.assertNotIn("aliyun_memory", source)
         self.assertNotIn("record_assistant_message", source)
 
+    def test_repeated_large_positive_deltas_do_not_pin_state_at_one(self):
+        self.module["chat_completion"] = lambda **kwargs: types.SimpleNamespace(
+            ok=True,
+            content=json.dumps({
+                "deltas": {"mood_valence": 0.35, "longing": 0.35},
+                "confidence": 1.0,
+                "next_evaluation_seconds": 600,
+            }),
+        )
+
+        result = None
+        for _ in range(12):
+            result = self.service.update_from_exchange(
+                "yoyo", user_text="普通亲密聊天", assistant_text="正常回复"
+            )
+
+        self.assertLessEqual(result["state"]["mood_valence"], 0.96)
+        self.assertLessEqual(result["state"]["longing"], 0.96)
+
 
 if __name__ == "__main__":
     unittest.main()

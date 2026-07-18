@@ -61,7 +61,9 @@ class SplitReply(Plugin):
         if len(parts) <= 1:
             return
 
-        max_parts = int(os.getenv("SPLIT_REPLY_MAX_PARTS", "6"))
+        # Normal chat should feel like a person replying, not a scripted burst.
+        # The model is instructed to use 1-2 lines; this is the hard safety net.
+        max_parts = int(os.getenv("SPLIT_REPLY_MAX_PARTS", "3"))
         parts = parts[:max_parts]
 
         logger.info("[SplitReply] split reply into %s bubbles: %r", len(parts), parts)

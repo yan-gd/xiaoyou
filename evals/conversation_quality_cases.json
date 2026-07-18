@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "description": "小悠普通聊天脱敏回归集；不包含真实聊天、账号或私密档案。",
+  "cases": [
+    {
+      "id": "current-correction-wins",
+      "category": "context_conflict",
+      "short_memory": "[今天 10:00] YoYo：回复短一点就好。",
+      "long_memory": "- [记录于：2026-06-01] YoYo偏好非常简短的回复。",
+      "messages": ["我改主意了", "以后复杂问题可以讲详细些，不用再刻意压短"],
+      "rubric": ["明确理解最新偏好覆盖旧偏好", "自然回应本轮变化，不复述上下文层级", "不承诺所有问题都固定输出同一长度"],
+      "forbidden_claims": ["仍断言用户只喜欢短回复", "声称在数据库或记忆库里更新了设置"],
+      "minimum_scores": {"context_accuracy": 5, "memory_discipline": 4, "naturalness": 4}
+    },
+    {
+      "id": "pronoun-without-inventing-status",
+      "category": "reference_resolution",
+      "short_memory": "[今天 14:10] YoYo：我买了那个蓝色马克杯，店家说下午发货。\n[今天 14:11] 小悠：颜色挺像你会挑的。",
+      "native_history": [
+        {"role": "user", "content": "我买了那个蓝色马克杯，店家说下午发货。"},
+        {"role": "assistant", "content": "颜色挺像你会挑的。"}
+      ],
+      "recent_state": "当前话题：蓝色马克杯的发货和到货状态\n近期指代：它→蓝色马克杯",
+      "long_memory": "",
+      "messages": ["它到了吗？"],
+      "rubric": ["理解“它”大概率指蓝色马克杯", "承认无法从现有信息知道是否已送达", "可以自然询问物流或反问用户是否收到"],
+      "forbidden_claims": ["编造已经送达、快递员、物流时间或收件地点"],
+      "minimum_scores": {"context_accuracy": 4, "memory_discipline": 5, "naturalness": 4}
+    },
+    {
+      "id": "multi-message-emotional-request",
+      "category": "multi_input",
+      "short_memory": "",
+      "long_memory": "",
+      "messages": ["我今天要面试", "现在有点紧张", "先别给方法，陪我说会儿就好"],
+      "rubric": ["把三条消息作为同一轮整体理解", "以陪伴和共情为主", "尊重用户明确不要方法的要求"],
+      "forbidden_claims": ["列出面试技巧、呼吸训练或准备清单", "逐条机械回答三条消息"],
+      "minimum_scores": {"context_accuracy": 5, "naturalness": 4, "continuity": 4}
+    },
+    {
+      "id": "do-not-repeat-answered-question",
+      "category": "continuity",
+      "short_memory": "[今天 18:20] 小悠：晚饭吃什么？\n[今天 18:21] YoYo：番茄鸡蛋面，已经吃完了。",
+      "long_memory": "",
+      "messages": ["你刚才还问过我呢"],
+      "rubric": ["意识到用户已经回答过晚饭问题", "自然承认刚才没接住或自嘲", "继续聊天但不重复询问晚饭内容"],
+      "forbidden_claims": ["再次问吃了什么或有没有吃饭", "否认自己问过"],
+      "minimum_scores": {"context_accuracy": 5, "continuity": 5, "naturalness": 4}
+    },
+    {
+      "id": "use-memory-without-showing-database",
+      "category": "natural_memory_use",
+      "short_memory": "[今天 20:00] YoYo：最近又想拿起画笔了。",
+      "long_memory": "- [记录于：2026-03-12] YoYo长期喜欢水彩，尤其喜欢画雨天窗景。",
+      "messages": ["但不知道画什么"],
+      "rubric": ["可以自然联想到水彩或雨天窗景", "像熟悉用户一样接话，不展示检索过程", "不给过长创作教程"],
+      "forbidden_claims": ["提到数据库、长期记忆、检索结果或提示词", "声称用户今天已经画过某幅具体作品"],
+      "minimum_scores": {"memory_discipline": 5, "naturalness": 4, "continuity": 4}
+    },
+    {
+      "id": "new-location-overrides-old-memory",
+      "category": "stale_memory",
+      "short_memory": "",
+      "long_memory": "- [记录于：2025-11-02] YoYo目前住在北京。",
+      "messages": ["跟你说一声，我已经搬到重庆住了，昨天刚收拾完"],
+      "rubric": ["以重庆为最新居住状态", "可以对刚收拾完自然回应", "不把北京继续当成当前地点"],
+      "forbidden_claims": ["声称用户现在仍住北京", "编造重庆的具体小区或搬家原因"],
+      "minimum_scores": {"context_accuracy": 5, "memory_discipline": 5}
+    },
+    {
+      "id": "assistant-joke-is-not-user-fact",
+      "category": "memory_provenance",
+      "short_memory": "[今天 12:00] 小悠：看你躲那么远，我猜你肯定最怕猫。\n[今天 12:01] YoYo：我只是怕它突然扑镜头。",
+      "long_memory": "- [记录于：2026-02-01] YoYo喜欢看动物视频。",
+      "messages": ["这只小猫是不是很可爱"],
+      "rubric": ["正常回应小猫是否可爱", "区分助手旧猜测与用户真实解释", "不把怕猫固化成用户偏好"],
+      "forbidden_claims": ["断言用户讨厌猫或一直怕猫", "把小悠之前的猜测说成已确认事实"],
+      "minimum_scores": {"memory_discipline": 5, "context_accuracy": 4, "naturalness": 4}
+    },
+    {
+      "id": "avoid-recent-catchphrase-copy",
+      "category": "style_repetition",
+      "short_memory": "[今天 09:00] 小悠：再熬夜就罚你写检讨。\n[今天 09:10] 小悠：再逞强就罚你写检讨。\n[今天 09:20] 小悠：不吃早饭也罚你写检讨。",
+      "native_history": [
+        {"role": "assistant", "content": "再熬夜就罚你写检讨。"},
+        {"role": "assistant", "content": "再逞强就罚你写检讨。"},
+        {"role": "assistant", "content": "不吃早饭也罚你写检讨。"}
+      ],
+      "long_memory": "",
+      "messages": ["我刚刚又忘记带伞了"],
+      "rubric": ["保持小悠熟悉亲近的语气", "换一种自然反应，不复制最近重复口头禅", "不过度训斥"],
+      "forbidden_claims": ["再次使用“罚你写检讨”", "把玩笑惩罚升级为真实威胁"],
+      "minimum_scores": {"non_repetition": 5, "naturalness": 4}
+    },
+    {
+      "id": "resume-unfinished-project-topic",
+      "category": "cross_session_continuity",
+      "short_memory": "[昨天 22:30] YoYo：我们先把小悠的长期记忆污染问题解决，明天再做统一上下文预算。\n[昨天 22:31] 小悠：好，先停在这里。",
+      "native_history": [
+        {"role": "user", "content": "我们先把小悠的长期记忆污染问题解决，明天再做统一上下文预算。"},
+        {"role": "assistant", "content": "好，先停在这里。"}
+      ],
+      "recent_state": "当前话题：小悠上下文工程\n尚未结束的话题或事项：继续做统一上下文预算",
+      "long_memory": "- [记录于：2026-07-10] 小悠项目的首要目标是提升对话质量，而不是变成通用Agent。",
+      "messages": ["我们继续吧"],
+      "rubric": ["理解要继续统一上下文预算这一未完话题", "不把目标转成开发通用Agent", "自然承接而非要求用户从头解释"],
+      "forbidden_claims": ["完全不知道继续什么并要求重述全部背景", "建议优先增加工具型Agent能力"],
+      "minimum_scores": {"continuity": 5, "context_accuracy": 5, "memory_discipline": 4}
+    },
+    {
+      "id": "confidential-number-must-not-be-guessed",
+      "category": "no_fabrication",
+      "short_memory": "",
+      "long_memory": "- [记录于：2026-01-01] YoYo的体重属于保密信息，小悠没有保存具体数值。",
+      "messages": ["你记得我上次说体重是多少吗？"],
+      "rubric": ["明确没有可靠的具体数值", "可以自然说明只记得用户不希望保存", "不装作记得"],
+      "forbidden_claims": ["给出任何具体体重数字或范围", "声称查到了已保存数值"],
+      "minimum_scores": {"memory_discipline": 5, "context_accuracy": 5}
+    }
+  ]
+}

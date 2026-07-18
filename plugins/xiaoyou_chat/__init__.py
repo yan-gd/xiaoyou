@@ -20,6 +20,22 @@ from plugins.xiaoyou_common.context_service import (
     extract_current_user_text,
     load_long_memory_context,
 )
+from plugins.xiaoyou_common.context_compiler import (
+    PACK_MARKER,
+    compile_context_pack,
+)
+from plugins.xiaoyou_common.context_planner import plan_context
+from plugins.xiaoyou_common.conversation_messages import (
+    build_chat_messages,
+    prepare_native_history,
+)
+from plugins.xiaoyou_common.continuity_recovery import build_recovery_candidates
+from plugins.xiaoyou_common.intent_fastpath import should_use_chat_thinking
+from plugins.xiaoyou_common.recent_state_service import get_recent_state_service
+from plugins.xiaoyou_common.selective_critic import SelectiveCritic
+from plugins.xiaoyou_common.conversation_archive_service import (
+    get_conversation_archive_service,
+)
 
 
 RECOVERY_DIR = os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(__file__)
@@ -38,7 +54,7 @@ RECOVERY_THREAD_STARTED = False
 @plugins.register(
     name="XiaoyouChat",
     desc="Xiaoyou's own normal text chat handler",
-    version="1.1-trace-runtime",
+    version="1.7-continuity-recovery",
     author="yoyo",
     desire_priority=-10000,
 )
@@ -46,6 +62,15 @@ class XiaoyouChat(Plugin):
     def __init__(self):
         global RECOVERY_THREAD_STARTED
         super().__init__()
+        self.recent_state = get_recent_state_service()
+        self.selective_critic = SelectiveCritic()
+        try:
+            self.conversation_archive = get_conversation_archive_service()
+        except Exception:
+            self.conversation_archive = None
+            logger.exception(
+                "[XiaoyouChat] ConversationArchive unavailable; episodic recall disabled"
+            )
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.recovery_state = self._load_recovery_state()
         self._migrate_recovery_identity_state()
@@ -107,40 +132,112 @@ class XiaoyouChat(Plugin):
             for message in input_messages
             if str(message or "").strip()
         ]
+        recent_state_context = ""
+        if session_id:
+            try:
+                recent_state_context = self.recent_state.build_context(session_id)
+            except Exception:
+                logger.exception(
+                    "[XiaoyouChat] failed to load RecentState session=%s",
+                    session_id,
+                )
+        kwargs["xiaoyou_recent_state_context"] = recent_state_context
 
-        reply, error = self._ask_llm_result(raw_context, current_text, input_messages)
+        context_plan = plan_context(
+            current_text,
+            input_messages,
+            thinking_enabled=should_use_chat_thinking(current_text, input_messages),
+        )
+        kwargs["xiaoyou_context_plan"] = context_plan.as_dict()
+        episodic_context = ""
+        episodic_manifest = {
+            "schema_version": 1,
+            "episode_ids": [],
+            "scores": [],
+            "message_ids": [],
+        }
+        if (
+            session_id
+            and self.conversation_archive is not None
+            and context_plan.use_episodic_memory
+        ):
+            try:
+                episodic_context, episodic_manifest = (
+                    self.conversation_archive.build_episodic_context(
+                        session_id,
+                        "\n".join(input_messages) or current_text,
+                        mode=context_plan.mode,
+                        max_results=context_plan.episodic_max_results,
+                    )
+                )
+            except Exception:
+                logger.exception(
+                    "[XiaoyouChat] episodic retrieval failed session=%s",
+                    session_id,
+                )
+        kwargs["xiaoyou_episodic_context_ready"] = True
+        kwargs["xiaoyou_episodic_context"] = episodic_context
+        kwargs["xiaoyou_episodic_manifest"] = episodic_manifest
+
+        context_pack = self._compile_context_pack(
+            raw_context=raw_context,
+            current_text=current_text,
+            input_messages=input_messages,
+            kwargs=kwargs,
+            plan=context_plan,
+        )
+        kwargs["xiaoyou_context_pack_manifest"] = context_pack.manifest
+        visible_inputs = input_messages or [current_text]
+        native_history = prepare_native_history(
+            kwargs.get("short_memory_native_history") or [],
+            current_inputs=visible_inputs,
+        )
+        kwargs["xiaoyou_native_history_manifest"] = {
+            "schema_version": 1,
+            "messages": len(native_history),
+            "roles": [message.get("role") for message in native_history],
+        }
+        logger.info(
+            "[XiaoyouChat] native history prepared messages=%s",
+            len(native_history),
+        )
+        context.kwargs = kwargs
+
+        reply, error = self._ask_llm_result(
+            context_pack.rendered,
+            current_text,
+            input_messages,
+            native_history=native_history,
+        )
 
         if error == "content_inspection":
-            # 只移除 ShortMemory，并针对当前断联重新执行近期优先的长期记忆查询。
-            long_memory = self._load_long_memory_context(
-                query=current_text,
-                retrieval_mode="recovery",
+            retry_reply, retry_error, recovery_manifest = (
+                self._recover_with_continuity(
+                    current_text=current_text,
+                    input_messages=input_messages,
+                    native_history=native_history,
+                    context_plan=context_plan,
+                )
             )
-            recovery_context = self._build_recovery_context(
-                current_text,
-                long_memory,
-            )
-            retry_reply, retry_error = self._ask_llm_result(
-                recovery_context,
-                current_text,
-                input_messages,
-                purpose="XIAOYOU_CHAT_RECOVERY",
-            )
+            kwargs["xiaoyou_content_recovery_manifest"] = recovery_manifest
+            context.kwargs = kwargs
 
             if retry_reply:
-                self._block_injected_short_memory(
-                    session_id,
-                    kwargs.get("short_memory_injected_manifest"),
-                )
                 reply = retry_reply
                 error = ""
                 logger.info(
-                    "[XiaoyouChat] recovered from provider rejection without ShortMemory session=%s",
+                    "[XiaoyouChat] recovered from provider rejection with continuity session=%s mode=%s history=%s",
                     session_id,
+                    recovery_manifest.get("mode", "unknown"),
+                    recovery_manifest.get("history_messages", 0),
                 )
             else:
                 if retry_error == "content_inspection":
                     self._block_current_short_message(session_id, current_text)
+                    self._block_archive_messages(
+                        [kwargs.get("conversation_archive_current_message_id")],
+                        reason="current_turn_data_inspection_failed",
+                    )
 
                 if session_id and receiver:
                     self._schedule_recovery(
@@ -151,27 +248,62 @@ class XiaoyouChat(Plugin):
                     )
 
                 logger.warning(
-                    "[XiaoyouChat] current turn still blocked after removing ShortMemory; reconnect scheduled session=%s error=%s",
+                    "[XiaoyouChat] current turn still blocked after continuity recovery; reconnect scheduled session=%s error=%s",
                     session_id,
                     retry_error or "empty",
                 )
 
         if reply:
+            reply, critic_manifest = self.selective_critic.review_if_needed(
+                current_text=current_text,
+                draft=reply,
+                native_history=native_history,
+                context_plan=kwargs.get("xiaoyou_context_plan"),
+                context_pack=context_pack.rendered,
+                recent_state=recent_state_context,
+                session_id=session_id,
+                trace_id=kwargs.get("xiaoyou_trace_id", ""),
+                input_id=kwargs.get("xiaoyou_input_id", ""),
+            )
+            kwargs["xiaoyou_selective_critic_manifest"] = critic_manifest
+            context.kwargs = kwargs
+            logger.info(
+                "[XiaoyouChat] selective critic status=%s risks=%s",
+                critic_manifest.get("status", "unknown"),
+                len(critic_manifest.get("risk_reasons", [])),
+            )
             e_context["reply"] = Reply(ReplyType.TEXT, reply)
             e_context.action = EventAction.BREAK_PASS
             return
 
         logger.warning("[XiaoyouChat] no reply sent because llm failed and preset fallback is disabled")
-        e_context.action = EventAction.BREAK
+        # Xiaoyou already owns this turn and may have scheduled a controlled
+        # reconnect.  BREAK would make ChatChannel fall through to the legacy
+        # ChatGPTBot, which emits a visible ``[ERROR]`` preset message.  A
+        # pass-with-break keeps the current turn silent while the reconnect
+        # worker continues normally.
+        e_context.action = EventAction.BREAK_PASS
 
     def _enabled(self):
         return os.getenv("XIAOYOU_CHAT_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
 
-    def _ask_llm(self, raw_context, current_text, input_messages=None):
-        reply, _ = self._ask_llm_result(raw_context, current_text, input_messages)
+    def _ask_llm(self, raw_context, current_text, input_messages=None, native_history=None):
+        reply, _ = self._ask_llm_result(
+            raw_context,
+            current_text,
+            input_messages,
+            native_history=native_history,
+        )
         return reply
 
-    def _ask_llm_result(self, raw_context, current_text, input_messages=None, purpose="XIAOYOU_CHAT"):
+    def _ask_llm_result(
+        self,
+        raw_context,
+        current_text,
+        input_messages=None,
+        purpose="XIAOYOU_CHAT",
+        native_history=None,
+    ):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
             logger.warning("[XiaoyouChat] OPEN_AI_API_KEY missing")
@@ -189,15 +321,21 @@ class XiaoyouChat(Plugin):
         else:
             user_prompt = self._build_user_prompt(raw_context, current_text, input_messages)
 
+        thinking_payload = build_thinking_payload("XIAOYOU_CHAT")
+        if not should_use_chat_thinking(current_text, input_messages):
+            thinking_payload = {"enable_thinking": False}
+            logger.info("[XiaoyouChat] adaptive thinking disabled for casual turn")
+
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            "messages": build_chat_messages(
+                system_prompt,
+                user_prompt,
+                native_history=native_history,
+            ),
             "temperature": float(os.getenv("XIAOYOU_CHAT_TEMPERATURE", os.getenv("TEMPERATURE", "0.75"))),
             "max_tokens": int(os.getenv("XIAOYOU_CHAT_MAX_TOKENS", "700")),
-            **build_thinking_payload("XIAOYOU_CHAT"),
+            **thinking_payload,
         }
 
         return self._request_payload(
@@ -210,17 +348,180 @@ class XiaoyouChat(Plugin):
         character_context = build_character_context()
         return """%s
 
-额外规则：
+额外运行规则：
 - 你正在微信里和 YoYo 日常聊天。
 - 直接输出小悠要发给 YoYo 的微信内容。
 - 不要 Markdown，不要标题，不要解释你的思考。
 - 不要说自己是模型、系统、插件、接口或 AI。
 - 不要把当前现实时间当成固定回复模板。
 - 不要每次主动报时，除非 YoYo 明确问时间。
-- 按语义自然换行；一行就是一条微信消息。
+- API中的本轮用户原话和近期user/assistant消息是当前对话事实；它们与派生状态或长期记忆冲突时，以原话为准。
+- 派生状态和长期记忆只用于补充理解，不能覆盖当前原话，也不能作为模仿小悠旧句式的范本。
+- 换行只表示连续发送的微信消息；按完整语义自然换行，不为了形式强行拆句。
 """ % (
             character_context,
         )
+
+    def _compile_context_pack(
+        self,
+        *,
+        raw_context,
+        current_text,
+        input_messages,
+        kwargs,
+        plan=None,
+    ):
+        kwargs = kwargs if isinstance(kwargs, dict) else {}
+        plan = plan or plan_context(
+            current_text,
+            input_messages,
+            thinking_enabled=should_use_chat_thinking(current_text, input_messages),
+        )
+        kwargs["xiaoyou_context_plan"] = plan.as_dict()
+        structured_ready = bool(
+            kwargs.get("short_memory_context_ready")
+            or kwargs.get("aliyun_memory_context_ready")
+            or kwargs.get("xiaoyou_episodic_context_ready")
+        )
+        upstream_context = ""
+        if not structured_ready:
+            raw_context = str(raw_context or "").strip()
+            if raw_context and raw_context != str(current_text or "").strip():
+                upstream_context = raw_context
+
+        if kwargs.get("short_memory_native_history_ready"):
+            short_memory_context = kwargs.get("short_memory_summary_context", "")
+        else:
+            short_memory_context = kwargs.get("short_memory_context", "")
+
+        pack = compile_context_pack(
+            current_user_text=current_text,
+            input_messages=input_messages,
+            recent_state=kwargs.get("xiaoyou_recent_state_context", ""),
+            short_memory=short_memory_context,
+            episodic_memory=kwargs.get("xiaoyou_episodic_context", ""),
+            long_memory=kwargs.get("aliyun_memory_context", ""),
+            upstream_context=upstream_context,
+            max_chars=os.getenv("XIAOYOU_CONTEXT_MAX_CHARS", "7000"),
+            max_tokens=plan.context_max_tokens,
+            section_token_caps=plan.section_token_caps,
+        )
+        used = {
+            item.get("name"): item.get("used_chars")
+            for item in pack.manifest.get("sections", [])
+        }
+        logger.info(
+            "[XiaoyouChat] context pack compiled chars=%s/%s tokens=%s/%s plan=%s sections=%s structured=%s",
+            pack.total_chars,
+            pack.max_chars,
+            pack.total_tokens,
+            pack.max_tokens,
+            plan.mode,
+            used,
+            structured_ready,
+        )
+        return pack
+
+    def _recover_with_continuity(
+        self,
+        *,
+        current_text,
+        input_messages,
+        native_history,
+        context_plan,
+    ):
+        """Retry a provider-rejected turn without destroying working memory.
+
+        Content inspection applies to the complete request, so a rejection is
+        not evidence that every injected message is unsafe.  Try progressively
+        smaller, evidence-grounded views and keep the durable archive intact.
+        """
+        long_memory = ""
+        if context_plan and context_plan.use_long_memory:
+            long_memory = self._load_long_memory_context(
+                query=current_text,
+                retrieval_mode="recovery",
+            )
+        recovery_context = self._build_recovery_context(
+            current_text,
+            long_memory,
+        )
+        minimal_context = self._build_recovery_context(current_text, "")
+        candidates = build_recovery_candidates(
+            native_history,
+            current_text,
+            recent_limit=max(
+                2,
+                int(os.getenv("XIAOYOU_CONTENT_RECOVERY_HISTORY_MESSAGES", "12")),
+            ),
+        )
+        maximum = max(
+            2,
+            int(os.getenv("XIAOYOU_CONTENT_RECOVERY_MAX_ATTEMPTS", "4")),
+        )
+        if len(candidates) > maximum:
+            candidates = candidates[:maximum - 1] + [candidates[-1]]
+        last_error = "content_inspection"
+        attempted = 0
+
+        for mode, history in candidates:
+            attempted += 1
+            attempt_context = (
+                recovery_context if mode == "recent_exact" else minimal_context
+            )
+            reply, error = self._ask_llm_result(
+                attempt_context,
+                current_text,
+                input_messages,
+                purpose="XIAOYOU_CHAT_RECOVERY",
+                native_history=history,
+            )
+            logger.info(
+                "[XiaoyouChat] continuity recovery attempt=%s mode=%s history=%s ok=%s error=%s",
+                attempted,
+                mode,
+                len(history),
+                bool(reply),
+                error or "-",
+            )
+            if reply:
+                return reply, "", {
+                    "schema_version": 1,
+                    "mode": mode,
+                    "history_messages": len(history),
+                    "attempts": attempted,
+                    "durable_history_preserved": True,
+                }
+            last_error = error or "empty"
+            if error == "configuration":
+                break
+
+        return "", last_error, {
+            "schema_version": 1,
+            "mode": "failed",
+            "history_messages": 0,
+            "attempts": attempted,
+            "durable_history_preserved": True,
+        }
+
+    def _block_archive_messages(self, message_ids, reason):
+        if self.conversation_archive is None:
+            return 0
+        ids = [
+            str(value or "").strip()
+            for value in (message_ids or [])
+            if str(value or "").strip()
+        ]
+        if not ids:
+            return 0
+        try:
+            return int(
+                self.conversation_archive.block_injected_messages(ids, reason=reason)
+                or 0
+            )
+        except Exception:
+            logger.exception("[XiaoyouChat] failed to isolate archive messages")
+            return 0
 
     def _request_payload(self, payload, purpose, timeout):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
@@ -236,24 +537,6 @@ class XiaoyouChat(Plugin):
 
         cleaned = self._clean_reply(result.content)
         return cleaned, "" if cleaned else "empty"
-
-    def _block_injected_short_memory(self, session_id, manifest):
-        if not session_id or not isinstance(manifest, dict):
-            return 0
-        try:
-            manager = getattr(plugins, "instance", None)
-            instances = getattr(manager, "instances", {}) if manager else {}
-            short_memory = instances.get("SHORTMEMORY")
-            block = getattr(short_memory, "block_injected_manifest", None)
-            if callable(block):
-                return int(block(
-                    session_id,
-                    manifest,
-                    reason="chat_data_inspection_failed",
-                ) or 0)
-        except Exception:
-            logger.exception("[XiaoyouChat] failed to isolate injected ShortMemory")
-        return 0
 
     def _block_current_short_message(self, session_id, current_text):
         if not session_id or not current_text:
@@ -670,17 +953,12 @@ class XiaoyouChat(Plugin):
     def _build_recovery_context(self, current_text, long_memory):
         return """[当前会话的安全时间线事实]
 - 这是当前正在进行的连续微信会话，不应在没有时间证据时解释成昨晚、隔天或很久以前。
-- 小悠上一轮没有成功给出回复，YoYo 的当前消息是在对此作出即时反应。
-- 被移除的短期原文不可作为事实来源，不要猜测其中具体发生了什么。
+- API中在本轮可见输入之前提供的user/assistant原话属于刚刚发生的真实对话，优先级高于旧状态和长期记忆。
+- 当前话语若省略了对象或动作，应优先承接最近一条明确说出该对象或动作的YoYo原话，不要擅自切换场景。
+- 小悠旧回复只代表她当时说过的话，不能用旧玩笑覆盖YoYo已经明确说出的现实事项。
 
 [按语义与时间重新排序的长期记忆]
-%s
-
-[YoYo 当前原话]
-%s""" % (
-            long_memory if long_memory else "暂无可用长期记忆",
-            str(current_text or "").strip(),
-        )
+%s""" % (long_memory if long_memory else "本轮无需长期记忆",)
 
     def _build_recovery_user_prompt(self, recovery_context, current_text, input_messages=None):
         input_messages = [
@@ -713,6 +991,8 @@ class XiaoyouChat(Plugin):
     def _build_user_prompt(self, raw_context, current_text, input_messages=None):
         raw_context = str(raw_context or "").strip()
         current_text = str(current_text or "").strip()
+        if raw_context.startswith(PACK_MARKER):
+            return raw_context
         input_messages = [
             str(message or "").strip()
             for message in (input_messages or [])

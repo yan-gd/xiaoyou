@@ -21,6 +21,10 @@ from plugins.xiaoyou_common.message_context import (
     CURRENT_USER_MARKERS,
     extract_current_user_text,
 )
+from plugins.xiaoyou_common.recent_state_service import get_recent_state_service
+from plugins.xiaoyou_common.conversation_archive_service import (
+    get_conversation_archive_service,
+)
 
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "short_memory.json")
@@ -56,19 +60,32 @@ SUMMARY_INLINE_DIRECTIVE_RE = re.compile(
 @plugins.register(
     name="ShortMemory",
     desc="Short term conversational memory for Xiaoyou",
-    version="0.9-style-hygiene",
+    version="1.1-lifelong-archive",
     author="yoyo",
     desire_priority=40,
 )
 class ShortMemory(Plugin):
     def __init__(self):
         super().__init__()
+        self.recent_state = get_recent_state_service()
+        self.archive_backfill_done = threading.Event()
+        try:
+            self.conversation_archive = get_conversation_archive_service()
+        except Exception:
+            self.conversation_archive = None
+            self.archive_backfill_done.set()
+            logger.exception("[ShortMemory] ConversationArchive unavailable; using legacy window")
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.handlers[Event.ON_DECORATE_REPLY] = self.on_decorate_reply
         logger.info("[ShortMemory] inited")
 
         if self._enabled():
             self._migrate_identity_sessions()
+            if self.conversation_archive is not None:
+                # The retained JSON window is small.  Finish its one-way
+                # migration before accepting a new message so an older
+                # backfill cannot race with the current open episode.
+                self._run_conversation_archive_backfill()
 
         if self._enabled() and self._summary_enabled():
             threading.Thread(
@@ -114,11 +131,50 @@ class ShortMemory(Plugin):
                 return
 
             original_content = str(context.content or "")
-            short_context, injection_manifest = self._build_injection_with_manifest(session_id)
+            memory_snapshot = self._get_session(session_id)
+            short_context, injection_manifest = self._build_injection_from_item(
+                memory_snapshot
+            )
+            native_history = []
+            archive_message_ids = []
+            if (
+                self.conversation_archive is not None
+                and self.archive_backfill_done.is_set()
+            ):
+                try:
+                    native_history = self.conversation_archive.build_active_history(
+                        session_id
+                    )
+                    archive_message_ids = [
+                        str(message.get("id") or "")
+                        for message in native_history
+                        if str(message.get("id") or "")
+                    ]
+                except Exception:
+                    logger.exception(
+                        "[ShortMemory] failed to build archive ActiveWindow session=%s",
+                        session_id,
+                    )
+            if not native_history:
+                native_history = self._native_history_from_manifest(
+                    session_id,
+                    injection_manifest,
+                    item=memory_snapshot,
+                )
+            summary_context = self._summary_context_from_manifest(
+                session_id,
+                injection_manifest,
+                item=memory_snapshot,
+            )
             self._mark_injection_metadata(
                 context,
                 original_content,
                 injection_manifest,
+                short_context,
+                native_history=native_history,
+                summary_context=summary_context,
+                current_user_text=text,
+                archive_message_ids=archive_message_ids,
             )
             if short_context:
                 context.content = """[小悠的短期记忆]
@@ -136,7 +192,18 @@ class ShortMemory(Plugin):
 [已有上下文与当前消息]
 %s""" % (short_context, original_content)
 
-            self._append_message(session_id, "user", text)
+            current_record_id = self._append_message(
+                session_id,
+                "user",
+                text,
+                return_record_id=True,
+            )
+            if current_record_id:
+                kwargs = getattr(context, "kwargs", {}) or {}
+                kwargs["conversation_archive_current_message_id"] = str(
+                    current_record_id
+                )
+                context.kwargs = kwargs
             self._mark_context_session(context, session_id)
             return
 
@@ -182,6 +249,20 @@ class ShortMemory(Plugin):
         if record_id:
             kwargs["xiaoyou_memory_record_id"] = str(record_id)
             context.kwargs = kwargs
+            try:
+                self.recent_state.schedule_update(
+                    session_id,
+                    user_text=kwargs.get("short_memory_current_user_text", ""),
+                    assistant_text=self._clean_message(text),
+                    last_user_ts=kwargs.get("short_memory_current_user_ts", 0),
+                    trace_id=kwargs.get("xiaoyou_trace_id", ""),
+                    input_id=kwargs.get("xiaoyou_input_id", ""),
+                )
+            except Exception:
+                logger.exception(
+                    "[ShortMemory] failed to schedule RecentState update session=%s",
+                    session_id,
+                )
 
     def _enabled(self):
         return os.getenv("SHORT_MEMORY_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
@@ -224,11 +305,33 @@ class ShortMemory(Plugin):
         except Exception:
             pass
 
-    def _mark_injection_metadata(self, context, base_context, manifest):
+    def _mark_injection_metadata(
+        self,
+        context,
+        base_context,
+        manifest,
+        short_context="",
+        *,
+        native_history=None,
+        summary_context="",
+        current_user_text="",
+        archive_message_ids=None,
+    ):
         try:
             kwargs = getattr(context, "kwargs", {}) or {}
             kwargs["short_memory_base_context"] = str(base_context or "")
             kwargs["short_memory_injected_manifest"] = copy.deepcopy(manifest or {})
+            kwargs["short_memory_context_ready"] = True
+            kwargs["short_memory_context"] = str(short_context or "")
+            kwargs["short_memory_native_history_ready"] = True
+            kwargs["short_memory_native_history"] = copy.deepcopy(native_history or [])
+            kwargs["short_memory_summary_context"] = str(summary_context or "")
+            kwargs["short_memory_current_user_text"] = str(current_user_text or "")[:1600]
+            kwargs["short_memory_current_user_ts"] = int(time.time())
+            kwargs["conversation_archive_active_ready"] = bool(archive_message_ids)
+            kwargs["conversation_archive_active_message_ids"] = list(
+                archive_message_ids or []
+            )
             context.kwargs = kwargs
         except Exception:
             logger.exception("[ShortMemory] failed to attach injection metadata")
@@ -291,6 +394,26 @@ class ShortMemory(Plugin):
                 return False
 
             should_summarize = self._should_summarize(item)
+
+        if self.conversation_archive is not None:
+            try:
+                self.conversation_archive.record_message(
+                    message_id=record_id,
+                    session_id=session_id,
+                    role=role,
+                    content=content,
+                    ts=now,
+                    source=source,
+                    trace_id=trace_link.trace_id,
+                    input_id=trace_link.input_id,
+                    action_id=action_id,
+                )
+            except Exception:
+                logger.exception(
+                    "[ShortMemory] failed to archive message session=%s role=%s",
+                    session_id,
+                    role,
+                )
 
         if should_summarize:
             self._schedule_summary(
@@ -502,6 +625,20 @@ class ShortMemory(Plugin):
         record["provider_injection_blocked"] = True
         record["provider_injection_blocked_reason"] = str(reason or "")[:120]
         record["provider_injection_blocked_at"] = now
+
+    def _restore_overbroad_chat_block(self, record):
+        """Undo only the legacy whole-context quarantine marker."""
+        if not isinstance(record, dict):
+            return record
+        if (
+            record.get("provider_injection_blocked")
+            and record.get("provider_injection_blocked_reason")
+            == "chat_data_inspection_failed"
+        ):
+            record.pop("provider_injection_blocked", None)
+            record.pop("provider_injection_blocked_reason", None)
+            record.pop("provider_injection_blocked_at", None)
+        return record
 
     def _is_duplicate_message(self, item, role, content, source, now):
         # 用户重复说同一句可能是有意强调，只对助手回复或外部直发消息去重。
@@ -935,6 +1072,9 @@ class ShortMemory(Plugin):
 
     def _build_injection_with_manifest(self, session_id):
         item = self._get_session(session_id)
+        return self._build_injection_from_item(item)
+
+    def _build_injection_from_item(self, item):
         messages = item.get("messages", [])
         summaries = item.get("summaries", [])
         pending = item.get("pending_archive", [])
@@ -1052,6 +1192,73 @@ class ShortMemory(Plugin):
             "summary_ids": [entry.get("id") for entry in summaries if entry.get("id")],
             "message_ids": [entry.get("id") for entry in messages if entry.get("id")],
         }
+
+    def _native_history_from_manifest(self, session_id, manifest, item=None):
+        """Return the exact recent records selected for injection as role messages.
+
+        The public context metadata intentionally contains only the selected
+        records.  XiaoyouChat can therefore send them through the provider's
+        native user/assistant roles without parsing display text or widening
+        the ShortMemory budget.
+        """
+        message_ids = [
+            str(value or "").strip()
+            for value in (manifest or {}).get("message_ids", [])
+            if str(value or "").strip()
+        ]
+        if not message_ids:
+            return []
+
+        item = item if isinstance(item, dict) else self._get_session(session_id)
+        records = list(item.get("pending_archive", [])) + list(item.get("messages", []))
+        by_id = {
+            str(record.get("id") or ""): record
+            for record in records
+            if isinstance(record, dict) and record.get("id")
+        }
+        native = []
+        for message_id in message_ids:
+            record = by_id.get(message_id)
+            if not record or record.get("provider_injection_blocked"):
+                continue
+            role = str(record.get("role") or "").strip().lower()
+            content = self._clean_message(record.get("content", ""))
+            if role not in ("user", "assistant") or not content:
+                continue
+            native.append({
+                "id": message_id,
+                "role": role,
+                "content": content,
+                "ts": int(record.get("ts") or 0),
+            })
+        return native
+
+    def _summary_context_from_manifest(self, session_id, manifest, item=None):
+        summary_ids = [
+            str(value or "").strip()
+            for value in (manifest or {}).get("summary_ids", [])
+            if str(value or "").strip()
+        ]
+        if not summary_ids:
+            return ""
+
+        item = item if isinstance(item, dict) else self._get_session(session_id)
+        by_id = {
+            str(summary.get("id") or ""): summary
+            for summary in item.get("summaries", [])
+            if isinstance(summary, dict) and summary.get("id")
+        }
+        lines = []
+        for summary_id in summary_ids:
+            summary = by_id.get(summary_id)
+            if not summary or summary.get("provider_injection_blocked"):
+                continue
+            line = self._format_summary_for_injection(summary)
+            if line.strip():
+                lines.append(line)
+        if not lines:
+            return ""
+        return "[最近几天的简短摘要]\n" + "\n".join(lines)
 
     def _select_newest_whole_entries(self, entries, budget):
         if budget <= 0:
@@ -1280,8 +1487,73 @@ class ShortMemory(Plugin):
             data[session_id] = self._empty_session()
             if not self._save_all(data):
                 return False
+            try:
+                self.recent_state.clear(session_id)
+            except Exception:
+                logger.exception(
+                    "[ShortMemory] failed to clear RecentState session=%s",
+                    session_id,
+                )
+            if self.conversation_archive is not None:
+                try:
+                    excluded = self.conversation_archive.exclude_recent_session(
+                        session_id
+                    )
+                    logger.info(
+                        "[ShortMemory] excluded recent archive context session=%s messages=%s",
+                        session_id,
+                        excluded,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[ShortMemory] failed to exclude recent archive context session=%s",
+                        session_id,
+                    )
             logger.info("[ShortMemory] cleared session=%s", session_id)
             return True
+
+    def _backfill_conversation_archive(self):
+        """One-way migration of currently retained JSON records into SQLite."""
+        if self.conversation_archive is None:
+            return 0
+        with LOCK:
+            data = self._load_all()
+            if not isinstance(data, dict):
+                return 0
+            batches = []
+            for session_id, raw_item in data.items():
+                if not self._session_allowed(session_id):
+                    continue
+                item = self._migrate_session(session_id, raw_item)
+                records = []
+                for key in ("pending_archive", "messages"):
+                    records.extend(
+                        value
+                        for value in item.get(key, [])
+                        if isinstance(value, dict)
+                    )
+                if records:
+                    batches.append((session_id, copy.deepcopy(records)))
+
+        total = 0
+        for session_id, records in batches:
+            try:
+                total += int(
+                    self.conversation_archive.backfill_messages(session_id, records) or 0
+                )
+            except Exception:
+                logger.exception(
+                    "[ShortMemory] archive backfill failed session=%s",
+                    session_id,
+                )
+        logger.info("[ShortMemory] archive backfill scanned records=%s", total)
+        return total
+
+    def _run_conversation_archive_backfill(self):
+        try:
+            self._backfill_conversation_archive()
+        finally:
+            self.archive_backfill_done.set()
 
     def _migrate_identity_sessions(self):
         canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
@@ -1488,6 +1760,7 @@ class ShortMemory(Plugin):
                     continue
 
                 message = copy.deepcopy(message)
+                self._restore_overbroad_chat_block(message)
                 message.setdefault("role", "assistant")
                 message.setdefault("content", "")
                 message.setdefault("ts", 0)
@@ -1528,6 +1801,7 @@ class ShortMemory(Plugin):
                 continue
 
             summary = copy.deepcopy(summary)
+            self._restore_overbroad_chat_block(summary)
             summary.setdefault("text", "")
             summary.setdefault("created_at", summary.get("updated_at") or 0)
             summary.setdefault("updated_at", summary.get("created_at") or 0)

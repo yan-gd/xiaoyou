@@ -39,6 +39,7 @@ def load_service():
             short_memory="最近对话上下文"
         ),
         "build_thinking_payload": lambda prefix: {},
+        "might_need_capability": lambda *args, **kwargs: True,
         "chat_completion": None,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), SOURCE_PATH, "exec"), namespace)

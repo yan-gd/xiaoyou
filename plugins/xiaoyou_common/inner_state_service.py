@@ -144,7 +144,8 @@ class InnerStateService:
 - sharing_drive：想分享生活片段或照片的冲动。
 - interruption_caution：担心打扰YoYo、倾向给他空间的程度。
 
-你只输出本轮造成的增量，不输出新的绝对值。每项delta必须在-0.35到0.35之间。没有可靠依据的项写0。状态变化应克制、连续，不能因为一句普通玩笑大幅翻转。
+你只输出本轮造成的增量，不输出新的绝对值。每项delta必须在-0.12到0.12之间。没有可靠依据的项写0。状态变化应克制、连续，不能因为一句普通玩笑大幅翻转。
+不要让任何状态因为连续几句相似的亲密聊天不断累加到0或1。普通示爱主要带来轻微愉悦和安心，不等于惦念无限上升。YoYo明确说想继续聊天时，expression_drive应轻微上升而不是下降；小悠已经回复过这一轮，也不代表表达欲必须清零。
 next_evaluation_seconds由你自主决定：表示如果YoYo之后没有新消息，小悠过多久值得重新感受一次并判断要不要主动联系。它不是发送倒计时，可以从几十秒到数天；不要套用固定的4分钟、2小时或6小时。
 
 当前时间：
@@ -215,9 +216,27 @@ YoYo本轮原话：
             item = self._session(session_id)
             self._evolve_time(item, now)
             values = item.setdefault("values", dict(BASELINES))
+            max_delta = _clamp(
+                os.getenv("XIAOYOU_INNER_STATE_MAX_EVENT_DELTA", "0.12"),
+                0.02,
+                0.20,
+            )
+            soft_min = _clamp(os.getenv("XIAOYOU_INNER_STATE_SOFT_MIN", "0.04"))
+            soft_max = _clamp(os.getenv("XIAOYOU_INNER_STATE_SOFT_MAX", "0.96"))
+            if soft_max <= soft_min:
+                soft_min, soft_max = 0.04, 0.96
             for key in STATE_KEYS:
-                delta = _clamp(deltas.get(key, 0.0), -0.35, 0.35) * confidence
-                values[key] = _clamp(float(values.get(key, BASELINES[key])) + delta)
+                previous = float(values.get(key, BASELINES[key]))
+                delta = _clamp(
+                    deltas.get(key, 0.0),
+                    -max_delta,
+                    max_delta,
+                ) * confidence
+                # Compress repeated movement near an extreme so state remains
+                # expressive instead of pinning at exactly zero or one.
+                distance = abs(previous - BASELINES[key])
+                delta *= max(0.25, 1.0 - (0.75 * distance))
+                values[key] = _clamp(previous + delta, soft_min, soft_max)
             item["last_updated_at"] = now
             if last_user_ts:
                 item["last_user_at"] = max(float(item.get("last_user_at") or 0), float(last_user_ts))

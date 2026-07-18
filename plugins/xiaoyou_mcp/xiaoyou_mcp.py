@@ -13,6 +13,7 @@ from plugins import *
 from bridge.context import ContextType
 from bridge.reply import Reply, ReplyType
 from common.log import logger
+from plugins.xiaoyou_common.intent_fastpath import might_need_capability
 from plugins.xiaoyou_common.context_service import (
     build_character_context,
     extract_current_user_text,
@@ -108,6 +109,10 @@ class XiaoyouMCP(Plugin):
         """
         text = str(text or "").strip()
         if not text:
+            return None
+
+        if not might_need_capability(text, "external"):
+            logger.info("[XiaoyouMCP] fast chat bypass text=%r", text[:80])
             return None
 
         decision = self._route_intent_with_llm(text)

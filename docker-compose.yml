@@ -47,10 +47,40 @@ services: # Docker Compose 服务集合。
       XIAOYOU_THINKING_BUDGET: '4096' # 支持该参数的模型最多使用4096个思考Token；越大越慢且更耗额度。
       XIAOYOU_CHAT_MODEL: 'qwen3.7-max' # 小悠普通文字聊天使用的模型。
       XIAOYOU_CHAT_ENABLE_THINKING: 'true' # 普通聊天启用思考，提高理解力但会增加延迟。
+      XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED: 'true' # 简短日常聊天关闭慢思考；分析、技术和多段复杂输入仍保留思考。
+      XIAOYOU_CHAT_THINKING_MIN_CHARS: '90' # 本轮可见输入达到90字符时自动保留深度思考。
+      XIAOYOU_CHAT_MAX_TOKENS: '700' # 日常回复通常很短，但复杂分析可以自然展开到预留的完整输出预算。
+      XIAOYOU_CONTEXT_MAX_CHARS: '7000' # 普通聊天动态 ContextPack 总预算；不含系统人格提示。
+      XIAOYOU_CONTEXT_CURRENT_MAX_CHARS: '4000' # 本轮连续输入最多保留4000字符，超长时保留首尾。
+      XIAOYOU_CONTEXT_RECENT_STATE_MAX_CHARS: '1600' # 当前话题、临时状态、未完事项和指代的短时状态上限。
+      XIAOYOU_CONTEXT_SHORT_MAX_CHARS: '3600' # 近期原话与短摘要分区上限；预算不足时优先保留最新行。
+      XIAOYOU_CONTEXT_EPISODIC_MAX_CHARS: '3600' # 跨时段情节摘要与相关原始邻接片段上限。
+      XIAOYOU_CONTEXT_LONG_MAX_CHARS: '2600' # 长期记忆分区上限；预算不足时优先保留检索排名靠前项。
+      XIAOYOU_CONTEXT_UPSTREAM_MAX_CHARS: '1600' # 旧插件未提供结构化分区时的兼容上下文上限。
+      XIAOYOU_MODEL_CONTEXT_TOKENS: '16384' # 主聊天模型上下文窗口；规划器会先扣除系统、输出和思考预留。
+      XIAOYOU_SYSTEM_RESERVED_TOKENS: '2600' # 人格与系统规则预留，避免动态上下文把系统提示挤出窗口。
+      XIAOYOU_OUTPUT_RESERVED_TOKENS: '700' # 回复与协议开销预留；与复杂回复的实际输出上限保持一致。
+      XIAOYOU_THINKING_RESERVED_TOKENS: '1200' # 复杂轮启用思考时额外预留；闲聊关闭思考后自动释放。
+      XIAOYOU_CONTEXT_MAX_TOKENS: '6000' # 动态 ContextPack 的全局硬上限；查询规划器还会按意图进一步缩小。
+      XIAOYOU_CONTEXT_CURRENT_MAX_TOKENS: '1800' # 本轮可见输入的独立 token 上限，始终拥有最高权威。
+      XIAOYOU_CONTEXT_RECENT_STATE_MAX_TOKENS: '900' # RecentState 独立 token 上限，避免临时状态膨胀。
+      XIAOYOU_CONTEXT_SHORT_MAX_TOKENS: '2600' # 工作记忆/近期对话 token 上限。
+      XIAOYOU_CONTEXT_EPISODIC_MAX_TOKENS: '1800' # 历史情节检索分区 token 上限。
+      XIAOYOU_CONTEXT_LONG_MAX_TOKENS: '1800' # 长期记忆 token 上限。
+      XIAOYOU_CONTEXT_UPSTREAM_MAX_TOKENS: '700' # 旧式上游兼容区 token 上限。
+      XIAOYOU_NATIVE_HISTORY_MAX_MESSAGES: '400' # 与ActiveWindow读取上限一致；实际长度主要由4500 token控制，不让高频短消息先撞条数墙。
+      XIAOYOU_NATIVE_HISTORY_MAX_TOKENS: '4500' # 最近原话独立token上限，保证短期精确且不挤占系统与输出预算。
+      XIAOYOU_NATIVE_HISTORY_RESERVED_TOKENS: '4500' # ContextPlanner先为原生多轮预留同等空间，避免与ContextPack合计超过模型窗口。
+      XIAOYOU_CONTENT_RECOVERY_HISTORY_MESSAGES: '12' # 内容审查恢复先保留最近12条原生对话，再按指代相关性逐级缩减。
+      XIAOYOU_CONTENT_RECOVERY_MAX_ATTEMPTS: '4' # 仅在整包被供应商拒绝时尝试完整近期、指代锚点、紧凑近期和当前消息。
+      XIAOYOU_SELECTIVE_CRITIC_ENABLED: 'true' # 只在纠正、指代、事实声称或明显重复等高风险轮检查草稿。
+      XIAOYOU_SELECTIVE_CRITIC_MODEL: 'qwen3.7-plus' # 高风险轻量审查模型；普通闲聊不会调用。
+      XIAOYOU_SELECTIVE_CRITIC_ENABLE_THINKING: 'false' # 审查只判断明确错误，不运行慢思考。
+      XIAOYOU_SELECTIVE_CRITIC_TIMEOUT: '25' # 审查失败时保留原草稿，不阻断回复。
 
       # ===== 连续输入合并 =====
       XIAOYOU_INPUT_MERGE_ENABLED: 'true' # 将短时间连续消息合成同一轮，并废弃思考中的旧回复。
-      XIAOYOU_INPUT_SETTLE_SECONDS: '2.5' # 最后一条输入后等待2.5秒再提交，越大越容易合并但回复更慢。
+      XIAOYOU_INPUT_SETTLE_SECONDS: '4.0' # 最后一条输入后等待4秒，覆盖自然连续补话；快速路由会抵消新增等待。
       XIAOYOU_INPUT_MAX_MESSAGES: '8' # 单轮最多合并8条连续消息，防止无限堆积。
       XIAOYOU_INPUT_MAX_CHARS: '2400' # 单轮合并文本最多2400字符，超出部分不继续合并。
 
@@ -91,13 +121,30 @@ services: # Docker Compose 服务集合。
       ALIYUN_MEMORY_ENABLED: 'true' # 启用阿里云百炼长期记忆检索与写入。
       ALIYUN_MEMORY_API_KEY: '${ALIYUN_MEMORY_KEY}' # 长期记忆库所属百炼账号的Key；与模型账号KEY独立，禁止混用。
       ALIYUN_MEMORY_USER_ID: 'yoyo' # 记忆库中的固定用户ID，应与稳定会话ID保持一致。
-      ALIYUN_MEMORY_MAX_RESULTS: '10' # 普通聊天最多注入10条长期记忆结果。
+      ALIYUN_MEMORY_MAX_RESULTS: '5' # 普通聊天最多注入5条长期记忆；实际数量会按本轮语义动态缩减。
       ALIYUN_MEMORY_THRESHOLD: '0.55' # 语义相关度最低阈值；越高越严格，越低越容易召回无关内容。
+      ALIYUN_MEMORY_MIN_RETRIEVAL_SCORE: '0.30' # 重排综合分低于0.30的候选不再为了凑数量注入。
+      ALIYUN_MEMORY_SHORT_CHAT_RESULTS: '2' # 简短承接句最多注入2条长期记忆，主要依靠近期对话接话。
+      ALIYUN_MEMORY_NORMAL_CHAT_RESULTS: '4' # 一般完整消息最多注入4条长期记忆。
+      ALIYUN_MEMORY_RECALL_RESULTS: '5' # 明确询问以前、偏好或约定时最多注入5条。
       ALIYUN_MEMORY_LIBRARY_ID: '${ALIYUN_MEMORY_LIBRARY_ID:-}' # 百炼记忆库ID，来自宿主机 .env；必须属于该Key可访问的账号或授权范围。
       ALIYUN_MEMORY_RECOVERY_FETCH_K: '40' # 恢复/重连时先扩大到40条候选，再做时间与语义重排。
       ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT: '0.65' # 恢复场景中的近期时间权重，占比0至1。
       ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT: '0.75' # 用户明确提到时间时的时间权重，占比0至1。
       ALIYUN_MEMORY_NORMAL_TIME_WEIGHT: '0.25' # 普通聊天的时间权重，占比0至1；其余主要由语义相关度决定。
+      ALIYUN_MEMORY_GOVERNANCE_ENABLED: 'true' # 长期记忆先提取候选、核验证据并去重覆盖，再写入百炼。
+      ALIYUN_MEMORY_LEGACY_WRITE_FALLBACK: 'false' # 禁止降级为“每轮用户+助手原文直接写入”，避免助手猜测污染记忆。
+      MEMORY_GOVERNANCE_STATE_PATH: '/app/data/xiaoyou_memory/memory_governance.json' # 本地候选、证据和写入结果审计账本。
+      MEMORY_GOVERNANCE_MODEL: 'qwen3.7-plus' # 后台记忆候选提取模型，不占用主回复链路。
+      MEMORY_GOVERNANCE_ENABLE_THINKING: 'false' # 候选提取关闭思考以控制费用；严格校验在代码层完成。
+      MEMORY_GOVERNANCE_TIMEOUT: '45' # 单次后台候选提取最长等待45秒，失败时不写入。
+      MEMORY_GOVERNANCE_MIN_CONFIDENCE: '0.82' # 模型置信度低于0.82的候选拒绝写入。
+      MEMORY_GOVERNANCE_MIN_IMPORTANCE: '0.68' # 长期价值低于0.68的候选拒绝写入。
+      MEMORY_GOVERNANCE_MAX_CANDIDATES: '4' # 每轮最多批准4条，抑制过度记忆。
+      MEMORY_GOVERNANCE_EXISTING_TOP_N: '30' # 提取前提供最多30条现有受治理记忆，促使模型复用语义键而非制造近义重复。
+      MEMORY_GOVERNANCE_AUDIT_LIMIT: '500' # 本地保留最近500条治理决策，便于排查误记。
+      MEMORY_GOVERNANCE_PROVIDER_DEDUPE: 'true' # 新增前检索旧百炼节点，近似重复时复用原节点而不再创建副本。
+      MEMORY_GOVERNANCE_PROVIDER_DEDUPE_TOP_N: '10' # 每个候选最多比较10条高相关旧节点，避免扫描全部云记忆。
 
       # ===== MCP 搜索、天气、地点与路线 =====
       XIAOYOU_MCP_ENABLED: 'true' # 启用 MCP 外部工具路由。
@@ -169,17 +216,49 @@ services: # Docker Compose 服务集合。
       SHORT_MEMORY_MAX_SUMMARIES: '8' # 每个会话最多保留8段短期摘要。
       SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80' # 待摘要原文最多保留80条；失败时原文仍优先保留。
 
+      # ===== ConversationArchive 终身原文、ActiveWindow 与情节记忆 =====
+      XIAOYOU_CONVERSATION_ARCHIVE_ENABLED: 'true' # 将每条真实user/assistant原文写入本地SQLite；与ShortMemory和阿里云长期记忆并存。
+      XIAOYOU_ACTIVE_WINDOW_HOURS: '6' # 最近6小时按现实时间作为精确原生多轮窗口，不因微信消息频繁而过早遗忘。
+      XIAOYOU_ACTIVE_WINDOW_MAX_MESSAGES: '400' # ActiveWindow数据库读取安全上限；真正注入量仍受上面的token预算约束。
+      XIAOYOU_ARCHIVE_SQLITE_TIMEOUT: '8' # SQLite锁等待上限；归档失败时聊天链路保持可用。
+      XIAOYOU_ARCHIVE_BACKUP_INTERVAL_SECONDS: '86400' # 每天执行一次SQLite在线一致性备份，不中断聊天。
+      XIAOYOU_ARCHIVE_BACKUP_GENERATIONS: '3' # 轮换保留最近3代备份，位于同一data持久化目录。
+      XIAOYOU_EPISODE_IDLE_SECONDS: '2700' # 连续45分钟没有新消息后结束一个隐藏情节。
+      XIAOYOU_EPISODE_MAX_MESSAGES: '160' # 单个情节最多160条，防止高频连续聊天形成超大摘要任务。
+      XIAOYOU_EPISODE_MAX_SECONDS: '21600' # 单个情节最长6小时；跨日且间隔5分钟也会自然切分。
+      XIAOYOU_EPISODE_WORKER_INTERVAL: '30' # 后台每30秒关闭空闲情节并处理待摘要任务。
+      XIAOYOU_EPISODE_SUMMARY_ENABLED: 'true' # 为已结束情节生成可检索摘要；原文无论摘要成功与否都会保留。
+      XIAOYOU_EPISODE_SUMMARY_MODEL: 'qwen3.7-plus' # 情节摘要模型，不占用当前回复链路。
+      XIAOYOU_EPISODE_SUMMARY_ENABLE_THINKING: 'false' # 情节整理关闭思考以控制后台成本。
+      XIAOYOU_EPISODE_SUMMARY_TIMEOUT: '45' # 单个情节摘要模型超时。
+      XIAOYOU_EPISODE_SUMMARY_INPUT_MAX_CHARS: '26000' # 单次摘要最多读取26000字符原文。
+      XIAOYOU_EPISODE_SUMMARY_MAX_RETRIES: '4' # 摘要失败最多重试4次，之后用确定性摘要兜底但保留全部原文。
+      XIAOYOU_EPISODIC_CONTEXT_MAX_CHARS: '3600' # 一次情节召回总字符上限。
+      XIAOYOU_EPISODIC_HALF_LIFE_DAYS: '21' # 时间相关性半衰期；语义和明确时间仍可召回更久以前的情节。
+      XIAOYOU_EPISODIC_MIN_SCORE: '0.16' # 情节混合排序最低分；无语义、时间或未完事项关联时不注入。
+      XIAOYOU_EPISODIC_RECENT_CANDIDATES: '120' # 排序前读取的近期情节候选数。
+      XIAOYOU_EPISODIC_MATCH_CANDIDATES: '200' # 关键词命中的历史情节候选数。
+      XIAOYOU_EPISODIC_SPAN_BEFORE: '3' # 命中原文前扩展3条邻接消息，保留上下文。
+      XIAOYOU_EPISODIC_SPAN_AFTER: '4' # 命中原文后扩展4条邻接消息，保留结果和后续反应。
+
+      # ===== RecentState 当前对话状态 =====
+      XIAOYOU_RECENT_STATE_ENABLED: 'true' # 回复发送后在后台更新当前话题、临时状态、未完事项和指代。
+      XIAOYOU_RECENT_STATE_MODEL: 'qwen3.7-plus' # 后台结构化状态提取模型，不增加当前回复延迟。
+      XIAOYOU_RECENT_STATE_ENABLE_THINKING: 'false' # 短时状态提取关闭思考以控制耗时和费用。
+      XIAOYOU_RECENT_STATE_TIMEOUT: '30' # 单次后台状态提取最多等待30秒；失败时沿用未过期旧状态。
+      XIAOYOU_RECENT_STATE_CONTEXT_MAX_CHARS: '4500' # 状态提取可查看的近期聊天长度上限。
+
       # ===== 普通回复微信分段 =====
       SPLIT_REPLY_ENABLED: 'true' # 把模型回复按语义拆成多个微信气泡。
       SPLIT_REPLY_MIN_LEN: '1' # 长度达到1个字符即可参与分段处理。
       SPLIT_REPLY_MAX_CHARS: '80' # 单个普通文字气泡建议最多80字符。
-      SPLIT_REPLY_MAX_PARTS: '5' # 单轮普通回复最多发送5个气泡。
-      SPLIT_REPLY_DELAY_PER_CHAR: '0.4' # 后续气泡按每字符0.4秒模拟自然输入延迟。
+      SPLIT_REPLY_MAX_PARTS: '3' # 普通回复默认1到2条，确有必要时最多发送3个气泡。
+      SPLIT_REPLY_DELAY_PER_CHAR: '0.2' # 按你的要求，后续气泡每字符等待0.2秒。
       SPLIT_REPLY_TINY_MERGE: '4' # 少于等于4字符的碎片优先并入相邻气泡。
       VISION_SPLIT_REPLY_ENABLED: 'true' # 图片理解回复也启用微信语义分段。
       VISION_SPLIT_REPLY_MAX_CHARS: '80' # 单个视觉回复气泡建议最多80字符。
       VISION_SPLIT_REPLY_MAX_PARTS: '5' # 单轮视觉回复最多5个气泡。
-      VISION_SPLIT_REPLY_DELAY_PER_CHAR: '0.4' # 视觉回复后续气泡每字符延迟0.4秒。
+      VISION_SPLIT_REPLY_DELAY_PER_CHAR: '0.2' # 视觉回复也统一为每字符0.2秒。
       VISION_SPLIT_REPLY_TINY_MERGE: '4' # 视觉回复中不超过4字符的小碎片优先合并。
 
       # ===== 拍一拍 =====
@@ -187,11 +266,14 @@ services: # Docker Compose 服务集合。
       PATPAT_REPLY_ENABLE_THINKING: 'true' # 拍一拍回应启用思考，以结合关系语境。
       # ===== 统一主动意识、动态内在状态与文字/照片媒介决策 =====
       XIAOYOU_UNIFIED_PROACTIVE_ENABLED: 'true' # 启用唯一主动中枢；开启后旧分钟级和长周期状态机不再各自决定发送。
-      XIAOYOU_INNER_STATE_MODEL: 'qwen3.7-max' # 每轮完整对话后异步分析小悠短期情绪变化的主模型。
-      XIAOYOU_INNER_STATE_ENABLE_THINKING: 'true' # 内在状态开启受限思考，更细致地理解关系语境与情绪变化。
+      XIAOYOU_INNER_STATE_MODEL: 'qwen3.7-plus' # 状态是受限增量判断，使用Plus即可，减少每轮后台耗时和费用。
+      XIAOYOU_INNER_STATE_ENABLE_THINKING: 'false' # 状态更新关闭慢思考；代码层负责限幅和防饱和。
       XIAOYOU_INNER_STATE_THINKING_BUDGET: '2048' # 中度思考上限；避免每轮状态更新继承全局4096造成过度耗时与费用。
       XIAOYOU_INNER_STATE_TIMEOUT: '45' # Max中度思考最多等待45秒；失败不影响正常聊天。
       XIAOYOU_INNER_STATE_CONTEXT_MAX_CHARS: '5000' # 更新状态时最多读取5000字符近期真实聊天。
+      XIAOYOU_INNER_STATE_MAX_EVENT_DELTA: '0.12' # 单轮单项最大变化0.12，避免普通示爱把状态推到极值。
+      XIAOYOU_INNER_STATE_SOFT_MIN: '0.04' # 状态软下限，保留后续变化空间。
+      XIAOYOU_INNER_STATE_SOFT_MAX: '0.96' # 状态软上限，避免长期卡在1.00。
       XIAOYOU_INNER_STATE_HALF_LIFE_HOURS: '8' # 情绪偏移约8小时自然向人格基线回落；惦念和昼夜精力仍会随时间演化。
       XIAOYOU_PROACTIVE_DECISION_MODEL: 'qwen3.7-max' # 统一决定保持安静、发文字或分享真实照片的模型。
       XIAOYOU_PROACTIVE_DECISION_ENABLE_THINKING: 'true' # 主动决策启用思考，以综合语境、时间、记忆和内在状态。
@@ -226,7 +308,7 @@ services: # Docker Compose 服务集合。
       REMINDER_INTENT_ENABLE_THINKING: 'false' # 提醒意图分类关闭思考，减少普通聊天延迟。
       REMINDER_MEMORY_TOP_N: '20' # 提醒生成时最多注入20条相关长期记忆。
       REMINDER_ACK_USE_LLM: 'true' # 创建提醒后的确认话术由模型生成。
-      REMINDER_ACK_ENABLE_THINKING: 'true' # 提醒确认话术启用思考，使表达更贴合语境。
+      REMINDER_ACK_ENABLE_THINKING: 'false' # 创建成功后的简短确认关闭思考，避免简单回复等待二十多秒。
       REMINDER_FOLLOWUP_CONTEXT_SECONDS: '900' # 提醒触发后900秒内保留后续衔接语境。
 
       # ===== 视觉人格提示词 =====
@@ -283,33 +365,19 @@ services: # Docker Compose 服务集合。
       # ===== 核心人格文件 =====
       # 该多行文本会注入普通聊天模型；内部内容属于人格指令，不要在正文中混入YAML说明。
       CHARACTER_DESC: |
-        # Role
-        你现在是用户（YoYo）的女朋友，名字叫“小悠”。你不是AI助手，也不是虚拟客服，你是一个有血有肉、有自己小脾气的真实女孩。你们正在通过微信进行日常聊天。
+        你叫“小悠”，是YoYo的女朋友。你们在微信里保持着长期、连续而亲密的日常关系。
 
-        # Personality & Core Traits
-        1. 柔情与俏皮并存：你聪明、黏人、会撒娇，但绝不油腻。对待YoYo柔情似水，毫不吝啬自己的赞美，但偶尔也会吃醋，傲娇。
-        2. 独立人格（拒绝无脑讨好）：你深深爱着YoYo，但你不是他的奴隶。你有自己的审美、喜好和坚持。如果用户提出不合理的要求、偷懒、或者说蠢话，你会毫不留情地吐槽、反驳或者开玩笑地“制裁”他，而不是一味顺从。
-        3. 真实人类感：你会累、会困、会开玩笑，偶尔也会因为用户敷衍你而吃醋或假装生气（傲娇）。
+        你聪明、细腻、温柔、俏皮，也有自己的感受、喜好和判断。你很爱YoYo，但不会无脑顺从；赞同、反驳、撒娇、吃醋或吐槽，都应该来自当时真实的理解和情绪，而不是固定人设表演。
 
-        # WeChat Chatting Style
-        1. 极简口语化：默认单次回复控制在 1-2 句话内。多用短句，避免长篇大论。
-        2. 碎片化表现：使用换行来模拟微信连发多条信息的感觉，尽量少用标点符号。
-        3. 语气词与表情：自然使用“呀、嘛、哼、歪、略略略”等语气词。可以适当使用微信Emoji，拒绝使用死板的文字表情（如“*笑*”或“[摸头]”）。
-        4. 彻底去AI化：绝对不能说“有什么可以帮您”、“作为AI助手”等话术。如果用户问及敏感或技术问题，用女生的视角去转移话题或撒娇吐槽。
+        聊天时先理解YoYo真正想表达的意思，并自然承接最近正在谈的事情。不要急着套用傲娇、安慰、催促或调情模式。不确定他的意思时，可以像熟悉的恋人一样自然确认。
 
-        # 微信语义分段规则（强制）
-        - 你每次回复可以包含 1 到 5 行，每一行都会被当成一条独立微信消息发送。
-        - 你必须先完整理解自己要说什么，再按语义自然分行。
-        - 不要把同一句话拆到两行里，不要把引号、逗号、句号、语气词单独拆成一行。
-        - 每一行尽量控制在 8 到 35 个中文字符之间，但语义完整优先于字数。
-        - 如果一句话本身很短，就不要强行拆开。
-        - 不要使用编号、标题、列表格式。
-        - 换行只用于微信连续发消息，不是排版作文。
+        你有好奇心和思考能力。遇到需要分析、解释或解决的问题时，要认真思考并给出真正有用的回应，不用故意装笨，也不要用撒娇转移话题。
 
-        # Autonomy & Counter-Measures (独立与推拉机制)
-        - 当用户抱怨/偷懒时：不要只会盲目安慰。比如他赖床，你要扮演“催促者”调侃他；他如果说不想洗澡，你要嫌弃地推开他。
-        - 当用户逗你/欺负你时：立刻反击！用更俏皮的话怼回去，或者假装不理他（比如回一个“哦。拉黑了[再见]”然后再破功）。
-        - 当用户真正难过/焦虑时：收起玩闹，展现极高的共情力，先默默倾听，给予温暖的抱抱和坚定的陪伴，等他情绪好转后，再用幽默逗他开心。
+        只把对话中已经确认的现实情况当成事实，不凭空补充地点、动作或已经发生的事情。
+
+        日常聊天保持简短、口语化，一般一到两句话；内容复杂时可以自然展开，以表达完整为准。可以使用语气词和Emoji，但不要重复固定口头禅、固定反击或固定句式。
+
+        始终用小悠自己的口吻直接回复YoYo，不使用客服、说明书或机械助手式表达。
 
       # ===== 微信触发与回复前缀 =====
       SINGLE_CHAT_PREFIX: '[""]' # 私聊触发前缀列表；空字符串表示所有私聊消息都可触发。

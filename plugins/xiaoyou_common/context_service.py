@@ -53,6 +53,7 @@ class ContextService:
         query,
         max_results=None,
         retrieval_mode="normal",
+        allowed_memory_types=None,
         component="unknown",
     ):
         query = str(query or "").strip()
@@ -71,10 +72,18 @@ class ContextService:
 
             args = (query,) if max_results is None else (query, max(0, int(max_results)))
             try:
-                value = build_context(*args, retrieval_mode=retrieval_mode)
+                value = build_context(
+                    *args,
+                    retrieval_mode=retrieval_mode,
+                    allowed_memory_types=allowed_memory_types,
+                )
             except TypeError:
-                # Compatibility with providers predating retrieval_mode.
-                value = build_context(*args)
+                try:
+                    # Compatibility with providers predating memory types.
+                    value = build_context(*args, retrieval_mode=retrieval_mode)
+                except TypeError:
+                    # Compatibility with providers predating retrieval_mode.
+                    value = build_context(*args)
             return str(value or "").strip()
         except Exception:
             logger.exception(
@@ -118,6 +127,7 @@ class ContextService:
         long_memory_query="",
         long_memory_max_results=None,
         retrieval_mode="normal",
+        allowed_memory_types=None,
         include_time=True,
         include_character=True,
         include_short_memory=False,
@@ -141,6 +151,7 @@ class ContextService:
                 long_memory_query,
                 max_results=long_memory_max_results,
                 retrieval_mode=retrieval_mode,
+                allowed_memory_types=allowed_memory_types,
                 component=component,
             )
 
@@ -191,12 +202,14 @@ def load_long_memory_context(
     query,
     max_results=None,
     retrieval_mode="normal",
+    allowed_memory_types=None,
     component="unknown",
 ):
     return context_service.load_long_memory(
         query,
         max_results=max_results,
         retrieval_mode=retrieval_mode,
+        allowed_memory_types=allowed_memory_types,
         component=component,
     )
 

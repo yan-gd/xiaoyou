@@ -23,6 +23,7 @@ from plugins.xiaoyou_common.context_service import (
     extract_current_user_text,
     load_long_memory_context,
 )
+from plugins.xiaoyou_common.intent_fastpath import might_need_capability
 
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "reminders.json")
@@ -77,6 +78,7 @@ class ReminderLove(Plugin):
 
         # 查看提醒
         if self._is_list_cmd(text):
+            self._mark_transient_memory_turn(context, "reminder_list")
             reply = self._list_reminders(session_id)
             e_context["reply"] = Reply(ReplyType.TEXT, reply)
             e_context.action = EventAction.BREAK_PASS
@@ -84,6 +86,7 @@ class ReminderLove(Plugin):
 
         # 取消提醒
         if self._is_cancel_cmd(text):
+            self._mark_transient_memory_turn(context, "reminder_cancel")
             reply = self._cancel_reminder(session_id, text)
             e_context["reply"] = Reply(ReplyType.TEXT, reply)
             e_context.action = EventAction.BREAK_PASS
@@ -95,6 +98,12 @@ class ReminderLove(Plugin):
             self._inject_recent_reminder_context(context, session_id, text)
             return
 
+        # ReminderLove owns the lifecycle of this one-off task.  Marking the
+        # turn here prevents the generic long-memory hook from converting a
+        # scheduled reminder (or a relative time phrase) into a permanent
+        # cloud fact.
+        self._mark_transient_memory_turn(context, "reminder_request")
+
         parsed = self._parse_due_time(text)
         if not parsed:
             context.content = """[隐藏上下文]
@@ -105,7 +114,6 @@ YoYo 当前消息：
 %s
 """ % text
             return
-
         due_dt, span = parsed
         now = datetime.now()
 
@@ -162,6 +170,12 @@ YoYo 当前消息：
 %s
 """ % (reminder.get("due_text", ""), reminder.get("task", ""), text)
             return
+
+    def _mark_transient_memory_turn(self, context, intent):
+        kwargs = getattr(context, "kwargs", {}) or {}
+        kwargs["xiaoyou_skip_long_memory_write"] = True
+        kwargs["xiaoyou_transient_intent"] = str(intent or "reminder")[:80]
+        context.kwargs = kwargs
 
     def _loop(self):
         while True:
@@ -703,6 +717,10 @@ YoYo 刚刚说：
 
         user_text = self._extract_actual_user_text(text)
         if not user_text:
+            return False
+
+        if not might_need_capability(user_text, "reminder"):
+            logger.info("[ReminderLove] fast chat bypass text=%r", user_text[:80])
             return False
 
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")

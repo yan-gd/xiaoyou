@@ -623,9 +623,9 @@ class ChatChannel(Channel):
 
     def _input_settle_seconds(self):
         try:
-            value = float(os.getenv("XIAOYOU_INPUT_SETTLE_SECONDS", "2.5"))
+            value = float(os.getenv("XIAOYOU_INPUT_SETTLE_SECONDS", "4.0"))
         except Exception:
-            value = 2.5
+            value = 4.0
         return max(0.1, min(value, 10.0))
 
     def is_context_current(self, context):

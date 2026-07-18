@@ -15,6 +15,7 @@ from common.log import logger
 from plugins.xiaoyou_common.context_service import build_context_snapshot
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
+from plugins.xiaoyou_common.intent_fastpath import might_need_capability
 
 
 ROUTE_GENERATE = "generate_xiaoyou_photo"
@@ -61,6 +62,26 @@ def classify_photo_semantics(
     if not text:
         route = PhotoSemanticRoute(reason="empty text")
         _cache_route(context, text, route)
+        return route
+
+    if not might_need_capability(
+        text,
+        "photo",
+        pending_user_image=pending_user_image,
+    ):
+        route = PhotoSemanticRoute(
+            route=ROUTE_INDEPENDENT,
+            time_scope="unclear",
+            subject="unknown",
+            confidence=1.0,
+            reason="ordinary chat fast path",
+            model_ok=True,
+        )
+        _cache_route(context, text, route)
+        logger.info(
+            "[PhotoIntentService] fast chat bypass session=%s",
+            _mask_session(session_id),
+        )
         return route
 
     snapshot = build_context_snapshot(

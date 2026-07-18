@@ -16,6 +16,14 @@ from plugins import *
 from bridge.context import ContextType
 from bridge.reply import ReplyType
 from common.log import logger
+from plugins.xiaoyou_common.memory_governance import MemoryGovernance
+from plugins.xiaoyou_common.context_planner import plan_context
+from plugins.xiaoyou_common.memory_schema import (
+    display_name,
+    near_duplicate_text,
+    normalize_allowed,
+    normalize_memory_type,
+)
 from plugins.xiaoyou_common.trace_service import trace_event
 
 
@@ -24,7 +32,7 @@ from plugins.xiaoyou_common.trace_service import trace_event
     desire_priority=900,
     hidden=False,
     desc="Use Alibaba Bailian Memory Library for long-term memory",
-    version="0.4-trace-runtime",
+    version="0.5-governed-write",
     author="YOYO"
 )
 class AliyunMemory(Plugin):
@@ -38,12 +46,26 @@ class AliyunMemory(Plugin):
         self.api_key = os.getenv("ALIYUN_MEMORY_API_KEY", "").strip()
         self.user_id = os.getenv("ALIYUN_MEMORY_USER_ID", "yoyo")
         self.memory_library_id = os.getenv("ALIYUN_MEMORY_LIBRARY_ID", "").strip()
-        self.max_results = int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "10"))
+        self.max_results = int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "5"))
         self.similarity_threshold = float(os.getenv("ALIYUN_MEMORY_THRESHOLD", "0.55"))
         self.enabled = os.getenv("ALIYUN_MEMORY_ENABLED", "true").lower() == "true"
 
         self.base_url = "https://dashscope.aliyuncs.com/api/v2/apps/memory"
         self.last_user_msg = {}
+        self.governance_enabled = (
+            os.getenv("ALIYUN_MEMORY_GOVERNANCE_ENABLED", "true").lower() == "true"
+        )
+        self.legacy_write_fallback = (
+            os.getenv("ALIYUN_MEMORY_LEGACY_WRITE_FALLBACK", "false").lower() == "true"
+        )
+        self.memory_governance = None
+        if self.governance_enabled:
+            try:
+                self.memory_governance = MemoryGovernance(
+                    writer=self._write_governed_candidate,
+                )
+            except Exception:
+                logger.exception("[AliyunMemory] memory governance initialization failed")
 
         if self.enabled and not self.api_key:
             logger.warning(
@@ -68,7 +90,13 @@ class AliyunMemory(Plugin):
             return False
         return True
 
-    def _search_memory(self, query, retrieval_mode="normal", result_limit=None):
+    def _search_memory(
+        self,
+        query,
+        retrieval_mode="normal",
+        result_limit=None,
+        allowed_memory_types=None,
+    ):
         if not self.api_key:
             logger.warning("[AliyunMemory] missing api key")
             return []
@@ -80,7 +108,7 @@ class AliyunMemory(Plugin):
             result_limit = self.max_results
         result_limit = max(1, result_limit)
 
-        if retrieval_mode == "recovery":
+        if retrieval_mode in ("recovery", "dedupe"):
             fetch_k = max(
                 result_limit,
                 int(os.getenv("ALIYUN_MEMORY_RECOVERY_FETCH_K", "40")),
@@ -165,6 +193,15 @@ class AliyunMemory(Plugin):
                     ),
                     "similarity_score": self._memory_similarity_score(node, meta),
                     "api_rank": api_rank,
+                    "category": str(meta.get("category") or "").strip(),
+                    "memory_key": str(meta.get("memory_key") or "").strip(),
+                    "memory_type": normalize_memory_type(
+                        meta.get("memory_type"),
+                        meta.get("category"),
+                    ),
+                    "lifecycle_status": str(
+                        meta.get("lifecycle_status") or "active"
+                    ).strip(),
                 })
 
             ranked = self._rank_memories(
@@ -172,6 +209,27 @@ class AliyunMemory(Plugin):
                 query=query,
                 retrieval_mode=retrieval_mode,
             )
+            if retrieval_mode == "normal":
+                try:
+                    minimum_score = float(
+                        os.getenv("ALIYUN_MEMORY_MIN_RETRIEVAL_SCORE", "0.30")
+                    )
+                except Exception:
+                    minimum_score = 0.30
+                ranked = [
+                    memory for memory in ranked
+                    if float(memory.get("retrieval_score") or 0) >= minimum_score
+                ]
+            allowed_types = normalize_allowed(allowed_memory_types)
+            if allowed_types:
+                ranked = [
+                    memory
+                    for memory in ranked
+                    if normalize_memory_type(
+                        memory.get("memory_type"),
+                        memory.get("category"),
+                    ) in allowed_types
+                ]
             selected = ranked[:result_limit]
             logger.info(
                 "[AliyunMemory] search got %s memories mode=%s selected=%s",
@@ -207,7 +265,9 @@ class AliyunMemory(Plugin):
         temporal_intent = self._temporal_intent(query)
         total = max(1, len(memories))
 
-        if temporal_intent:
+        if mode == "dedupe":
+            time_weight = 0.0
+        elif temporal_intent:
             time_weight = self._env_weight("ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT", 0.75)
         elif mode == "recovery":
             time_weight = self._env_weight("ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT", 0.65)
@@ -430,11 +490,21 @@ class AliyunMemory(Plugin):
         if isinstance(memory, dict):
             content = str(memory.get("content") or "").strip()
             time_label = self._format_memory_time(memory.get("created_at"), memory.get("updated_at"))
-            return f"- [{time_label}] {content}"
+            memory_type = normalize_memory_type(
+                memory.get("memory_type"),
+                memory.get("category"),
+            )
+            return f"- [{display_name(memory_type)}][{time_label}] {content}"
 
-        return f"- [时间未知] {str(memory).strip()}"
+        return f"- [{display_name('legacy')}][时间未知] {str(memory).strip()}"
 
-    def build_memory_context(self, query, max_results=None, retrieval_mode="normal"):
+    def build_memory_context(
+        self,
+        query,
+        max_results=None,
+        retrieval_mode="normal",
+        allowed_memory_types=None,
+    ):
         """供主动消息等插件复用的只读长期记忆上下文。"""
         if not self.enabled:
             return ""
@@ -453,6 +523,7 @@ class AliyunMemory(Plugin):
             query,
             retrieval_mode=retrieval_mode,
             result_limit=result_limit,
+            allowed_memory_types=allowed_memory_types,
         )
         return "\n".join(
             self._format_memory_line(memory)
@@ -546,6 +617,225 @@ class AliyunMemory(Plugin):
                     },
                 )
 
+    def _write_governed_candidate(
+        self,
+        *,
+        candidate,
+        trace_id="",
+        input_id="",
+        session_id="",
+    ):
+        """Write one validated user-supported fact to Bailian Memory."""
+        if not self.api_key:
+            return {"ok": False, "error": "aliyun_memory_api_key_missing"}
+        if not isinstance(candidate, dict):
+            return {"ok": False, "error": "invalid_candidate"}
+
+        content = str(candidate.get("content") or "").strip()
+        if not self._safe_text(content):
+            return {"ok": False, "error": "unsafe_candidate_content"}
+
+        replacing_memory_id = str(
+            candidate.get("superseded_provider_memory_id") or ""
+        ).strip()
+        if not replacing_memory_id:
+            duplicate = self._find_provider_duplicate(candidate)
+            if duplicate:
+                provider_memory_id = str(duplicate.get("memory_id") or "")[:160]
+                logger.info(
+                    "[AliyunMemory] governed memory reused provider duplicate key=%s id=%s",
+                    str(candidate.get("memory_key") or "")[:120],
+                    provider_memory_id[:12] or "-",
+                )
+                if trace_id:
+                    trace_event(
+                        "long_memory_recorded",
+                        status="deduplicated",
+                        trace_id=trace_id,
+                        input_id=input_id,
+                        session_id=session_id,
+                        memory_record_id=provider_memory_id,
+                        attrs={
+                            "component": "AliyunMemory",
+                            "record_source": "provider_duplicate",
+                            "write_operation": "reuse",
+                            "memory_key": str(candidate.get("memory_key") or "")[:120],
+                        },
+                    )
+                return {
+                    "ok": True,
+                    "provider_memory_id": provider_memory_id,
+                    "deduplicated": True,
+                }
+        payload = {
+            "user_id": self.user_id,
+            # custom_content asks Bailian to store this exact governed fact;
+            # it avoids a second provider-side extraction pass over a chat
+            # transcript and keeps assistant text out of durable memory.
+            "custom_content": content[:2000],
+            "meta_data": {
+                "source": "xiaoyou-memory-governance",
+                "source_role": "user",
+                "candidate_id": str(candidate.get("id") or "")[:80],
+                "memory_key": str(candidate.get("memory_key") or "")[:120],
+                "category": str(candidate.get("category") or "")[:80],
+                "memory_type": normalize_memory_type(
+                    candidate.get("memory_type"),
+                    candidate.get("category"),
+                ),
+                "lifecycle_status": "active",
+                "confidence": float(candidate.get("confidence") or 0),
+                "importance": float(candidate.get("importance") or 0),
+                "created_at": int(time.time()),
+            },
+        }
+        if self.memory_library_id:
+            payload["memory_library_id"] = self.memory_library_id
+
+        try:
+            if replacing_memory_id:
+                payload["timestamp"] = int(time.time())
+                resp = requests.patch(
+                    f"{self.base_url}/memory_nodes/{replacing_memory_id}",
+                    headers=self._headers(),
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    timeout=10,
+                )
+                provider_memory_id = replacing_memory_id
+                write_operation = "update"
+            else:
+                resp = requests.post(
+                    f"{self.base_url}/add",
+                    headers=self._headers(),
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    timeout=10,
+                )
+                provider_memory_id = self._memory_write_id(resp)
+                write_operation = "add"
+            if not 200 <= resp.status_code < 300:
+                logger.warning(
+                    "[AliyunMemory] governed %s failed: %s %s",
+                    write_operation,
+                    resp.status_code,
+                    resp.text[:300],
+                )
+                if trace_id:
+                    trace_event(
+                        "long_memory_recorded",
+                        status="failed",
+                        trace_id=trace_id,
+                        input_id=input_id,
+                        session_id=session_id,
+                        attrs={
+                            "component": "AliyunMemory",
+                            "record_source": "governed_candidate",
+                            "write_operation": write_operation,
+                            "status_code": resp.status_code,
+                            "error_kind": "provider_error",
+                        },
+                    )
+                return {
+                    "ok": False,
+                    "error": "provider_http_%s" % resp.status_code,
+                    "provider_memory_id": provider_memory_id,
+                }
+
+            logger.info(
+                "[AliyunMemory] governed memory %s succeeded key=%s",
+                write_operation,
+                str(candidate.get("memory_key") or "")[:120],
+            )
+            if trace_id:
+                trace_event(
+                    "long_memory_recorded",
+                    status="saved",
+                    trace_id=trace_id,
+                    input_id=input_id,
+                    session_id=session_id,
+                    memory_record_id=provider_memory_id,
+                    attrs={
+                        "component": "AliyunMemory",
+                        "record_source": "governed_candidate",
+                        "write_operation": write_operation,
+                        "status_code": resp.status_code,
+                        "memory_key": str(candidate.get("memory_key") or "")[:120],
+                    },
+                )
+            return {
+                "ok": True,
+                "provider_memory_id": provider_memory_id,
+            }
+        except Exception as exc:
+            logger.warning("[AliyunMemory] governed add exception: %s", exc)
+            if trace_id:
+                trace_event(
+                    "long_memory_recorded",
+                    status="failed",
+                    trace_id=trace_id,
+                    input_id=input_id,
+                    session_id=session_id,
+                    attrs={
+                        "component": "AliyunMemory",
+                        "record_source": "governed_candidate",
+                        "error_kind": "exception",
+                    },
+                )
+            return {"ok": False, "error": type(exc).__name__}
+
+    def _find_provider_duplicate(self, candidate):
+        if os.getenv("MEMORY_GOVERNANCE_PROVIDER_DEDUPE", "true").lower() != "true":
+            return None
+        content = str((candidate or {}).get("content") or "").strip()
+        if not content:
+            return None
+        memory_type = normalize_memory_type(
+            (candidate or {}).get("memory_type"),
+            (candidate or {}).get("category"),
+        )
+        try:
+            limit = max(
+                1,
+                min(20, int(os.getenv("MEMORY_GOVERNANCE_PROVIDER_DEDUPE_TOP_N", "10"))),
+            )
+        except Exception:
+            limit = 10
+        memories = self._search_memory(
+            content,
+            retrieval_mode="dedupe",
+            result_limit=limit,
+            allowed_memory_types=(memory_type,),
+        )
+        for memory in memories:
+            if near_duplicate_text(content, memory.get("content")):
+                return memory
+        return None
+
+    def _govern_memory_turn(
+        self,
+        user_text,
+        assistant_text,
+        trace_id="",
+        input_id="",
+        session_id="",
+    ):
+        if self.memory_governance is None:
+            return
+        summary = self.memory_governance.process_turn(
+            user_text=user_text,
+            assistant_text=assistant_text,
+            trace_id=trace_id,
+            input_id=input_id,
+            session_id=session_id,
+        )
+        logger.info(
+            "[AliyunMemory] governance completed session=%s extracted=%s eligible=%s written=%s failed=%s",
+            str(session_id or "-")[:40],
+            summary.get("extracted", 0),
+            summary.get("eligible", 0),
+            summary.get("written", 0),
+            summary.get("failed", 0),
+        )
+
     def _memory_write_id(self, response):
         try:
             data = response.json()
@@ -558,6 +848,19 @@ class AliyunMemory(Plugin):
             value = data.get(key)
             if isinstance(value, dict):
                 containers.append(value)
+        for container in containers:
+            nodes = container.get("memory_nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    value = (
+                        node.get("memory_node_id")
+                        or node.get("memory_id")
+                        or node.get("id")
+                    )
+                    if value:
+                        return str(value)[:80]
         for container in containers:
             for key in ("memory_id", "memory_node_id", "id", "request_id"):
                 value = container.get(key)
@@ -580,11 +883,38 @@ class AliyunMemory(Plugin):
         session_id = context.get("session_id", self.user_id)
         self.last_user_msg[session_id] = user_text
 
-        memories = self._search_memory(user_text)
+        kwargs = getattr(context, "kwargs", {}) or {}
+        kwargs["aliyun_memory_context_ready"] = True
+        kwargs["aliyun_memory_context"] = ""
+        plan = plan_context(
+            user_text,
+            kwargs.get("xiaoyou_input_messages") or [],
+            thinking_enabled=False,
+        )
+        kwargs["xiaoyou_context_plan"] = plan.as_dict()
+        context.kwargs = kwargs
+
+        if not plan.use_long_memory:
+            logger.info(
+                "[AliyunMemory] retrieval skipped plan=%s reason=%s",
+                plan.mode,
+                plan.reason,
+            )
+            return
+
+        result_limit = plan.long_memory_max_results
+        memories = self._search_memory(
+            user_text,
+            retrieval_mode=plan.retrieval_mode,
+            result_limit=result_limit,
+            allowed_memory_types=plan.allowed_memory_types,
+        )
         if not memories:
             return
 
         memory_block = "\n".join([self._format_memory_line(m) for m in memories])
+        kwargs["aliyun_memory_context"] = memory_block
+        context.kwargs = kwargs
         context.content = (
             "以下是关于 YOYO 的长期记忆，带记录时间，只用于理解他的偏好、关系背景和近期状态。"
             "不要逐条复述，不要说“我记得数据库里写着”。\n"
@@ -593,7 +923,14 @@ class AliyunMemory(Plugin):
             f"YOYO 当前发来的微信消息：{user_text}"
         )
 
-        logger.info(f"[AliyunMemory] injected {len(memories)} memories")
+        logger.info(
+            "[AliyunMemory] injected %s memories plan=%s mode=%s dynamic_limit=%s types=%s",
+            len(memories),
+            plan.mode,
+            plan.retrieval_mode,
+            result_limit,
+            ",".join(plan.allowed_memory_types),
+        )
 
     def on_decorate_reply(self, e_context: EventContext):
         if not self.enabled:
@@ -616,9 +953,26 @@ class AliyunMemory(Plugin):
             return
         if assistant_text.startswith("[ERROR]"):
             return
+        if kwargs.get("xiaoyou_skip_long_memory_write"):
+            logger.info(
+                "[AliyunMemory] governance skipped transient_intent=%s",
+                str(kwargs.get("xiaoyou_transient_intent") or "unknown")[:80],
+            )
+            return
+
+        target = None
+        if self.governance_enabled and self.memory_governance is not None:
+            target = self._govern_memory_turn
+        elif self.legacy_write_fallback:
+            logger.warning(
+                "[AliyunMemory] using explicitly enabled legacy transcript write fallback"
+            )
+            target = self._add_memory
+        if target is None:
+            return
 
         threading.Thread(
-            target=self._add_memory,
+            target=target,
             args=(
                 user_text,
                 assistant_text,
