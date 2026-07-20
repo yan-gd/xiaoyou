@@ -25,6 +25,12 @@ class ActionResponse(BaseModel):
     message: str
 
 
+class ResourceState(BaseModel):
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+    memory_usage: str = ""
+
+
 class ContainerState(BaseModel):
     exists: bool = False
     running: bool = False
@@ -49,6 +55,7 @@ class ServicePulse(BaseModel):
 class RuntimeStatus(BaseModel):
     overall: Literal["online", "waiting_qr", "starting", "stopped", "degraded", "unknown"]
     observed_at: int
+    host: ResourceState = Field(default_factory=ResourceState)
     container: ContainerState
     wechat: ServicePulse
     model: ServicePulse
@@ -56,9 +63,29 @@ class RuntimeStatus(BaseModel):
     vision: ServicePulse
     last_input_at: str = ""
     last_output_at: str = ""
+    total_tokens: int = 0
+    today_tokens: int = 0
+    token_usage_available: bool = False
     recent_errors: int = 0
     qr_available: bool = False
     plugin_versions: list[str] = []
+
+
+class MetricPoint(BaseModel):
+    observed_at: int
+    host_cpu_percent: float = 0.0
+    host_memory_percent: float = 0.0
+    container_cpu_percent: float = 0.0
+    container_memory_percent: float = 0.0
+    recent_errors: int = 0
+    total_tokens: int = 0
+    today_tokens: int = 0
+    running: bool = False
+
+
+class MetricsResponse(BaseModel):
+    hours: int
+    points: list[MetricPoint]
 
 
 class QrState(BaseModel):

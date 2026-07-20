@@ -8,12 +8,23 @@ from datetime import datetime
 from typing import Iterable
 
 from .controller import ContainerController, ControllerError
-from .schemas import ContainerState, QrState, RuntimeStatus, ServicePulse
+from .database import Database
+from .schemas import ContainerState, MetricPoint, MetricsResponse, QrState, ResourceState, RuntimeStatus, ServicePulse
 
 
 TIMESTAMP_RE = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})]")
 LOGIN_URL_RE = re.compile(r"https://login\.weixin\.qq\.com/l/[A-Za-z0-9_\-=/+%]+")
 PLUGIN_RE = re.compile(r"Plugin\s+([A-Za-z0-9_.-]+)\s+registered")
+TOKEN_USAGE_RE = re.compile(
+    r"^\[INFO\]\[(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]"
+    r"(?:\[[A-Za-z0-9_.-]+:\d+\])?\s+-\s+"
+    r"\[TokenUsage\]\s+"
+    r"usage_id=(?P<event_id>[A-Za-z0-9_.:-]{1,160})\s+"
+    r"component=(?P<component>[A-Za-z0-9_.-]{1,80})\s+"
+    r"total_tokens=(?P<total_tokens>\d{1,12})"
+    r"(?:\s+prompt_tokens=\d{1,12})?"
+    r"(?:\s+completion_tokens=\d{1,12})?\s*$"
+)
 
 # The container has a few legacy/debug log statements that include the user's
 # text or the assistant's reply.  The observatory never needs those payloads:
@@ -79,6 +90,8 @@ def _contains_private_content(line: str) -> bool:
 
 def redact_log_line(line: str) -> str:
     line = str(line or "").replace("\x00", "")
+    if TOKEN_USAGE_RE.fullmatch(line):
+        return line[:1200]
     if _contains_private_content(line):
         return ""
     if LOGIN_URL_RE.search(line):
@@ -109,6 +122,7 @@ class LogAnalysis:
     last_output_at: str
     recent_errors: int
     plugin_versions: list[str]
+    token_usage_events: list[tuple[str, str, int, int]]
 
 
 def analyze_logs(raw: str, container_running: bool) -> LogAnalysis:
@@ -251,6 +265,25 @@ def analyze_logs(raw: str, container_running: bool) -> LogAnalysis:
         if match and match.group(1) not in plugins:
             plugins.append(match.group(1))
 
+    token_usage_events: list[tuple[str, str, int, int]] = []
+    for line in lines:
+        match = TOKEN_USAGE_RE.fullmatch(line)
+        if not match:
+            continue
+        timestamp = match.group("timestamp")
+        try:
+            observed_at = int(datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S").timestamp()) if timestamp else int(time.time())
+        except ValueError:
+            observed_at = int(time.time())
+        token_usage_events.append(
+            (
+                match.group("event_id"),
+                match.group("component"),
+                int(match.group("total_tokens")),
+                observed_at,
+            )
+        )
+
     return LogAnalysis(
         qr=qr,
         wechat=wechat,
@@ -261,12 +294,14 @@ def analyze_logs(raw: str, container_running: bool) -> LogAnalysis:
         last_output_at=_timestamp(output_line),
         recent_errors=len(error_lines),
         plugin_versions=plugins[-20:],
+        token_usage_events=token_usage_events,
     )
 
 
 class RuntimeService:
-    def __init__(self, controller: ContainerController):
+    def __init__(self, controller: ContainerController, database: Database):
         self.controller = controller
+        self.database = database
         self._snapshot_lock = threading.Lock()
         self._cached_snapshot: RuntimeStatus | None = None
         self._cached_at = 0.0
@@ -298,10 +333,17 @@ class RuntimeService:
             raw_status = {"exists": False, "running": False, "status": "unavailable"}
 
         try:
-            raw_stats = self.controller.stats() if raw_status.get("running") else {}
+            # Host metrics remain useful even while the Xiaoyou container is
+            # stopped, so stats are collected independently from container state.
+            raw_stats = self.controller.stats()
         except ControllerError:
             raw_stats = {}
 
+        host = ResourceState(
+            cpu_percent=float(raw_stats.get("host_cpu_percent") or 0.0),
+            memory_percent=float(raw_stats.get("host_memory_percent") or 0.0),
+            memory_usage=str(raw_stats.get("host_memory_usage") or ""),
+        )
         container = ContainerState(
             exists=bool(raw_status.get("exists")),
             running=bool(raw_status.get("running")),
@@ -311,15 +353,22 @@ class RuntimeService:
             finished_at=str(raw_status.get("finished_at") or ""),
             restart_count=int(raw_status.get("restart_count") or 0),
             image=str(raw_status.get("image") or ""),
-            cpu_percent=float(raw_stats.get("cpu_percent") or 0.0),
-            memory_percent=float(raw_stats.get("memory_percent") or 0.0),
-            memory_usage=str(raw_stats.get("memory_usage") or ""),
+            cpu_percent=float(
+                raw_stats.get("container_cpu_percent", raw_stats.get("cpu_percent", 0.0)) or 0.0
+            ),
+            memory_percent=float(
+                raw_stats.get("container_memory_percent", raw_stats.get("memory_percent", 0.0)) or 0.0
+            ),
+            memory_usage=str(
+                raw_stats.get("container_memory_usage", raw_stats.get("memory_usage", "")) or ""
+            ),
         )
         try:
             raw_logs = self.controller.logs() if container.exists else ""
         except ControllerError:
             raw_logs = ""
         analysis = analyze_logs(raw_logs, container.running)
+        self.database.record_token_usage_batch(analysis.token_usage_events)
 
         if not controller_available:
             unavailable = ServicePulse(
@@ -343,9 +392,26 @@ class RuntimeService:
         else:
             overall = "degraded"
 
+        observed_at = int(time.time())
+        total_tokens = self.database.total_token_usage()
+        today_tokens = self.database.today_token_usage(observed_at)
+        token_usage_available = bool(analysis.token_usage_events) or total_tokens > 0
+        self.database.record_metric_snapshot(
+            observed_at=observed_at,
+            host_cpu_percent=host.cpu_percent,
+            host_memory_percent=host.memory_percent,
+            container_cpu_percent=container.cpu_percent,
+            container_memory_percent=container.memory_percent,
+            recent_errors=analysis.recent_errors,
+            total_tokens=total_tokens,
+            today_tokens=today_tokens,
+            running=container.running,
+        )
+
         return RuntimeStatus(
             overall=overall,
-            observed_at=int(time.time()),
+            observed_at=observed_at,
+            host=host,
             container=container,
             wechat=analysis.wechat,
             model=analysis.model,
@@ -353,10 +419,21 @@ class RuntimeService:
             vision=analysis.vision,
             last_input_at=analysis.last_input_at,
             last_output_at=analysis.last_output_at,
+            total_tokens=total_tokens,
+            today_tokens=today_tokens,
+            token_usage_available=token_usage_available,
             recent_errors=analysis.recent_errors,
             qr_available=analysis.qr.available,
             plugin_versions=analysis.plugin_versions,
         )
+
+    def metrics(self, hours: int = 24) -> MetricsResponse:
+        safe_hours = max(1, min(int(hours), 168))
+        # A fresh snapshot ensures the chart always contains the current state,
+        # even immediately after a restart or the first visit of the day.
+        self.snapshot()
+        points = [MetricPoint(**item) for item in self.database.metric_history(safe_hours)]
+        return MetricsResponse(hours=safe_hours, points=points)
 
     def qr_state(self) -> QrState:
         try:

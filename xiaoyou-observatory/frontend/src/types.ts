@@ -9,7 +9,13 @@ export interface AuthState {
   expires_at: number
 }
 
-export interface ContainerState {
+export interface ResourceState {
+  cpu_percent: number
+  memory_percent: number
+  memory_usage: string
+}
+
+export interface ContainerState extends ResourceState {
   exists: boolean
   running: boolean
   status: string
@@ -18,9 +24,6 @@ export interface ContainerState {
   finished_at: string
   restart_count: number
   image: string
-  cpu_percent: number
-  memory_percent: number
-  memory_usage: string
 }
 
 export interface ServicePulse {
@@ -33,6 +36,7 @@ export interface ServicePulse {
 export interface RuntimeStatus {
   overall: OverallState
   observed_at: number
+  host: ResourceState
   container: ContainerState
   wechat: ServicePulse
   model: ServicePulse
@@ -40,9 +44,29 @@ export interface RuntimeStatus {
   vision: ServicePulse
   last_input_at: string
   last_output_at: string
+  total_tokens: number
+  today_tokens: number
+  token_usage_available: boolean
   recent_errors: number
   qr_available: boolean
   plugin_versions: string[]
+}
+
+export interface MetricPoint {
+  observed_at: number
+  host_cpu_percent: number
+  host_memory_percent: number
+  container_cpu_percent: number
+  container_memory_percent: number
+  recent_errors: number
+  total_tokens: number
+  today_tokens: number
+  running: boolean
+}
+
+export interface MetricsResponse {
+  hours: number
+  points: MetricPoint[]
 }
 
 export interface QrState {

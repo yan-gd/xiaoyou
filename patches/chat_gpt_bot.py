@@ -1,6 +1,7 @@
 # encoding:utf-8
 
 import time
+import uuid
 
 import openai
 import openai.error
@@ -84,6 +85,15 @@ class ChatGPTBot(Bot, OpenAIImage):
             #     return self.reply_text_stream(query, new_query, session_id)
 
             reply_content = self.reply_text(session, api_key, args=new_args)
+            if reply_content.get("total_tokens", 0) > 0:
+                logger.info(
+                    "[TokenUsage] usage_id=%s component=xiaoyouchat total_tokens=%s "
+                    "prompt_tokens=%s completion_tokens=%s",
+                    uuid.uuid4().hex,
+                    int(reply_content.get("total_tokens") or 0),
+                    int(reply_content.get("prompt_tokens") or 0),
+                    int(reply_content.get("completion_tokens") or 0),
+                )
             logger.debug(
                 "[CHATGPT] new_query={}, session_id={}, reply_cont={}, completion_tokens={}".format(
                     session.messages,
@@ -166,6 +176,7 @@ class ChatGPTBot(Bot, OpenAIImage):
             # logger.info("[ChatGPT] reply={}, total_tokens={}".format(response.choices[0]['message']['content'], response["usage"]["total_tokens"]))
             return {
                 "total_tokens": response["usage"]["total_tokens"],
+                "prompt_tokens": response["usage"].get("prompt_tokens", 0),
                 "completion_tokens": response["usage"]["completion_tokens"],
                 "content": response.choices[0]["message"]["content"],
             }

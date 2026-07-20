@@ -60,6 +60,12 @@ def test_authenticated_status_and_container_control(tmp_path, monkeypatch):
         status_response = client.get("/api/status")
         assert status_response.status_code == 200
         assert status_response.json()["overall"] == "online"
+        assert status_response.json()["total_tokens"] == 4286
+        assert "today_tokens" in status_response.json()
+        metrics_response = client.get("/api/metrics?hours=24")
+        assert metrics_response.status_code == 200
+        assert metrics_response.json()["hours"] == 24
+        assert metrics_response.json()["points"]
 
         stop = client.post("/api/container/stop", headers={"X-CSRF-Token": csrf})
         assert stop.status_code == 200

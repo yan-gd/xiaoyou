@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     mock_mode: bool = False
     static_dir: Path | None = None
     status_poll_seconds: float = Field(default=2.5, ge=1.0, le=30.0)
+    metrics_sample_seconds: float = Field(default=60.0, ge=10.0, le=3600.0)
+    metrics_retention_hours: int = Field(default=168, ge=24, le=2160)
     login_attempts_per_10_minutes: int = Field(default=6, ge=3, le=30)
     trusted_proxy: bool = True
 

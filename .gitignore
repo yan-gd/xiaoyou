@@ -16,6 +16,7 @@ __pycache__/
 *.pyo
 *.pyd
 .pytest_cache/
+/pytest-cache-files-*/
 
 # backups
 *.bak
@@ -49,8 +50,18 @@ disabled_plugins/
 # local package caches / generated deployment bundles
 /.pnpm-store/
 /xiaoyou-observatory.zip
+/.preview/
+/cow-legacy-token-usage.patch
 
 # local source videos; deployable/website copies live under frontend/public
 /xiaoyou.mp4
 /xiaoyou2.mp4
+/xiaoyou3.mp4
+/xiaoyou4.mp4
+
+# local observatory design iterations; curated evidence lives in frontend/qa
+/xiaoyou-observatory/frontend/frontend/
+/xiaoyou-observatory/frontend/design-qa-comparison-final.png
+/xiaoyou-observatory/frontend/qa-desktop-final-v2.png
+/xiaoyou-observatory/frontend/qa-mobile-orbit-v2.png
 /music.mp3

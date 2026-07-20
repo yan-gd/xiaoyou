@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -16,7 +17,7 @@ from .config import Settings, get_settings
 from .controller import ContainerController, ControllerError
 from .database import Database, SessionRecord
 from .runtime import RuntimeService
-from .schemas import ActionResponse, AuditItem, AuthState, LoginRequest, LogResponse, QrState, RuntimeStatus
+from .schemas import ActionResponse, AuditItem, AuthState, LoginRequest, LogResponse, MetricsResponse, QrState, RuntimeStatus
 from .security import AuthenticationError, RateLimitError, SecurityService
 
 
@@ -28,6 +29,27 @@ def client_ip(request: Request, settings: Settings) -> str:
     return (request.client.host if request.client else "unknown")[:128]
 
 
+LOGGER = logging.getLogger("xiaoyou.observatory")
+
+
+async def collect_metrics_forever(runtime: RuntimeService, settings: Settings) -> None:
+    while True:
+        try:
+            # invalidate() can wait behind a snapshot that is running several
+            # controller subprocesses. Keep that lock wait off the event loop.
+            await asyncio.to_thread(runtime.invalidate)
+            await asyncio.to_thread(runtime.snapshot)
+            await asyncio.to_thread(
+                runtime.database.prune_metric_history,
+                settings.metrics_retention_hours,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("background metric sampling failed")
+        await asyncio.sleep(settings.metrics_sample_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
@@ -37,9 +59,18 @@ async def lifespan(app: FastAPI):
     app.state.database = database
     app.state.security = SecurityService(settings, database)
     app.state.controller = ContainerController(settings)
-    app.state.runtime = RuntimeService(app.state.controller)
+    app.state.runtime = RuntimeService(app.state.controller, database)
     app.state.action_lock = asyncio.Lock()
-    yield
+    app.state.metrics_task = asyncio.create_task(
+        collect_metrics_forever(app.state.runtime, settings),
+        name="observatory-metric-sampler",
+    )
+    try:
+        yield
+    finally:
+        app.state.metrics_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.metrics_task
 
 
 app = FastAPI(
@@ -254,6 +285,15 @@ async def qr_state(
     return await asyncio.to_thread(runtime.qr_state)
 
 
+@app.get("/api/metrics", response_model=MetricsResponse)
+async def metric_history(
+    _: Annotated[SessionRecord, Depends(current_session)],
+    runtime: Annotated[RuntimeService, Depends(runtime_dep)],
+    hours: int = 24,
+):
+    return await asyncio.to_thread(runtime.metrics, max(1, min(hours, 168)))
+
+
 @app.get("/api/logs", response_model=LogResponse)
 async def recent_logs(
     _: Annotated[SessionRecord, Depends(admin_session)],
@@ -293,7 +333,7 @@ async def container_action(
             database.add_audit(session.admin_id, f"container_{action}", "failed", ip_address, str(exc))
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="容器操作失败，请查看脱敏日志") from exc
         database.add_audit(session.admin_id, f"container_{action}", "success", ip_address)
-        request.app.state.runtime.invalidate()
+        await asyncio.to_thread(request.app.state.runtime.invalidate)
 
     messages = {
         "start": "唤醒指令已送达，小悠正在重新连接命轨",

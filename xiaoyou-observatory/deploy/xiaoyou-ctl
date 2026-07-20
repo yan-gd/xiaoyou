@@ -16,6 +16,47 @@ container_exists() {
     docker inspect "$CONTAINER" >/dev/null 2>&1
 }
 
+host_cpu_percent() {
+    local cpu user nice system idle iowait irq softirq steal guest guest_nice
+    local idle_first total_first idle_second total_second delta_idle delta_total
+
+    read -r cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+    idle_first=$((idle + iowait))
+    total_first=$((user + nice + system + idle + iowait + irq + softirq + steal))
+    sleep 0.25
+    read -r cpu user nice system idle iowait irq softirq steal guest guest_nice < /proc/stat
+    idle_second=$((idle + iowait))
+    total_second=$((user + nice + system + idle + iowait + irq + softirq + steal))
+    delta_idle=$((idle_second - idle_first))
+    delta_total=$((total_second - total_first))
+
+    awk -v total="$delta_total" -v idle="$delta_idle" 'BEGIN {
+        if (total <= 0) printf "0.0";
+        else printf "%.1f", ((total - idle) * 100.0 / total);
+    }'
+}
+
+host_memory_stats() {
+    awk '
+        function human(kb) {
+            if (kb >= 1048576) return sprintf("%.2fGiB", kb / 1048576);
+            if (kb >= 1024) return sprintf("%.1fMiB", kb / 1024);
+            return sprintf("%dKiB", kb);
+        }
+        /^MemTotal:/ { total=$2 }
+        /^MemAvailable:/ { available=$2 }
+        END {
+            if (total <= 0) {
+                printf "0.0|0B / 0B";
+                exit;
+            }
+            used=total-available;
+            if (used < 0) used=0;
+            printf "%.1f|%s / %s", used * 100.0 / total, human(used), human(total);
+        }
+    ' /proc/meminfo
+}
+
 case "$action" in
     status)
         if ! container_exists; then
@@ -25,27 +66,36 @@ case "$action" in
         docker inspect --format '{"exists":true,"running":{{json .State.Running}},"status":{{json .State.Status}},"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}"none"{{end}},"started_at":{{json .State.StartedAt}},"finished_at":{{json .State.FinishedAt}},"restart_count":{{json .RestartCount}},"image":{{json .Config.Image}}}' "$CONTAINER"
         ;;
     stats)
-        if ! container_exists || [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" != 'true' ]]; then
-            printf '%s\n' '{"cpu_percent":0,"memory_percent":0,"memory_usage":"0B / 0B"}'
-            exit 0
+        host_cpu="$(host_cpu_percent)"
+        IFS='|' read -r host_memory host_usage <<<"$(host_memory_stats)"
+
+        container_cpu='0'
+        container_memory='0'
+        container_usage='0B / 0B'
+        if container_exists && [[ "$(docker inspect --format '{{.State.Running}}' "$CONTAINER")" == 'true' ]]; then
+            raw="$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' "$CONTAINER")"
+            IFS='|' read -r container_cpu container_memory container_usage <<<"$raw"
+            container_cpu="${container_cpu%%%}"
+            container_memory="${container_memory%%%}"
+            [[ "$container_cpu" =~ ^[0-9]+([.][0-9]+)?$ ]] || container_cpu='0'
+            [[ "$container_memory" =~ ^[0-9]+([.][0-9]+)?$ ]] || container_memory='0'
+            container_usage="${container_usage//\\/}"
+            container_usage="${container_usage//\"/}"
         fi
-        raw="$(docker stats --no-stream --format '{{.CPUPerc}}|{{.MemPerc}}|{{.MemUsage}}' "$CONTAINER")"
-        IFS='|' read -r cpu memory usage <<<"$raw"
-        cpu="${cpu%%%}"
-        memory="${memory%%%}"
-        [[ "$cpu" =~ ^[0-9]+([.][0-9]+)?$ ]] || cpu='0'
-        [[ "$memory" =~ ^[0-9]+([.][0-9]+)?$ ]] || memory='0'
-        usage="${usage//\\/}"
-        usage="${usage//\"/}"
-        printf '{"cpu_percent":%s,"memory_percent":%s,"memory_usage":"%s"}\n' "$cpu" "$memory" "$usage"
+
+        printf '{"host_cpu_percent":%s,"host_memory_percent":%s,"host_memory_usage":"%s","container_cpu_percent":%s,"container_memory_percent":%s,"container_memory_usage":"%s","cpu_percent":%s,"memory_percent":%s,"memory_usage":"%s"}\n' \
+            "$host_cpu" "$host_memory" "$host_usage" \
+            "$container_cpu" "$container_memory" "$container_usage" \
+            "$container_cpu" "$container_memory" "$container_usage"
         ;;
     logs)
         if container_exists; then
             # Registration and initialization happen at the very beginning of
-            # a container run and quickly fall outside the recent tail.  Keep
-            # only lifecycle lines from the first ten minutes, then append the
-            # recent operational tail.  This also covers cached/hot WeChat
-            # logins that do not print a new QR-code flow.
+            # a container run and quickly fall outside the recent tail. Keep
+            # lifecycle lines from the first ten minutes, then append the recent
+            # operational tail. Read the tail across container restarts so a
+            # token event emitted just before a crash is still persisted by
+            # the next metrics sample.
             started_at="$(docker inspect --format '{{.State.StartedAt}}' "$CONTAINER")"
             started_epoch="$(date -d "$started_at" +%s 2>/dev/null || true)"
             if [[ "$started_epoch" =~ ^[0-9]+$ ]]; then
@@ -59,7 +109,7 @@ case "$action" in
                         esac
                     done
             fi
-            docker logs --since "$started_at" --tail 900 "$CONTAINER" 2>&1
+            docker logs --tail 3000 "$CONTAINER" 2>&1
         fi
         ;;
     start)

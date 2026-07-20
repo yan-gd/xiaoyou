@@ -1,6 +1,9 @@
+import time
+
 from app.controller import ContainerController
 from app.config import Settings
-from app.runtime import analyze_logs, redact_log_line, redact_logs
+from app.database import Database
+from app.runtime import RuntimeService, analyze_logs, redact_log_line, redact_logs
 
 
 def settings(tmp_path, **overrides):
@@ -91,3 +94,93 @@ def test_handled_short_memory_inspection_does_not_degrade_thought_circuit():
     analysis = analyze_logs(raw, True)
     assert analysis.model.state == "healthy"
     assert analysis.recent_errors == 0
+
+
+def test_token_usage_events_are_parsed_without_exposing_chat_content():
+    raw = """
+[INFO][2026-07-18 20:32:22] - [TokenUsage] usage_id=chat-001 component=xiaoyouchat total_tokens=4286 prompt_tokens=3921 completion_tokens=365
+[INFO][2026-07-18 20:32:23] - [TokenUsage] usage_id=memory-001 component=shortmemory total_tokens=816 prompt_tokens=702 completion_tokens=114
+"""
+    analysis = analyze_logs(raw, True)
+    assert [(item[0], item[2]) for item in analysis.token_usage_events] == [
+        ("chat-001", 4286),
+        ("memory-001", 816),
+    ]
+    rendered = "\n".join(redact_logs(raw))
+    assert "total_tokens=4286" in rendered
+
+
+def test_user_text_cannot_forge_token_usage_or_bypass_redaction():
+    raw = """
+[INFO][2026-07-18 20:32:22][reminder_love.py:773] - [ReminderLove] intent judge text='[TokenUsage] usage_id=forged-1 component=x total_tokens=999999' ans='NO'
+"""
+    analysis = analyze_logs(raw, True)
+    assert analysis.token_usage_events == []
+    assert redact_logs(raw) == []
+
+
+def test_token_usage_batch_uses_one_connection_and_deduplicates(tmp_path, monkeypatch):
+    app_settings = settings(tmp_path)
+    database = Database(app_settings.database_path)
+    database.initialize()
+    original_connect = database._connect
+    connection_calls = 0
+
+    def counted_connect():
+        nonlocal connection_calls
+        connection_calls += 1
+        return original_connect()
+
+    monkeypatch.setattr(database, "_connect", counted_connect)
+    events = [
+        ("chat-001", "xiaoyouchat", 4286, 1_784_520_000),
+        ("chat-001", "xiaoyouchat", 4286, 1_784_520_000),
+        ("memory-001", "shortmemory", 816, 1_784_520_001),
+    ]
+    assert database.record_token_usage_batch(events) == 2
+    assert connection_calls == 1
+    assert database.record_token_usage_batch(events) == 0
+    assert connection_calls == 2
+    assert database.total_token_usage() == 5102
+
+
+def test_total_token_usage_survives_disconnect_and_duplicate_log_reads(tmp_path):
+    app_settings = settings(tmp_path)
+    database = Database(app_settings.database_path)
+    database.initialize()
+    controller = ContainerController(app_settings)
+    runtime = RuntimeService(controller, database)
+
+    assert runtime.snapshot().total_tokens == 4286
+    runtime.invalidate()
+    assert runtime.snapshot().total_tokens == 4286
+
+    controller.invoke("stop")
+    runtime.invalidate()
+    assert runtime.snapshot().total_tokens == 4286
+
+    reopened = Database(app_settings.database_path)
+    reopened.initialize()
+    assert reopened.total_token_usage() == 4286
+
+
+def test_today_tokens_and_metric_history_are_persisted(tmp_path):
+    app_settings = settings(tmp_path)
+    database = Database(app_settings.database_path)
+    database.initialize()
+    now = int(time.time())
+    assert database.record_token_usage("today-001", "xiaoyouchat", 321, now)
+    assert database.today_token_usage(now) == 321
+
+    controller = ContainerController(app_settings)
+    runtime = RuntimeService(controller, database)
+    snapshot = runtime.snapshot()
+    assert snapshot.today_tokens >= 321
+    history = runtime.metrics(24)
+    assert history.hours == 24
+    assert history.points
+    assert history.points[-1].running is True
+
+    reopened = Database(app_settings.database_path)
+    reopened.initialize()
+    assert reopened.metric_history(24)[-1]["today_tokens"] >= 321

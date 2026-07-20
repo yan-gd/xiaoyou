@@ -1,4 +1,4 @@
-import type { AuditItem, AuthState, ContainerAction, QrState, RuntimeStatus } from './types'
+import type { AuditItem, AuthState, ContainerAction, MetricsResponse, QrState, RuntimeStatus } from './types'
 
 export class ApiError extends Error {
   status: number
@@ -55,6 +55,11 @@ export function logout(csrf: string) {
 
 export function getStatus() {
   return request<RuntimeStatus>('/api/status')
+}
+
+export function getMetrics(hours = 24) {
+  const safeHours = Math.max(1, Math.min(168, Math.floor(hours)))
+  return request<MetricsResponse>(`/api/metrics?hours=${safeHours}`)
 }
 
 export function getQr() {

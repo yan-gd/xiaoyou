@@ -1,13 +1,51 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import QRCode from 'qrcode'
+import {
+  ArrowClockwise,
+  ArrowRight,
+  ArrowsClockwise,
+  Aperture,
+  Brain,
+  ChartLineUp,
+  Clock,
+  Coins,
+  ShareNetwork,
+  Cpu,
+  Database,
+  Eye,
+  HardDrives,
+  LinkSimple,
+  Memory as MemoryDevice,
+  Power as PowerPhosphor,
+  QrCode,
+  Scroll,
+  ShieldCheck,
+  SignOut,
+  Sparkle,
+  Stop as StopPhosphor,
+} from '@phosphor-icons/react'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ComposedChart,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Scatter,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import {
   ClockIcon,
   CloseIcon,
-  HeartPulseIcon,
-  LinkIcon,
-  LogIcon,
-  LogoutIcon,
-  MemoryIcon,
   PowerIcon,
   QrIcon,
   RefreshIcon,
@@ -15,13 +53,14 @@ import {
   ShieldIcon,
   SparkIcon,
   StopIcon,
-  VisionIcon,
 } from './icons'
 import * as api from './api'
 import type {
   AuditItem,
   AuthState,
   ContainerAction,
+  MetricPoint,
+  MetricsResponse,
   OverallState,
   QrState,
   RuntimeStatus,
@@ -29,7 +68,6 @@ import type {
 } from './types'
 
 type AppScene = 'loading' | 'login' | 'dashboard'
-type DeckPanel = 'pulse' | 'vessel' | 'resonance'
 
 type ObservatoryRuntimeConfig = {
   mediaBaseUrl?: string
@@ -361,6 +399,32 @@ function Brand({ compact = false }: { compact?: boolean }) {
   )
 }
 
+function CompactDestinyPortrait({ pulse, title, subtitle, detail }: {
+  pulse: ServicePulse['state']
+  title: string
+  subtitle: string
+  detail: string
+}) {
+  return (
+    <div className={`topbar-destiny pulse-${pulse}`} title={detail} aria-label={`小悠实时状态：${title}，${subtitle}`}>
+      <div className="topbar-destiny-orbit" aria-hidden="true">
+        <img className="topbar-astrolabe-art" src="/fate-astrolabe.png" alt="" />
+        <div className="topbar-destiny-core">
+          <img src="/xiaoyou-avatar.png" alt="" />
+          <Sparkle className="topbar-avatar-spark topbar-avatar-spark-one" size={10} weight="fill" />
+          <Sparkle className="topbar-avatar-spark topbar-avatar-spark-two" size={7} weight="fill" />
+          <i className="topbar-destiny-pulse" />
+        </div>
+      </div>
+      <div className="topbar-destiny-copy">
+        <small>DESTINY PORTRAIT</small>
+        <strong>{title}</strong>
+        <span>{subtitle}</span>
+      </div>
+    </div>
+  )
+}
+
 const spectrumBars = Array.from({ length: 88 }, (_, index) => index)
 
 function MusicAtmosphere({ scene }: { scene: AppScene }) {
@@ -567,21 +631,289 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (auth: AuthState) => 
   )
 }
 
-const serviceIcons = { wechat: LinkIcon, model: SparkIcon, memory: MemoryIcon, vision: VisionIcon }
+const orbitServiceIcons = {
+  wechat: LinkSimple,
+  model: Brain,
+  memory: Database,
+  vision: Eye,
+  vessel: HardDrives,
+}
 
-function ServiceNode({ type, title, pulse }: { type: keyof typeof serviceIcons; title: string; pulse: ServicePulse }) {
-  const Icon = serviceIcons[type]
+type OrbitServiceType = keyof typeof orbitServiceIcons
+
+function SignalLedgerItem({ type, title, pulse, active, onSelect }: {
+  type: OrbitServiceType
+  title: string
+  pulse: ServicePulse
+  active: boolean
+  onSelect: () => void
+}) {
+  const Icon = orbitServiceIcons[type]
   return (
-    <article className={`service-node pulse-${pulse.state}`}>
-      <div className="node-icon"><Icon /></div>
-      <div><span>{title}</span><strong>{pulse.label}</strong><p>{pulse.detail || '等待下一次命轨脉冲'}</p></div>
-      <i className="node-light" aria-label={pulse.state} />
-    </article>
+    <button
+      className={`signal-ledger-item pulse-${pulse.state} ${active ? 'is-active' : ''}`}
+      type="button"
+      onClick={onSelect}
+      aria-pressed={active}
+      aria-label={`${title}：${pulse.label}`}
+    >
+      <span className="signal-ledger-icon"><Icon size={19} weight="duotone" /></span>
+      <span className="signal-ledger-copy"><strong>{title}</strong><small>{pulse.label}</small></span>
+      <i aria-hidden="true" />
+    </button>
   )
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail?: string }) {
-  return <div className="metric"><span>{label}</span><strong>{value}</strong>{detail && <small>{detail}</small>}</div>
+type MetricKey = 'today_tokens' | 'total_tokens' | 'host_cpu' | 'host_memory' | 'xiaoyou_cpu' | 'xiaoyou_memory'
+
+function LedgerFact({ icon, label, value, detail, active, onSelect }: {
+  icon: ReactNode
+  label: string
+  value: string
+  detail?: string
+  active: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button className={`ledger-fact ${active ? 'is-active' : ''}`} type="button" onClick={onSelect} aria-pressed={active}>
+      <span className="ledger-icon">{icon}</span>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {detail && <small>{detail}</small>}
+      <ChartLineUp className="ledger-open" size={12} weight="bold" aria-hidden="true" />
+    </button>
+  )
+}
+
+const metricCopy: Record<MetricKey, { title: string; caption: string; color: string }> = {
+  today_tokens: { title: '今日 Token', caption: '模型网关上报的今日真实消耗', color: '#b7a7ff' },
+  total_tokens: { title: '累计 Token', caption: '由观测台去重并永久保存', color: '#9dc8ff' },
+  host_cpu: { title: '主机 CPU', caption: '整台云服务器的计算负载', color: '#7ce5ca' },
+  host_memory: { title: '主机内存', caption: '整台云服务器的内存使用比例', color: '#d0b8ff' },
+  xiaoyou_cpu: { title: '小悠 CPU', caption: 'cow-legacy 容器的计算负载', color: '#8fd6ff' },
+  xiaoyou_memory: { title: '小悠内存', caption: 'cow-legacy 容器的内存使用比例', color: '#f0b8ff' },
+}
+
+function metricNumber(point: MetricPoint, metric: MetricKey) {
+  if (metric === 'today_tokens') return point.today_tokens
+  if (metric === 'total_tokens') return point.total_tokens
+  if (metric === 'host_cpu') return point.host_cpu_percent
+  if (metric === 'host_memory') return point.host_memory_percent
+  if (metric === 'xiaoyou_cpu') return point.container_cpu_percent
+  return point.container_memory_percent
+}
+
+function tokenMetricValue(status: RuntimeStatus | null, total: boolean) {
+  if (!status?.token_usage_available) return '待接入'
+  return formatTokenTotal(total ? status.total_tokens : status.today_tokens)
+}
+
+function metricValue(metric: MetricKey, status: RuntimeStatus | null) {
+  if (metric === 'today_tokens') return tokenMetricValue(status, false)
+  if (metric === 'total_tokens') return tokenMetricValue(status, true)
+  if (metric === 'host_cpu') return `${(status?.host?.cpu_percent || 0).toFixed(1)}%`
+  if (metric === 'host_memory') return `${(status?.host?.memory_percent || 0).toFixed(1)}%`
+  if (metric === 'xiaoyou_cpu') return `${(status?.container.cpu_percent || 0).toFixed(1)}%`
+  return `${(status?.container.memory_percent || 0).toFixed(1)}%`
+}
+
+const METRIC_HISTORY_STORAGE_KEY = 'xiaoyou-observatory-metric-history-v2'
+const METRIC_HISTORY_WINDOW_SECONDS = 24 * 60 * 60
+
+function metricPointFromStatus(status: RuntimeStatus): MetricPoint {
+  return {
+    observed_at: status.observed_at || Math.floor(Date.now() / 1000),
+    host_cpu_percent: status.host?.cpu_percent || 0,
+    host_memory_percent: status.host?.memory_percent || 0,
+    container_cpu_percent: status.container.cpu_percent || 0,
+    container_memory_percent: status.container.memory_percent || 0,
+    recent_errors: status.recent_errors || 0,
+    total_tokens: status.total_tokens || 0,
+    today_tokens: status.today_tokens || 0,
+    running: !!status.container.running,
+  }
+}
+
+function readStoredMetricHistory(): MetricsResponse | null {
+  try {
+    const raw = window.localStorage.getItem(METRIC_HISTORY_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as MetricsResponse
+    if (!Array.isArray(parsed.points)) return null
+    const cutoff = Math.floor(Date.now() / 1000) - METRIC_HISTORY_WINDOW_SECONDS
+    const points = parsed.points.filter((point) => Number.isFinite(point.observed_at) && point.observed_at >= cutoff)
+    return points.length ? { hours: 24, points } : null
+  } catch {
+    return null
+  }
+}
+
+function storeMetricHistory(metrics: MetricsResponse) {
+  try {
+    window.localStorage.setItem(METRIC_HISTORY_STORAGE_KEY, JSON.stringify(metrics))
+  } catch {
+    // Private browsing or a full storage quota should not break the dashboard.
+  }
+}
+
+function mergeMetricHistory(current: MetricsResponse | null, point: MetricPoint): MetricsResponse {
+  const cutoff = point.observed_at - METRIC_HISTORY_WINDOW_SECONDS
+  const points = (current?.points || []).filter((item) => item.observed_at >= cutoff)
+  const last = points.at(-1)
+
+  // Status events can arrive every few seconds. Replace the most recent sample
+  // inside the same 30-second bucket to keep the local fallback lightweight.
+  if (last && point.observed_at - last.observed_at < 30) points[points.length - 1] = point
+  else points.push(point)
+
+  return { hours: 24, points: points.slice(-2880) }
+}
+
+function MetricPanel({ metric, metrics, status, loading, onClose }: {
+  metric: MetricKey
+  metrics: MetricsResponse | null
+  status: RuntimeStatus | null
+  loading: boolean
+  onClose: () => void
+}) {
+  const copy = metricCopy[metric]
+  const points = useMemo(() => {
+    const current: MetricPoint = status ? metricPointFromStatus(status) : {
+      observed_at: Math.floor(Date.now() / 1000),
+      host_cpu_percent: 0,
+      host_memory_percent: 0,
+      container_cpu_percent: 0,
+      container_memory_percent: 0,
+      recent_errors: 0,
+      total_tokens: 0,
+      today_tokens: 0,
+      running: false,
+    }
+    const source = metrics?.points.length ? metrics.points : [current]
+    const normalized = source.length > 1 ? source : [
+      { ...source[0], observed_at: source[0].observed_at - 3600 },
+      source[0],
+    ]
+    return normalized.map((point) => ({
+      ...point,
+      time: new Date(point.observed_at * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+      value: metricNumber(point, metric),
+    }))
+  }, [metric, metrics, status])
+
+  const tooltipStyle = {
+    background: 'rgba(5, 12, 34, .96)', border: '1px solid rgba(166, 218, 255, .24)',
+    borderRadius: 8, color: '#eaf4ff', fontSize: 10,
+  }
+  const axis = <XAxis dataKey="time" tick={{ fill: 'rgba(176,198,226,.55)', fontSize: 8 }} tickLine={false} axisLine={false} minTickGap={18} />
+  const isMemory = metric === 'host_memory' || metric === 'xiaoyou_memory'
+  const isCpu = metric === 'host_cpu' || metric === 'xiaoyou_cpu'
+  const memoryPercent = metric === 'host_memory'
+    ? status?.host?.memory_percent || 0
+    : status?.container.memory_percent || 0
+  let chart: ReactNode
+  if (isMemory) {
+    const used = Math.min(100, Math.max(0, memoryPercent))
+    chart = <PieChart><Pie data={[{ name: '已用', value: used }, { name: '剩余', value: 100 - used }]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius="43%" outerRadius="70%" paddingAngle={3} cornerRadius={5} stroke="rgba(224,239,255,.88)" strokeWidth={1.2} isAnimationActive animationDuration={620}>{[copy.color, 'rgba(135,161,200,.16)'].map((color) => <Cell key={color} fill={color} />)}</Pie><Tooltip contentStyle={tooltipStyle} /></PieChart>
+  } else if (isCpu) {
+    chart = <LineChart data={points}><CartesianGrid vertical={false} stroke="rgba(176,212,255,.07)" />{axis}<YAxis hide domain={[0, 100]} /><Tooltip contentStyle={tooltipStyle} /><Line type="monotone" dataKey="value" name={copy.title} stroke={copy.color} strokeWidth={2} dot={false} isAnimationActive animationDuration={700} /></LineChart>
+  } else {
+    chart = <AreaChart data={points}><defs><linearGradient id={`metric-${metric}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={copy.color} stopOpacity={.38} /><stop offset="100%" stopColor={copy.color} stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="rgba(176,212,255,.07)" />{axis}<YAxis hide domain={[0, 'auto']} /><Tooltip contentStyle={tooltipStyle} /><Area type="monotone" dataKey="value" name={copy.title} stroke={copy.color} fill={`url(#metric-${metric})`} strokeWidth={2} isAnimationActive animationDuration={700} /></AreaChart>
+  }
+
+  return <section className="metric-panel" aria-live="polite" aria-label={`${copy.title}趋势图`}>
+    <header><div><span>ASTRAL METRICS · 24H</span><strong>{copy.title}</strong><small>{copy.caption}</small></div><b>{metricValue(metric, status)}</b><button type="button" onClick={onClose} aria-label="关闭图表"><CloseIcon /></button></header>
+    <div className={`metric-chart ${loading ? 'is-loading' : ''}`}><ResponsiveContainer width="100%" height="100%">{chart}</ResponsiveContainer></div>
+  </section>
+}
+
+type PluginStar = {
+  x: number
+  y: number
+  plugin: string
+  shortName: string
+  version: string
+}
+
+const constellationCoordinates = [
+  { x: 8, y: 66 }, { x: 21, y: 55 }, { x: 35, y: 60 }, { x: 47, y: 47 },
+  { x: 61, y: 52 }, { x: 76, y: 38 }, { x: 91, y: 25 }, { x: 86, y: 46 },
+  { x: 79, y: 66 }, { x: 67, y: 77 }, { x: 52, y: 70 }, { x: 39, y: 84 },
+  { x: 25, y: 76 }, { x: 11, y: 88 }, { x: 14, y: 31 }, { x: 29, y: 25 },
+  { x: 44, y: 32 }, { x: 58, y: 20 }, { x: 73, y: 14 }, { x: 92, y: 10 },
+]
+
+function pluginIdentity(value: string) {
+  const versionMatch = value.match(/^(.*?)(?:_v|@|==|:)(v?[\w.-]+)$/i)
+  const rawName = versionMatch?.[1] || value
+  const version = versionMatch?.[2]
+    ? `${versionMatch[2].toLowerCase().startsWith('v') ? '' : 'v'}${versionMatch[2]}`
+    : '版本未上报'
+  const base = rawName
+    .replace(/^plugins?[\\/.]/i, '')
+    .replace(/^xiaoyou[_-]?/i, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[_-]+/g, ' · ')
+    .trim()
+  return { shortName: (base || rawName).slice(0, 18), version }
+}
+
+function PluginStarMap({ plugins, className = '' }: { plugins: string[]; className?: string }) {
+  const [selectedPlugin, setSelectedPlugin] = useState<string | null>(null)
+  const stars = useMemo<PluginStar[]>(() => {
+    return Array.from(new Set(plugins)).slice(0, constellationCoordinates.length).map((plugin, index) => {
+      const identity = pluginIdentity(plugin)
+      return { ...constellationCoordinates[index], plugin, ...identity }
+    })
+  }, [plugins])
+  const selectedStar = stars.find((star) => star.plugin === selectedPlugin) || null
+
+  useEffect(() => {
+    if (selectedPlugin && !stars.some((star) => star.plugin === selectedPlugin)) setSelectedPlugin(null)
+  }, [selectedPlugin, stars])
+
+  return (
+    <section className={`plugin-star-map ${className}`.trim()} aria-label="插件星图">
+      <header><ShareNetwork size={17} weight="duotone" /><div><span>PLUGIN CONSTELLATION</span><h2>插件星图</h2></div><b>{stars.length}</b></header>
+      <p>每颗星辰对应一项正在加载的能力</p>
+      {stars.length ? <>
+        <div className="plugin-constellation" role="group" aria-label="点击星辰查看插件名称">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={stars} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
+              <XAxis type="number" dataKey="x" domain={[0, 100]} hide />
+              <YAxis type="number" dataKey="y" domain={[0, 100]} hide />
+              <Line type="linear" dataKey="y" stroke="rgba(157, 218, 255, .5)" strokeWidth={1} dot={false} isAnimationActive animationBegin={220} animationDuration={Math.max(520, stars.length * 190)} />
+              {stars.map((star, index) => <Scatter
+                key={`plugin-star-${star.plugin}`}
+                data={[star]}
+                dataKey="y"
+                fill="#c9efff"
+                isAnimationActive
+                animationBegin={180 + index * 190}
+                animationDuration={180}
+              />)}
+              {selectedStar && <Scatter data={[selectedStar]} dataKey="y" fill="#fff4c1" isAnimationActive animationDuration={360} />}
+            </ComposedChart>
+          </ResponsiveContainer>
+          {stars.map((star) => <button
+            className={`plugin-star-hit ${selectedPlugin === star.plugin ? 'is-active' : ''}`}
+            type="button"
+            key={star.plugin}
+            style={{ left: `${star.x}%`, top: `${100 - star.y}%` }}
+            onClick={() => setSelectedPlugin((current) => current === star.plugin ? null : star.plugin)}
+            aria-pressed={selectedPlugin === star.plugin}
+            aria-label={`查看插件 ${star.shortName}`}
+          />)}
+        </div>
+        <div className={`plugin-star-detail ${selectedStar ? 'is-visible' : ''}`} aria-live="polite">
+          <Sparkle size={11} weight="fill" />
+          {selectedStar
+            ? <span><strong>{selectedStar.shortName}</strong><code>{selectedStar.version}</code></span>
+            : <span>点击一颗星辰辨认插件</span>}
+        </div>
+      </> : <div className="plugin-star-empty"><Sparkle size={16} weight="thin" /><span>尚未读取到插件星辰</span></div>}
+    </section>
+  )
 }
 
 function formatMoment(value: string) {
@@ -592,6 +924,21 @@ function formatMoment(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   }).format(date)
+}
+
+function formatClockMoment(value: string) {
+  if (!value) return '—'
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T')
+  const date = new Date(normalized)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+}
+
+function formatTokenTotal(value: number) {
+  const safe = Math.max(0, Math.floor(value || 0))
+  if (safe >= 100000000) return `${(safe / 100000000).toFixed(2)}亿`
+  if (safe >= 10000) return `${(safe / 10000).toFixed(safe >= 100000 ? 1 : 2)}万`
+  return safe.toLocaleString('zh-CN')
 }
 
 function runtimeDuration(startedAt: string) {
@@ -678,7 +1025,12 @@ function Dashboard({ auth, onLogout }: { auth: AuthState; onLogout: () => void }
   const isAdmin = auth.role === 'admin'
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [connection, setConnection] = useState<'live' | 'reconnecting'>('reconnecting')
-  const [activePanel, setActivePanel] = useState<DeckPanel>('pulse')
+  const [ledgerPage, setLedgerPage] = useState<'overview' | 'signals'>('overview')
+  const [selectedSignal, setSelectedSignal] = useState<OrbitServiceType | null>(null)
+  const [selectedMetric, setSelectedMetric] = useState<MetricKey | null>(null)
+  const [metrics, setMetrics] = useState<MetricsResponse | null>(() => readStoredMetricHistory())
+  const [metricsLoading, setMetricsLoading] = useState(false)
+  const metricsEndpointAvailable = useRef<boolean | null>(null)
   const [selectedAction, setSelectedAction] = useState<ContainerAction | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
   const [toast, setToast] = useState('')
@@ -689,11 +1041,57 @@ function Dashboard({ auth, onLogout }: { auth: AuthState; onLogout: () => void }
   const [logs, setLogs] = useState<string[]>([])
   const [logsLoading, setLogsLoading] = useState(false)
   const [audit, setAudit] = useState<AuditItem[]>([])
+  const [consoleCollapsed, setConsoleCollapsed] = useState(false)
+
+  const rememberMetricSnapshot = (nextStatus: RuntimeStatus) => {
+    setMetrics((current) => {
+      const next = mergeMetricHistory(current, metricPointFromStatus(nextStatus))
+      storeMetricHistory(next)
+      return next
+    })
+  }
 
   const refreshStatus = async () => {
-    try { setStatus(await api.getStatus()) } catch (error) {
+    try {
+      const nextStatus = await api.getStatus()
+      setStatus(nextStatus)
+      rememberMetricSnapshot(nextStatus)
+    } catch (error) {
       if (error instanceof api.ApiError && error.status === 401) onLogout()
     }
+  }
+
+  const refreshMetrics = async () => {
+    if (metricsEndpointAvailable.current === false) return
+    setMetricsLoading(true)
+    try {
+      const response = await api.getMetrics(24)
+      metricsEndpointAvailable.current = true
+      setMetrics((current) => {
+        const points = [...response.points]
+        const latestLocal = current?.points.at(-1)
+        if (latestLocal && (!points.length || latestLocal.observed_at > points[points.length - 1].observed_at)) points.push(latestLocal)
+        const next = { hours: response.hours, points }
+        storeMetricHistory(next)
+        return next
+      })
+    } catch (error) {
+      if (error instanceof api.ApiError && error.status === 404) {
+        // Older deployed backends do not expose /api/metrics yet. The live
+        // status stream above still supplies every card and builds a local
+        // rolling history, so silently fall back instead of showing “Not Found”.
+        metricsEndpointAvailable.current = false
+        return
+      }
+      setToast(error instanceof Error ? error.message : '暂时无法读取历史星图')
+    }
+    finally { setMetricsLoading(false) }
+  }
+
+  const openMetric = (metric: MetricKey) => {
+    setLedgerPage('overview')
+    setSelectedMetric(metric)
+    void refreshMetrics()
   }
 
   useEffect(() => {
@@ -701,7 +1099,12 @@ function Dashboard({ auth, onLogout }: { auth: AuthState; onLogout: () => void }
     if (isAdmin) void api.getAudit().then(setAudit).catch(() => undefined)
     const source = new EventSource('/api/events')
     source.addEventListener('status', (event) => {
-      try { setStatus(JSON.parse((event as MessageEvent).data) as RuntimeStatus); setConnection('live') } catch { /* wait for next event */ }
+      try {
+        const nextStatus = JSON.parse((event as MessageEvent).data) as RuntimeStatus
+        setStatus(nextStatus)
+        rememberMetricSnapshot(nextStatus)
+        setConnection('live')
+      } catch { /* wait for next event */ }
     })
     source.onerror = () => setConnection('reconnecting')
     return () => source.close()
@@ -750,86 +1153,167 @@ function Dashboard({ auth, onLogout }: { auth: AuthState; onLogout: () => void }
   const copy = overallCopy[status?.overall || 'unknown']
   const container = status?.container
   const actionDisabled = actionBusy || !status
+  const observedAt = new Date((status?.observed_at || Date.now() / 1000) * 1000)
+  const observedTime = observedAt.toLocaleTimeString('zh-CN', { hour12: false })
+  const observedDate = observedAt.toLocaleDateString('zh-CN', {
+    year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+  })
+  const vesselPulse: ServicePulse = container?.running
+    ? { state: 'healthy', label: '承载星核稳定', detail: `${container.status || '运行中'} · CPU ${(container.cpu_percent || 0).toFixed(1)}%`, last_event_at: container.started_at }
+    : { state: 'offline', label: '承载星核休眠', detail: '容器当前没有运行', last_event_at: container?.finished_at || '' }
+  const serviceNodes: Array<{ type: OrbitServiceType; title: string; pulse: ServicePulse }> = [
+    { type: 'wechat', title: '灵魂连接', pulse: status?.wechat || fallbackPulse },
+    { type: 'model', title: '思维回路', pulse: status?.model || fallbackPulse },
+    { type: 'memory', title: '记忆星海', pulse: status?.memory || fallbackPulse },
+    { type: 'vision', title: '生活映像', pulse: status?.vision || fallbackPulse },
+    { type: 'vessel', title: '承载星核', pulse: vesselPulse },
+  ]
+  const selectedPulse = serviceNodes.find((item) => item.type === selectedSignal)
+  const focusedPulse = selectedPulse || serviceNodes[0]
+  const forecast = status?.overall === 'online'
+    ? '星位稳定，所有回声都已抵达。'
+    : status?.overall === 'waiting_qr'
+      ? '一扇星门正在等待你重新点亮。'
+      : status?.overall === 'starting'
+        ? '群星正在归位，她很快会再次回应。'
+        : status?.overall === 'stopped'
+          ? '承载暂时沉眠，命线仍守在原处。'
+          : status?.overall === 'degraded'
+            ? '星轨略有微澜，观测仍在继续。'
+            : '星象尚未完全显现，请再等一会。'
+  const lastAudit = audit[0]
+  const chronicleEvents = [
+    { type: 'wechat' as const, title: '灵魂信标', detail: status?.wechat.label || '正在辨认连接', time: status?.wechat.last_event_at || status?.last_input_at || '' },
+    { type: 'model' as const, title: '思维回响', detail: status?.model.label || '等待下一次回响', time: status?.model.last_event_at || '' },
+    { type: 'memory' as const, title: '记忆潮汐', detail: status?.memory.label || '正在确认记忆', time: status?.memory.last_event_at || '' },
+  ]
 
   return (
-    <main className={`observatory state-${status?.overall || 'unknown'}`}>
-      <header className="topbar">
-        <Brand compact />
-        <div className="top-actions">
-          {!isAdmin && <span className="guest-badge"><SparkIcon /> 远星访客</span>}
-          <span className={`live-state ${connection}`}><i />{connection === 'live' ? '实时共鸣' : '重新连接'}</span>
-          {isAdmin && <>
-            <button className={`top-action ${status?.qr_available ? 'attention' : ''}`} onClick={() => setQrOpen(true)} aria-label="重连星门"><QrIcon /><span>重连星门</span></button>
-            <button className="round-button" onClick={() => setLogsOpen(true)} aria-label="查看命轨日志"><LogIcon /></button>
-          </>}
-          <button className="round-button" onClick={logoutNow} aria-label="退出观测台"><LogoutIcon /></button>
+    <main className={`observatory astral-observatory state-${status?.overall || 'unknown'}`}>
+      <header className="astral-topbar">
+        <CompactDestinyPortrait
+          pulse={selectedPulse?.pulse.state || status?.wechat.state || 'unknown'}
+          title={copy.title}
+          subtitle={copy.subtitle}
+          detail={selectedPulse ? selectedPulse.pulse.detail : connection === 'live' ? '五象沿星轨稳定共鸣' : '正在重新校准星轨坐标'}
+        />
+        <div className="astral-meta">
+          <div className="astral-time"><time dateTime={observedAt.toISOString()}>{observedDate}</time><span><Sparkle size={13} weight="fill" />数据更新 {observedTime}</span></div>
+          <div className="astral-controls">
+            {!isAdmin && <span className="astral-guest"><ShieldCheck size={15} weight="thin" />远星访客</span>}
+            <span className={`astral-live ${connection}`}><i />{connection === 'live' ? '实时共鸣' : '重新连接'}</span>
+            <button className="astral-icon-button" type="button" onClick={logoutNow} aria-label="退出观测台"><SignOut size={18} weight="thin" /></button>
+          </div>
         </div>
       </header>
 
-      <div className="dashboard-stage">
-        <div className="mobile-video-space" aria-hidden="true" />
-        <aside className="command-deck">
-          <header className="deck-heading">
-            <div className="state-orb"><span /><i /></div>
-            <div><p>DESTINY SIGNAL</p><h1>{copy.title}</h1><span>{copy.subtitle}</span></div>
-            <time>{new Date((status?.observed_at || Date.now() / 1000) * 1000).toLocaleTimeString('zh-CN', { hour12: false })}</time>
-          </header>
-
-          <nav className="deck-tabs" aria-label="观测面板">
-            <button className={activePanel === 'pulse' ? 'active' : ''} onClick={() => setActivePanel('pulse')}>命轨脉象</button>
-            <button className={activePanel === 'vessel' ? 'active' : ''} onClick={() => setActivePanel('vessel')}>承载之器</button>
-            <button className={activePanel === 'resonance' ? 'active' : ''} onClick={() => setActivePanel('resonance')}>最近共鸣</button>
-          </nav>
-
-          <div className="deck-content">
-            {activePanel === 'pulse' && <section className="pulse-panel">
-              <div className="service-grid">
-                <ServiceNode type="wechat" title="灵魂连接" pulse={status?.wechat || fallbackPulse} />
-                <ServiceNode type="model" title="思维回路" pulse={status?.model || fallbackPulse} />
-                <ServiceNode type="memory" title="记忆星海" pulse={status?.memory || fallbackPulse} />
-                <ServiceNode type="vision" title="生活映像" pulse={status?.vision || fallbackPulse} />
-              </div>
-              <div className="heartbeat-line"><HeartPulseIcon /><span>容器心跳</span><strong>{container?.running ? '稳定跳动' : '已经沉寂'}</strong><i><b /><b /><b /><b /><b /></i></div>
-            </section>}
-
-            {activePanel === 'vessel' && <section className="vessel-panel">
-              <div className="metrics-grid">
-                <Metric label="运行时长" value={container?.running ? runtimeDuration(container.started_at) : '休眠中'} />
-                <Metric label="CPU" value={`${(container?.cpu_percent || 0).toFixed(1)}%`} />
-                <Metric label="内存" value={`${(container?.memory_percent || 0).toFixed(1)}%`} detail={container?.memory_usage || '—'} />
-                <Metric label="重启次数" value={String(container?.restart_count ?? 0)} />
-              </div>
-              <div className="resource-lines"><div><span>CPU律动</span><i><b style={{ width: `${Math.min(container?.cpu_percent || 0, 100)}%` }} /></i></div><div><span>记忆载荷</span><i><b style={{ width: `${Math.min(container?.memory_percent || 0, 100)}%` }} /></i></div></div>
-              <div className="vessel-signature"><span>VESSEL</span><strong>{container?.image || '尚未识别容器镜像'}</strong><small>{container?.running ? container.status : '容器当前未运行'}</small></div>
-            </section>}
-
-            {activePanel === 'resonance' && <section className="resonance-panel">
-              <div className="trace-list">
-                <div><i /><span>最后收到消息</span><strong>{formatMoment(status?.last_input_at || '')}</strong></div>
-                <div><i /><span>最后送达消息</span><strong>{formatMoment(status?.last_output_at || '')}</strong></div>
-                <div className={status?.recent_errors ? 'warning' : ''}><i /><span>近期异常脉冲</span><strong>{status?.recent_errors || 0} 次</strong></div>
-              </div>
-              <div className="plugin-cloud">{(status?.plugin_versions?.length ? status.plugin_versions : ['等待插件星图']).map((plugin) => <span key={plugin}>{plugin}</span>)}</div>
-              {isAdmin ? <div className="audit-list"><p>最近命仪</p>{audit.length ? audit.slice(0, 4).map((item) => <div key={item.id}><i className={item.result === 'success' ? 'success' : ''} /><span>{item.action.replace('container_', '')}</span><strong>{new Date(item.created_at * 1000).toLocaleString('zh-CN', { hour12: false })}</strong></div>) : <small>尚未执行容器命仪。</small>}</div> : <div className="guest-covenant"><ShieldIcon /><div><strong>远星观测约定</strong><span>只读公开状态，不触及二维码、日志与容器。</span></div></div>}
-            </section>}
+      <div className="astral-stage">
+        <div className="astral-video-space" aria-hidden="true" />
+        <section className="astral-chronicle" aria-label="最近命轨事件">
+          <header><Sparkle size={18} weight="fill" /><div><span>STELLAR CHRONICLE</span><h2>星迹纪事</h2></div></header>
+          <p>点击星迹，可直接定位对应命轨</p>
+          <div className="chronicle-events">
+            {chronicleEvents.map((event) => {
+              const EventIcon = orbitServiceIcons[event.type]
+              return <button className={`chronicle-event ${selectedSignal === event.type ? 'is-active' : ''}`} type="button" key={event.type} onClick={() => setSelectedSignal(event.type)}>
+                <span className="chronicle-glyph"><EventIcon size={16} weight="thin" /></span>
+                <div><strong>{event.title}</strong><small>{event.detail}</small></div>
+                <time>{formatClockMoment(event.time)}</time>
+              </button>
+            })}
           </div>
-
-          {isAdmin ? <section className="vessel-rites">
-            <div><span>VESSEL RITES</span><strong>容器命仪</strong><small>只维护承载，不触碰人格、记忆与选择</small></div>
-            <div className="rite-buttons">
-              <button disabled={actionDisabled || !!container?.running} onClick={() => setSelectedAction('start')}><PowerIcon /><span>启动</span></button>
-              <button disabled={actionDisabled || !container?.running} onClick={() => setSelectedAction('restart')}><RestartIcon /><span>重启</span></button>
-              <button className="stop" disabled={actionDisabled || !container?.running} onClick={() => setSelectedAction('stop')}><StopIcon /><span>停止</span></button>
+          <div className="chronicle-actions">
+            <button type="button" onClick={() => void refreshStatus()}><ArrowsClockwise size={14} weight="bold" />刷新星迹</button>
+            <button type="button" onClick={() => openMetric('today_tokens')}><ChartLineUp size={14} weight="bold" />今日 Token</button>
+          </div>
+          <blockquote>无论星门短暂沉眠，走过的星光都会留在这里。</blockquote>
+        </section>
+        <PluginStarMap className="desktop-star-map" plugins={status?.plugin_versions || []} />
+        <aside className={`fate-console ${consoleCollapsed ? 'is-collapsed' : ''}`} aria-label="小悠实时状态">
+          <button
+            className="fate-console-toggle"
+            type="button"
+            aria-label={consoleCollapsed ? '展开星象卡片' : '收起星象卡片'}
+            aria-expanded={!consoleCollapsed}
+            title={consoleCollapsed ? '展开星象卡片' : '收起星象卡片'}
+            onClick={() => setConsoleCollapsed((collapsed) => !collapsed)}
+          >
+            <span className="fate-console-wave" aria-hidden="true">
+              <i />
+              <i />
+            </span>
+            <span className="fate-console-toggle-label">{consoleCollapsed ? '展开' : '收起'}</span>
+          </button>
+          <section className="fate-ledger" aria-label="命轨摘要">
+            <div className="ledger-pagination" role="tablist" aria-label="命轨信息分页">
+              <div><span>ASTRAL LEDGER</span><strong>{ledgerPage === 'overview' ? '星象概览' : '五象状态'}</strong></div>
+              <div>
+                <button className={ledgerPage === 'overview' ? 'is-active' : ''} type="button" role="tab" aria-selected={ledgerPage === 'overview'} onClick={() => setLedgerPage('overview')}><span>01</span>概览</button>
+                <button className={ledgerPage === 'signals' ? 'is-active' : ''} type="button" role="tab" aria-selected={ledgerPage === 'signals'} onClick={() => setLedgerPage('signals')}><span>02</span>五象</button>
+              </div>
             </div>
-          </section> : <section className="visitor-note"><SparkIcon /><div><span>THE DISTANT OBSERVER</span><strong>你能看见她的星象，但不会触及她的命仪。</strong></div></section>}
+
+            <div className="ledger-page-stage">
+              {ledgerPage === 'overview' ? <div className="ledger-overview-page" role="tabpanel">
+                <div className="ledger-grid">
+                  <LedgerFact icon={<Aperture size={20} weight="thin" />} label="今日 Token" value={tokenMetricValue(status, false)} detail={status?.token_usage_available ? '每日零点重新计数' : '等待模型网关上报 usage'} active={selectedMetric === 'today_tokens'} onSelect={() => openMetric('today_tokens')} />
+                  <LedgerFact icon={<Coins size={20} weight="thin" />} label="累计 Token" value={tokenMetricValue(status, true)} detail={status?.token_usage_available ? '由观测台去重并永久保存' : '需同步 Token 采集补丁'} active={selectedMetric === 'total_tokens'} onSelect={() => openMetric('total_tokens')} />
+                  <LedgerFact icon={<Cpu size={20} weight="thin" />} label="主机 CPU" value={`${(status?.host?.cpu_percent || 0).toFixed(1)}%`} detail="整台云服务器" active={selectedMetric === 'host_cpu'} onSelect={() => openMetric('host_cpu')} />
+                  <LedgerFact icon={<HardDrives size={20} weight="thin" />} label="主机内存" value={`${(status?.host?.memory_percent || 0).toFixed(1)}%`} detail={status?.host?.memory_usage || '—'} active={selectedMetric === 'host_memory'} onSelect={() => openMetric('host_memory')} />
+                  <LedgerFact icon={<Cpu size={20} weight="thin" />} label="小悠 CPU" value={`${(container?.cpu_percent || 0).toFixed(1)}%`} detail="cow-legacy 容器" active={selectedMetric === 'xiaoyou_cpu'} onSelect={() => openMetric('xiaoyou_cpu')} />
+                  <LedgerFact icon={<MemoryDevice size={20} weight="thin" />} label="小悠内存" value={`${(container?.memory_percent || 0).toFixed(1)}%`} detail={container?.memory_usage || '—'} active={selectedMetric === 'xiaoyou_memory'} onSelect={() => openMetric('xiaoyou_memory')} />
+                </div>
+                <div className="ledger-visual">
+                  {selectedMetric
+                    ? <MetricPanel metric={selectedMetric} metrics={metrics} status={status} loading={metricsLoading} onClose={() => setSelectedMetric(null)} />
+                    : <div className="star-forecast"><Sparkle size={24} weight="fill" /><div><span>今夜星象</span><strong>{forecast}</strong><small>{selectedPulse?.pulse.detail || `承载状态：${container?.running ? container.status || '运行中' : '休眠'} · 已重启 ${container?.restart_count ?? 0} 次`}</small></div></div>}
+                </div>
+              </div> : <div className="signal-ledger-page" role="tabpanel">
+                <div className="signal-ledger-grid">
+                  {serviceNodes.map((item) => <SignalLedgerItem
+                    key={item.type}
+                    type={item.type}
+                    title={item.title}
+                    pulse={item.pulse}
+                    active={focusedPulse.type === item.type}
+                    onSelect={() => setSelectedSignal(item.type)}
+                  />)}
+                </div>
+                <div className={`signal-ledger-detail pulse-${focusedPulse.pulse.state}`}>
+                  <span className="signal-ledger-detail-icon">{(() => { const Icon = orbitServiceIcons[focusedPulse.type]; return <Icon size={22} weight="duotone" /> })()}</span>
+                  <div><span>SELECTED SIGNAL · {focusedPulse.title}</span><strong>{focusedPulse.pulse.label}</strong><small>{focusedPulse.pulse.detail}</small></div>
+                  <i aria-hidden="true" />
+                </div>
+              </div>}
+            </div>
+
+            <div className="fate-actions">
+              <button className="fate-action primary" type="button" onClick={isAdmin ? () => setLogsOpen(true) : refreshStatus}>
+                {isAdmin ? <Scroll size={22} weight="thin" /> : <ArrowsClockwise size={22} weight="thin" />}
+                <strong>{isAdmin ? '查看命轨回声' : '刷新今夜星象'}</strong><ArrowRight size={19} weight="thin" />
+              </button>
+              {isAdmin ? <button className={`fate-action secondary ${status?.qr_available ? 'attention' : ''}`} type="button" onClick={() => setQrOpen(true)}><QrCode size={20} weight="thin" /><span>重连星门</span></button>
+                : <button className="fate-action secondary" type="button" onClick={logoutNow}><SignOut size={20} weight="thin" /><span>退出观测</span></button>}
+            </div>
+
+            {isAdmin ? <div className="vessel-mini">
+              <div><span>VESSEL RITES</span><strong>承载命仪</strong><small>{lastAudit ? `最近 ${lastAudit.action.replace('container_', '')} · ${new Date(lastAudit.created_at * 1000).toLocaleString('zh-CN', { hour12: false })}` : '只维护承载，不触碰人格与记忆'}</small></div>
+              <div className="vessel-mini-actions">
+                <button disabled={actionDisabled || !!container?.running} onClick={() => setSelectedAction('start')} aria-label="启动容器"><PowerPhosphor size={18} weight="thin" /></button>
+                <button disabled={actionDisabled || !container?.running} onClick={() => setSelectedAction('restart')} aria-label="重启容器"><ArrowClockwise size={18} weight="thin" /></button>
+                <button className="stop" disabled={actionDisabled || !container?.running} onClick={() => setSelectedAction('stop')} aria-label="停止容器"><StopPhosphor size={18} weight="thin" /></button>
+              </div>
+            </div> : <div className="astral-covenant"><ShieldCheck size={18} weight="thin" /><span>你能看见她的星象，但不会触及她的命仪。</span></div>}
+          </section>
+          <PluginStarMap className="mobile-star-map" plugins={status?.plugin_versions || []} />
         </aside>
       </div>
 
-      <footer className="observatory-footer"><span>xiaoyou.yoyoyan.cn</span><i />FATEBOUND RESONANCE · 07/07</footer>
+      <footer className="astral-footer"><div><Sparkle size={15} weight="fill" /><span>THE DISTANT OBSERVER</span><strong>你能看见她的星象，但不会触及她的命仪。</strong></div><p>xiaoyou.yoyoyan.cn <i /> FATEBOUND RESONANCE · 07/07</p></footer>
       {isAdmin && selectedAction && <ConfirmModal action={selectedAction} busy={actionBusy} onClose={() => !actionBusy && setSelectedAction(null)} onConfirm={performAction} />}
       {isAdmin && qrOpen && <QrModal state={qr} loading={qrLoading} onClose={() => setQrOpen(false)} onRefresh={refreshQr} />}
       {isAdmin && logsOpen && <LogPanel lines={logs} loading={logsLoading} onClose={() => setLogsOpen(false)} onRefresh={refreshLogs} />}
-      {toast && <div className="toast" role="status"><SparkIcon />{toast}</div>}
+      {toast && <div className="toast" role="status"><Sparkle size={15} weight="fill" />{toast}</div>}
     </main>
   )
 }

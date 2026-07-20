@@ -281,6 +281,18 @@ def chat_completion(
 
         elapsed = time.monotonic() - started
         content = str(content or "")
+        usage = data.get("usage", {}) if isinstance(data, dict) else {}
+        total_tokens = int(usage.get("total_tokens") or 0) if isinstance(usage, dict) else 0
+        if total_tokens > 0:
+            logger.info(
+                "[TokenUsage] usage_id=%s component=%s total_tokens=%s "
+                "prompt_tokens=%s completion_tokens=%s",
+                call_id,
+                component,
+                total_tokens,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+            )
         logger.info(
             "[ModelGateway] completed component=%s purpose=%s call_id=%s model=%s "
             "session=%s elapsed=%.2fs has_content=%s thinking_fallback=%s",

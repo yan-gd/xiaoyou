@@ -235,3 +235,1264 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
   .fate-thread, .palm-resonance { display: none; }
 }
+
+/* v1.5 · Fate astrolabe dashboard */
+.video-stage[data-scene="dashboard"] .video-scrim {
+  background:
+    linear-gradient(90deg, rgba(3,5,16,.08) 0%, rgba(3,5,16,.03) 42%, rgba(3,6,20,.56) 67%, rgba(3,5,17,.9) 100%),
+    linear-gradient(180deg, rgba(2,4,13,.28), transparent 25%, transparent 72%, rgba(3,5,16,.62));
+}
+
+.astral-observatory {
+  min-height: 100svh;
+  padding: 0;
+  overflow: hidden;
+  color: #edf5ff;
+}
+
+.astral-topbar {
+  position: absolute;
+  z-index: 18;
+  inset: 0 0 auto 0;
+  min-height: 86px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 21px clamp(26px,3.3vw,52px);
+  pointer-events: none;
+}
+
+.astral-topbar::after {
+  content: "";
+  position: absolute;
+  left: clamp(26px,3.3vw,52px);
+  right: clamp(26px,3.3vw,52px);
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(185,224,255,.22), rgba(185,224,255,.055) 38%, transparent 63%, rgba(185,224,255,.12));
+}
+
+.astral-topbar > * { pointer-events: auto; }
+.astral-topbar .brand-mark { border-radius: 50%; transform: none; background: rgba(8,15,38,.32); }
+.astral-topbar .brand-mark::after { border-radius: 50%; }
+.astral-topbar .brand-mark span { transform: none; }
+.astral-topbar .brand small { color: rgba(190,217,246,.62); }
+.astral-topbar .brand strong { color: #f2f5ff; font-size: 15px; }
+
+.astral-meta { display: flex; align-items: center; gap: 20px; }
+.astral-time { display: grid; justify-items: end; gap: 4px; color: rgba(202,215,238,.66); }
+.astral-time time { font: 10px/1.2 "Cascadia Code",Consolas,monospace; letter-spacing: .12em; }
+.astral-time span { display: flex; align-items: center; gap: 7px; font-size: 9px; letter-spacing: .08em; }
+.astral-time svg { color: #c3eaff; filter: drop-shadow(0 0 8px rgba(121,207,255,.58)); }
+.astral-controls { display: flex; align-items: center; gap: 8px; }
+.astral-guest, .astral-live {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  color: rgba(210,220,241,.72);
+  border: 1px solid rgba(185,211,255,.13);
+  border-radius: 18px;
+  background: rgba(7,12,31,.28);
+  font-size: 9px;
+  backdrop-filter: blur(8px);
+}
+.astral-live i { width: 5px; height: 5px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+.astral-live.reconnecting i { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: soft-attention 1.8s ease-in-out infinite; }
+.astral-icon-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  color: rgba(218,228,246,.74);
+  border: 1px solid rgba(185,211,255,.15);
+  border-radius: 50%;
+  background: rgba(7,12,31,.28);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: color .25s, border-color .25s, background .25s, transform .25s;
+}
+.astral-icon-button:hover { color: #fff; border-color: rgba(162,221,255,.48); background: rgba(92,140,206,.14); transform: translateY(-1px); }
+
+.astral-stage {
+  min-height: 100svh;
+  display: grid;
+  grid-template-columns: minmax(0,1fr) clamp(570px,42.5vw,650px);
+  position: relative;
+}
+.astral-video-space { grid-column: 1; }
+.astral-chronicle {
+  width: min(276px,22vw);
+  display: grid;
+  gap: 12px;
+  position: absolute;
+  z-index: 11;
+  left: clamp(28px,3.3vw,52px);
+  top: clamp(104px,13vh,140px);
+  padding: 18px 16px 18px 21px;
+  color: rgba(219,231,250,.78);
+  border-left: 1px solid rgba(181,222,255,.28);
+  background: linear-gradient(90deg, rgba(4,10,28,.42), rgba(4,10,28,.09) 72%, transparent);
+  backdrop-filter: blur(7px);
+  animation: fate-rise .9s .28s cubic-bezier(.2,.8,.2,1) both;
+}
+.astral-chronicle::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  position: absolute;
+  left: -3px;
+  top: 20px;
+  border-radius: 50%;
+  background: #a7e8ff;
+  box-shadow: 0 0 13px rgba(138,225,255,.9);
+}
+.astral-chronicle header { display: flex; align-items: center; gap: 11px; }
+.astral-chronicle header > svg { color: #c9ecff; filter: drop-shadow(0 0 9px rgba(116,210,255,.64)); }
+.astral-chronicle header div { display: grid; gap: 2px; }
+.astral-chronicle header span { color: rgba(161,196,230,.56); font: 6px/1.2 "Cascadia Code",Consolas,monospace; letter-spacing: .22em; }
+.astral-chronicle h2 { margin: 0; color: #f0f5ff; font: 500 18px/1.2 "Songti SC","Noto Serif SC",serif; letter-spacing: .14em; }
+.astral-chronicle > p { margin: 0; color: rgba(162,184,217,.56); font: 9px/1.5 "Songti SC",serif; letter-spacing: .08em; }
+.chronicle-events { display: grid; }
+.chronicle-event {
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 28px minmax(0,1fr) auto;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+  border-bottom: 1px solid rgba(178,214,255,.075);
+  color: inherit;
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background .25s, transform .25s, border-color .25s;
+}
+.chronicle-event:hover, .chronicle-event.is-active { background: linear-gradient(90deg, rgba(86,145,214,.14), transparent); border-color: rgba(154,218,255,.22); transform: translateX(3px); }
+.chronicle-event:last-child { border-bottom: 0; }
+.chronicle-event::before { content: ""; position: absolute; left: 13px; top: 40px; bottom: -14px; width: 1px; background: linear-gradient(rgba(148,213,255,.24), transparent); }
+.chronicle-event:last-child::before { display: none; }
+.chronicle-glyph { width: 27px; height: 27px; display: grid; place-items: center; color: #b9e5ff; border: 1px solid rgba(171,222,255,.22); border-radius: 50%; background: rgba(13,24,55,.45); box-shadow: 0 0 13px rgba(86,184,255,.08); }
+.chronicle-event div { min-width: 0; display: grid; gap: 3px; }
+.chronicle-event strong { color: rgba(231,239,253,.84); font: 500 10px "Songti SC",serif; letter-spacing: .08em; }
+.chronicle-event small { overflow: hidden; color: rgba(145,167,201,.6); font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.chronicle-event time { color: rgba(169,203,232,.58); font: 7px "Cascadia Code",Consolas,monospace; }
+.astral-chronicle blockquote { margin: 2px 0 0; padding: 10px 0 0; color: rgba(191,210,235,.58); border-top: 1px solid rgba(178,214,255,.09); font: 10px/1.65 "Songti SC",serif; letter-spacing: .05em; }
+.chronicle-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.chronicle-actions button { min-height: 31px; display: flex; align-items: center; justify-content: center; gap: 6px; color: rgba(207,229,250,.72); border: 1px solid rgba(164,214,255,.14); border-radius: 18px; background: rgba(11,25,52,.35); font-size: 8px; letter-spacing: .05em; cursor: pointer; transition: color .2s, border-color .2s, background .2s; }
+.chronicle-actions button:hover { color: #f3f8ff; border-color: rgba(169,224,255,.38); background: rgba(36,67,112,.48); }
+.plugin-star-map {
+  width: min(276px,22vw);
+  min-height: 202px;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 6px;
+  position: absolute;
+  z-index: 11;
+  left: clamp(28px,3.3vw,52px);
+  top: auto;
+  bottom: clamp(62px,7vh,88px);
+  padding: 14px 15px 12px 20px;
+  color: rgba(219,231,250,.78);
+  border-left: 1px solid rgba(181,222,255,.26);
+  background: linear-gradient(90deg, rgba(4,10,28,.48), rgba(4,10,28,.14) 76%, transparent);
+  backdrop-filter: blur(8px);
+  animation: constellation-card-in .85s .46s cubic-bezier(.2,.8,.2,1) both;
+}
+.mobile-star-map { display: none; }
+.plugin-star-map::before { content: ""; width: 5px; height: 5px; position: absolute; left: -3px; top: 17px; border-radius: 50%; background: #d4f5ff; box-shadow: 0 0 14px rgba(138,225,255,.92); }
+.plugin-star-map header { display: grid; grid-template-columns: 22px minmax(0,1fr) auto; align-items: center; gap: 8px; }
+.plugin-star-map header > svg { color: #c9ecff; filter: drop-shadow(0 0 9px rgba(116,210,255,.58)); }
+.plugin-star-map header div { min-width: 0; display: grid; gap: 1px; }
+.plugin-star-map header span { color: rgba(161,196,230,.56); font: 6px/1.2 "Cascadia Code",Consolas,monospace; letter-spacing: .18em; }
+.plugin-star-map h2 { margin: 0; color: #f0f5ff; font: 500 15px/1.2 "Songti SC","Noto Serif SC",serif; letter-spacing: .13em; }
+.plugin-star-map header b { min-width: 24px; height: 24px; display: grid; place-items: center; color: rgba(207,233,255,.7); border: 1px solid rgba(165,218,255,.16); border-radius: 50%; font: 8px "Cascadia Code",Consolas,monospace; }
+.plugin-star-map > p { margin: 0; color: rgba(145,167,201,.58); font-size: 8px; letter-spacing: .06em; }
+.plugin-constellation { min-height: 108px; position: relative; overflow: hidden; }
+.plugin-constellation .recharts-wrapper { pointer-events: none; }
+.plugin-constellation .recharts-line-curve { filter: drop-shadow(0 0 5px rgba(112,202,255,.52)); }
+.plugin-constellation .recharts-scatter-symbol { filter: drop-shadow(0 0 5px rgba(177,235,255,.96)) drop-shadow(0 0 12px rgba(91,166,255,.5)); animation: plugin-star-appear .78s cubic-bezier(.2,.8,.2,1) both; }
+.plugin-star-hit { width: 22px; height: 22px; position: absolute; z-index: 3; transform: translate(-50%,-50%); padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; }
+.plugin-star-hit:focus-visible { outline: 1px solid rgba(207,240,255,.8); outline-offset: 2px; box-shadow: 0 0 14px rgba(105,201,255,.55); }
+.plugin-star-detail { min-height: 27px; display: flex; align-items: center; gap: 7px; padding-top: 6px; color: rgba(150,176,208,.58); border-top: 1px solid rgba(178,214,255,.08); font: 9px "Songti SC",serif; letter-spacing: .07em; transition: color .25s, text-shadow .25s; }
+.plugin-star-detail svg { color: rgba(177,226,255,.54); }
+.plugin-star-detail > span { min-width: 0; display: flex; align-items: baseline; gap: 7px; overflow: hidden; }
+.plugin-star-detail strong { overflow: hidden; color: rgba(236,245,255,.94); font: 500 10px "Songti SC",serif; white-space: nowrap; text-overflow: ellipsis; }
+.plugin-star-detail code { color: rgba(170,210,239,.7); font: 8px "Cascadia Code",Consolas,monospace; white-space: nowrap; }
+.plugin-star-detail.is-visible { color: rgba(232,241,255,.9); text-shadow: 0 0 12px rgba(134,211,255,.24); }
+.plugin-star-detail.is-visible svg { color: #d9f5ff; filter: drop-shadow(0 0 7px rgba(122,213,255,.8)); }
+.plugin-star-empty { min-height: 130px; display: grid; place-items: center; align-content: center; gap: 7px; color: rgba(150,176,208,.5); font-size: 8px; }
+.fate-console {
+  grid-column: 2;
+  min-width: 0;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(0px,.7vh,8px);
+  padding: 72px clamp(20px,2.3vw,36px) 56px 6px;
+  position: relative;
+  isolation: isolate;
+}
+
+.orbit-cosmos {
+  width: min(100%,590px);
+  height: clamp(440px,47.5vh,500px);
+  display: grid;
+  place-items: center;
+  position: relative;
+  flex: 0 0 auto;
+  animation: fate-rise .9s .08s cubic-bezier(.2,.8,.2,1) both;
+}
+.astrolabe-frame {
+  width: min(96%,550px);
+  aspect-ratio: 1;
+  position: relative;
+  flex: 0 0 auto;
+}
+.astrolabe-art {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  opacity: .38;
+  filter: drop-shadow(0 0 22px rgba(113,207,255,.12));
+  animation: astrolabe-drift 108s linear infinite;
+  pointer-events: none;
+}
+.orbit-motion {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+}
+.orbit-slot { position: absolute; width: 0; height: 0; }
+.slot-wechat { left: 50%; top: 11%; }
+.slot-memory { left: 12.9%; top: 37.9%; }
+.slot-model { left: 87.1%; top: 37.9%; }
+.slot-vessel { left: 27.1%; top: 81.5%; }
+.slot-vision { left: 72.9%; top: 81.5%; }
+.orbit-cosmos:hover .astrolabe-art { animation-play-state: paused; }
+
+.orbit-node {
+  width: 96px;
+  min-height: 72px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  position: relative;
+  transform: translate(-50%,-50%);
+  padding: 0;
+  color: rgba(226,236,252,.76);
+  border: 0;
+  background: transparent;
+  text-align: center;
+  cursor: pointer;
+  transition: color .25s, filter .25s;
+}
+.orbit-node:hover, .orbit-node.is-active { color: #fff; filter: drop-shadow(0 0 12px rgba(121,207,255,.18)); }
+.orbit-node-sigil {
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.orbit-node-sigil::before, .orbit-node-sigil::after { content: ""; position: absolute; border-radius: 50%; pointer-events: none; }
+.orbit-node-sigil::before { inset: 1px; border: 1px solid rgba(184,229,255,.5); box-shadow: inset 0 0 16px rgba(106,190,255,.1), 0 0 16px rgba(101,189,255,.24), 0 0 34px rgba(101,155,255,.12); animation: node-halo 3.2s ease-in-out infinite; }
+.orbit-node-sigil::after { inset: 7px; border: 1px dashed rgba(190,221,255,.22); }
+.orbit-node-icon {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  position: relative;
+  color: #c7eaff;
+  z-index: 2;
+  border: 1px solid rgba(201,234,255,.32);
+  border-radius: 50%;
+  background: rgba(5,11,30,.66);
+  box-shadow: inset 0 0 0 5px rgba(142,198,246,.035), 0 0 24px rgba(101,189,255,.18);
+  backdrop-filter: blur(10px);
+  transition: border-color .25s, background .25s, box-shadow .25s, transform .25s;
+}
+.orbit-node-icon::after { content: ""; position: absolute; inset: 5px; border: 1px solid rgba(196,196,247,.12); border-radius: 50%; }
+.orbit-node:hover .orbit-node-icon, .orbit-node.is-active .orbit-node-icon { transform: scale(1.06); border-color: rgba(185,232,255,.72); background: rgba(22,41,82,.72); box-shadow: inset 0 0 0 6px rgba(142,198,246,.04), 0 0 28px rgba(101,189,255,.22); }
+.orbit-node-copy { width: 100%; min-width: 0; display: grid; gap: 3px; }
+.orbit-node-copy strong { color: rgba(237,245,255,.9); font: 500 12px/1.15 "Songti SC","Noto Serif SC",serif; letter-spacing: .08em; white-space: nowrap; }
+.orbit-node-copy small { overflow: hidden; color: rgba(174,190,219,.57); font-size: 7px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; }
+.orbit-node-sigil > i { position: absolute; z-index: 3; right: 3px; top: 6px; width: 6px; height: 6px; border: 1px solid rgba(255,255,255,.45); border-radius: 50%; background: #7a829f; box-shadow: 0 0 8px rgba(122,130,159,.55); }
+.orbit-node.pulse-healthy .orbit-node-sigil > i { background: var(--green); box-shadow: 0 0 10px var(--green); }
+.orbit-node.pulse-waiting .orbit-node-sigil > i, .orbit-node.pulse-idle .orbit-node-sigil > i { background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.orbit-node.pulse-degraded .orbit-node-sigil > i { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: node-warning 1.8s ease-in-out infinite; }
+.orbit-node.pulse-offline { opacity: .58; }
+
+.destiny-core {
+  width: 250px;
+  height: 250px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%,-50%);
+  padding: 14px 18px 13px;
+  border: 1px solid rgba(190,226,255,.38);
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(5,12,34,.86);
+  box-shadow: inset 0 0 0 8px rgba(148,206,255,.025), inset 0 0 36px rgba(128,189,255,.1), 0 0 0 8px rgba(135,194,255,.025), 0 0 42px rgba(91,178,255,.16);
+  text-align: center;
+  animation: destiny-breathe 4.8s ease-in-out infinite;
+}
+.destiny-core::before { content: ""; position: absolute; inset: 11px; border: 1px solid rgba(195,190,246,.14); border-radius: 50%; }
+.destiny-core::after { content: ""; position: absolute; z-index: 1; inset: 0; border-radius: 50%; background: linear-gradient(180deg, rgba(3,9,26,.12) 36%, rgba(4,10,29,.7) 70%, rgba(3,8,25,.94) 100%); pointer-events: none; }
+.destiny-core > span { position: absolute; z-index: 2; top: 18px; color: rgba(206,230,252,.72); font: 6px/1.2 "Cascadia Code",monospace; letter-spacing: .25em; text-shadow: 0 0 8px rgba(6,15,39,.9); }
+.destiny-avatar-wrap { position: absolute; z-index: 0; inset: 2px; margin: 0; border-radius: 50%; overflow: hidden; }
+.destiny-avatar-wrap::before { content: ""; position: absolute; z-index: 2; inset: 7px; border: 1px solid rgba(191,229,255,.25); border-radius: 50%; box-shadow: inset 0 0 24px rgba(101,189,255,.12), 0 0 22px rgba(101,189,255,.18); pointer-events: none; }
+.destiny-avatar-wrap img { width: 100%; height: 100%; display: block; border-radius: 50%; object-fit: cover; filter: saturate(.88) contrast(1.06) brightness(.9); animation: avatar-orbit-spin 26s linear infinite; }
+.avatar-spark { position: absolute; z-index: 3; color: #d7f2ff; filter: drop-shadow(0 0 8px rgba(121,207,255,.86)); animation: star-twinkle 2.6s ease-in-out infinite; }
+.avatar-spark-one { right: 18px; top: 22px; }
+.avatar-spark-two { left: 19px; bottom: 45px; animation-delay: -1.3s; }
+.destiny-status { display: flex; align-items: center; justify-content: center; gap: 7px; position: absolute; z-index: 2; left: 18px; right: 18px; bottom: 48px; }
+.destiny-status i { width: 5px; height: 5px; border-radius: 50%; background: #7a829f; box-shadow: 0 0 8px currentColor; }
+.destiny-status.pulse-healthy i { color: var(--green); background: var(--green); }
+.destiny-status.pulse-waiting i, .destiny-status.pulse-idle i { color: var(--blue); background: var(--blue); }
+.destiny-status.pulse-degraded i { color: var(--amber); background: var(--amber); }
+.destiny-status.pulse-offline i { color: rgba(170,180,202,.5); }
+.destiny-core h1 { margin: 0; color: #f4f6ff; font: 500 17px/1.15 "Songti SC","Noto Serif SC",serif; letter-spacing: .12em; text-shadow: 0 0 20px rgba(190,224,255,.18); }
+.destiny-core p { position: absolute; z-index: 2; left: 18px; right: 18px; bottom: 31px; margin: 0; color: rgba(225,234,250,.78); font: 9px/1.4 "Songti SC",serif; letter-spacing: .08em; text-shadow: 0 1px 8px rgba(3,8,25,.95); }
+.destiny-core small { max-width: 190px; position: absolute; z-index: 2; left: 50%; bottom: 16px; transform: translateX(-50%); overflow: hidden; color: rgba(184,201,226,.66); font-size: 7px; line-height: 1.35; white-space: nowrap; text-overflow: ellipsis; text-shadow: 0 1px 8px rgba(3,8,25,.95); }
+
+.fate-ledger {
+  width: min(100%,610px);
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(181,211,255,.2);
+  border-radius: 14px;
+  background: rgba(5,11,31,.64);
+  box-shadow: inset 0 1px rgba(255,255,255,.035), 0 28px 75px rgba(0,0,0,.2);
+  backdrop-filter: blur(18px) saturate(1.15);
+  animation: fate-rise .8s .2s cubic-bezier(.2,.8,.2,1) both;
+}
+.fate-ledger::before { content: ""; position: absolute; inset: 7px; border: 1px solid rgba(146,204,255,.035); border-radius: 9px; pointer-events: none; }
+.ledger-pagination {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 7px 18px 5px;
+  position: relative;
+  z-index: 2;
+  border-bottom: 1px solid rgba(177,207,255,.08);
+}
+.ledger-pagination > div:first-child { min-width: 0; display: flex; align-items: baseline; gap: 9px; }
+.ledger-pagination > div:first-child span { color: rgba(121,164,204,.56); font: 6px "Cascadia Code",monospace; letter-spacing: .19em; white-space: nowrap; }
+.ledger-pagination > div:first-child strong { color: rgba(226,235,249,.8); font: 500 11px "Songti SC",serif; letter-spacing: .1em; white-space: nowrap; }
+.ledger-pagination > div:last-child { display: flex; align-items: center; gap: 4px; }
+.ledger-pagination button {
+  min-width: 58px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: rgba(146,164,196,.58);
+  border: 1px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  font-size: 8px;
+  cursor: pointer;
+  transition: color .2s, border-color .2s, background .2s, box-shadow .2s;
+}
+.ledger-pagination button span { color: rgba(120,174,215,.5); font: 6px "Cascadia Code",monospace; }
+.ledger-pagination button:hover, .ledger-pagination button.is-active { color: rgba(236,245,255,.94); border-color: rgba(164,216,255,.2); background: rgba(40,75,126,.24); box-shadow: inset 0 0 12px rgba(117,194,255,.04); }
+.ledger-pagination button.is-active span { color: #aee4ff; }
+.ledger-page-stage { height: 251px; position: relative; z-index: 1; overflow: hidden; }
+.ledger-overview-page, .signal-ledger-page { height: 100%; animation: ledger-page-in .34s cubic-bezier(.2,.8,.2,1) both; }
+.ledger-grid { display: grid; grid-template-columns: 1fr 1fr; padding: 8px 18px 0; }
+.ledger-fact {
+  min-height: 45px;
+  display: grid;
+  grid-template-columns: 24px minmax(72px,1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 0 8px;
+  padding: 7px 12px;
+  color: rgba(181,196,223,.68);
+  border-top: 0;
+  border-left: 0;
+  border-bottom: 1px solid rgba(177,207,255,.08);
+  background: transparent;
+  position: relative;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color .2s, background .2s, box-shadow .2s;
+}
+.ledger-fact:nth-child(odd) { border-right: 1px solid rgba(177,207,255,.08); }
+.ledger-fact:nth-child(even) { border-right: 0; }
+.ledger-fact:nth-last-child(-n+2) { border-bottom: 0; }
+.ledger-fact:hover, .ledger-fact.is-active { color: rgba(221,234,251,.86); background: linear-gradient(100deg, rgba(68,112,177,.14), rgba(79,60,138,.08)); box-shadow: inset 2px 0 rgba(145,218,255,.5); }
+.ledger-icon { grid-row: 1 / span 2; display: grid; place-items: center; color: #b5dfff; }
+.ledger-fact > span:not(.ledger-icon) { font-size: 9px; letter-spacing: .05em; }
+.ledger-fact strong { color: #e9eefb; font: 500 14px/1.25 "Cascadia Code",Consolas,monospace; white-space: nowrap; }
+.ledger-fact small { grid-column: 2 / 4; color: rgba(126,143,176,.62); font-size: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ledger-open { position: absolute; right: 7px; bottom: 6px; color: rgba(145,198,235,.42); opacity: 0; transform: translateX(-3px); transition: opacity .2s, transform .2s; }
+.ledger-fact:hover .ledger-open, .ledger-fact.is-active .ledger-open { opacity: 1; transform: translateX(0); }
+.signal-ledger-page { display: grid; grid-template-rows: minmax(0,1fr) 72px; }
+.signal-ledger-grid { min-height: 0; display: grid; grid-template-columns: 1fr 1fr; padding: 8px 18px 0; }
+.signal-ledger-item {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 34px minmax(0,1fr) 8px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  position: relative;
+  color: rgba(177,195,222,.68);
+  border: 0;
+  border-right: 1px solid rgba(177,207,255,.08);
+  border-bottom: 1px solid rgba(177,207,255,.08);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: color .2s, background .2s, box-shadow .2s;
+}
+.signal-ledger-item:nth-child(even) { border-right: 0; }
+.signal-ledger-item:last-child { grid-column: 1 / 3; border-right: 0; border-bottom: 0; }
+.signal-ledger-item:hover, .signal-ledger-item.is-active { color: rgba(230,241,255,.94); background: linear-gradient(100deg, rgba(68,112,177,.14), rgba(79,60,138,.07)); box-shadow: inset 2px 0 rgba(145,218,255,.5); }
+.signal-ledger-icon { width: 32px; height: 32px; display: grid; place-items: center; color: #b7e3ff; border: 1px solid rgba(180,222,255,.16); border-radius: 50%; background: rgba(16,31,63,.36); box-shadow: inset 0 0 13px rgba(108,190,255,.05); }
+.signal-ledger-copy { min-width: 0; display: grid; gap: 3px; }
+.signal-ledger-copy strong { overflow: hidden; color: rgba(235,243,255,.88); font: 500 11px "Songti SC",serif; letter-spacing: .08em; white-space: nowrap; text-overflow: ellipsis; }
+.signal-ledger-copy small { overflow: hidden; color: rgba(140,160,193,.62); font-size: 7px; white-space: nowrap; text-overflow: ellipsis; }
+.signal-ledger-item > i, .signal-ledger-detail > i { width: 6px; height: 6px; border: 1px solid rgba(255,255,255,.35); border-radius: 50%; background: #7a829f; box-shadow: 0 0 8px rgba(122,130,159,.5); }
+.signal-ledger-item.pulse-healthy > i, .signal-ledger-detail.pulse-healthy > i { background: var(--green); box-shadow: 0 0 10px var(--green); }
+.signal-ledger-item.pulse-waiting > i, .signal-ledger-item.pulse-idle > i, .signal-ledger-detail.pulse-waiting > i, .signal-ledger-detail.pulse-idle > i { background: var(--blue); box-shadow: 0 0 10px var(--blue); }
+.signal-ledger-item.pulse-degraded > i, .signal-ledger-detail.pulse-degraded > i { background: var(--amber); box-shadow: 0 0 10px var(--amber); }
+.signal-ledger-item.pulse-offline { opacity: .58; }
+.signal-ledger-detail {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 38px minmax(0,1fr) 8px;
+  align-items: center;
+  gap: 11px;
+  margin: 0 18px;
+  padding: 9px 12px;
+  overflow: hidden;
+  border-top: 1px solid rgba(177,207,255,.1);
+  border-bottom: 1px solid rgba(177,207,255,.1);
+  background: linear-gradient(90deg, rgba(34,66,113,.1), rgba(11,19,43,.02) 72%);
+}
+.signal-ledger-detail-icon { width: 36px; height: 36px; display: grid; place-items: center; color: #c6ebff; border: 1px solid rgba(181,221,255,.2); border-radius: 50%; background: rgba(19,37,73,.38); }
+.signal-ledger-detail > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: baseline; gap: 2px 10px; }
+.signal-ledger-detail span { color: rgba(130,174,211,.6); font: 6px "Cascadia Code",monospace; letter-spacing: .13em; white-space: nowrap; }
+.signal-ledger-detail strong { overflow: hidden; color: rgba(239,246,255,.92); font: 500 12px "Songti SC",serif; white-space: nowrap; text-overflow: ellipsis; }
+.signal-ledger-detail small { grid-column: 1 / 3; overflow: hidden; color: rgba(144,162,193,.66); font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.ledger-visual {
+  height: 108px;
+  margin: 0 18px;
+  overflow: hidden;
+  border-top: 1px solid rgba(177,207,255,.1);
+  border-bottom: 1px solid rgba(177,207,255,.1);
+}
+.star-forecast {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 12px;
+}
+.star-forecast > svg { flex: 0 0 auto; color: #c8eaff; filter: drop-shadow(0 0 11px rgba(121,207,255,.65)); animation: star-twinkle 3s ease-in-out infinite; }
+.star-forecast div { min-width: 0; display: grid; grid-template-columns: auto minmax(0,1fr); gap: 3px 12px; align-items: baseline; }
+.star-forecast span { color: rgba(166,193,225,.66); font: 10px "Songti SC",serif; letter-spacing: .12em; }
+.star-forecast strong { overflow: hidden; color: rgba(233,239,252,.86); font: 500 12px "Songti SC",serif; white-space: nowrap; text-overflow: ellipsis; }
+.star-forecast small { grid-column: 1 / 3; color: rgba(125,143,177,.62); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric-panel { height: 100%; min-height: 0; position: relative; z-index: 1; margin: 0; padding: 5px 11px 4px; background: linear-gradient(90deg, rgba(34,66,113,.08), rgba(11,19,43,.02) 72%); animation: metric-reveal .45s cubic-bezier(.2,.8,.2,1) both; }
+.metric-panel header { min-height: 30px; display: grid; grid-template-columns: minmax(0,1fr) auto 26px; align-items: center; gap: 10px; }
+.metric-panel header > div { min-width: 0; display: grid; grid-template-columns: auto minmax(0,1fr); align-items: baseline; gap: 2px 9px; }
+.metric-panel header span { color: rgba(137,182,221,.58); font: 6px "Cascadia Code",Consolas,monospace; letter-spacing: .17em; }
+.metric-panel header strong { color: rgba(238,245,255,.92); font: 500 12px "Songti SC",serif; letter-spacing: .08em; }
+.metric-panel header small { grid-column: 1 / 3; color: rgba(143,164,197,.6); font-size: 7px; }
+.metric-panel header > b { color: #eef6ff; font: 500 15px "Cascadia Code",Consolas,monospace; text-shadow: 0 0 16px rgba(149,211,255,.22); white-space: nowrap; }
+.metric-panel header button { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; color: rgba(184,209,235,.64); border: 1px solid rgba(173,214,255,.12); border-radius: 50%; background: rgba(8,16,39,.44); cursor: pointer; }
+.metric-panel header button svg { width: 12px; height: 12px; }
+.metric-chart { height: 65px; min-height: 0; margin-top: 1px; opacity: 1; transition: opacity .2s; }
+.metric-chart.is-loading { opacity: .45; }
+.recharts-tooltip-label { color: rgba(182,211,238,.72); }
+.fate-actions { display: grid; grid-template-columns: 1.55fr .85fr; gap: 10px; padding: 10px 18px 12px; }
+.fate-action {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: rgba(220,230,248,.78);
+  border: 1px solid rgba(180,214,255,.17);
+  border-radius: 24px;
+  background: rgba(12,22,51,.46);
+  cursor: pointer;
+  transition: color .25s, border-color .25s, background .25s, box-shadow .25s, transform .25s;
+}
+.fate-action.primary { justify-content: flex-start; padding: 0 16px; color: #f3f7ff; border-color: rgba(176,222,255,.56); background: linear-gradient(105deg, rgba(55,94,164,.5), rgba(65,48,120,.38)); box-shadow: inset 0 0 0 4px rgba(182,222,255,.025), 0 0 26px rgba(94,178,255,.09); }
+.fate-action.primary strong { flex: 1; font: 500 14px "Songti SC",serif; letter-spacing: .1em; }
+.fate-action:hover { color: #fff; border-color: rgba(190,229,255,.58); background-color: rgba(37,62,109,.48); transform: translateY(-1px); }
+.fate-action.attention { color: #f6e3c6; border-color: rgba(233,173,115,.4); animation: soft-attention 2.4s ease-in-out infinite; }
+.vessel-mini, .astral-covenant { min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 18px 9px; color: rgba(150,168,200,.65); border-top: 1px solid rgba(177,207,255,.08); }
+.vessel-mini > div:first-child { min-width: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 9px; align-items: baseline; }
+.vessel-mini span { color: rgba(121,164,204,.64); font-size: 6px; letter-spacing: .2em; }
+.vessel-mini strong { color: rgba(211,222,240,.75); font: 500 11px "Songti SC",serif; }
+.vessel-mini small { grid-column: 1 / 3; max-width: 290px; overflow: hidden; font-size: 8px; white-space: nowrap; text-overflow: ellipsis; }
+.vessel-mini-actions { display: flex; gap: 6px; }
+.vessel-mini-actions button { width: 32px; height: 32px; display: grid; place-items: center; color: #b5dfff; border: 1px solid rgba(177,207,255,.14); border-radius: 50%; background: rgba(8,15,37,.52); cursor: pointer; }
+.vessel-mini-actions button.stop { color: #dda0b2; }
+.vessel-mini-actions button:disabled { opacity: .26; cursor: not-allowed; }
+.astral-covenant { justify-content: center; font: 9px "Songti SC",serif; letter-spacing: .04em; }
+.astral-covenant svg { color: var(--violet); }
+
+.astral-footer {
+  position: absolute;
+  z-index: 12;
+  left: clamp(28px,3vw,52px);
+  right: clamp(28px,3vw,52px);
+  bottom: 12px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  color: rgba(147,164,193,.5);
+  pointer-events: none;
+}
+.astral-footer > div { display: grid; grid-template-columns: 22px auto; gap: 2px 7px; align-items: center; }
+.astral-footer > div svg { grid-row: 1 / 3; color: rgba(198,226,255,.72); filter: drop-shadow(0 0 8px rgba(121,207,255,.45)); }
+.astral-footer span { font: 6px "Cascadia Code",monospace; letter-spacing: .2em; }
+.astral-footer strong { color: rgba(193,206,229,.58); font: 400 9px "Songti SC",serif; }
+.astral-footer p { margin: 0; display: flex; align-items: center; gap: 8px; font: 6px "Cascadia Code",monospace; letter-spacing: .14em; }
+.astral-footer p i { width: 18px; height: 1px; background: rgba(121,207,255,.32); }
+
+@keyframes orbit-spin { to { transform: rotate(360deg); } }
+@keyframes orbit-counter { to { transform: rotate(-360deg); } }
+@keyframes astrolabe-drift { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+@keyframes destiny-breathe { 50% { border-color: rgba(204,234,255,.56); box-shadow: inset 0 0 0 8px rgba(148,206,255,.04), inset 0 0 42px rgba(128,189,255,.14), 0 0 0 9px rgba(135,194,255,.035), 0 0 54px rgba(91,178,255,.22); } }
+@keyframes star-twinkle { 50% { opacity: .52; transform: scale(.84) rotate(12deg); } }
+@keyframes node-warning { 50% { opacity: .42; transform: scale(.72); } }
+@keyframes orbit-star-twinkle { 50% { opacity: .56; transform: scale(.86) rotate(12deg); filter: drop-shadow(0 0 12px rgba(159,229,255,.92)) drop-shadow(0 0 27px rgba(101,164,255,.52)); } }
+@keyframes avatar-orbit-spin { from { transform: rotate(0deg) scale(1.035); } to { transform: rotate(360deg) scale(1.035); } }
+@keyframes node-halo { 50% { opacity: .58; transform: scale(.93); box-shadow: inset 0 0 20px rgba(106,190,255,.13), 0 0 22px rgba(101,189,255,.32), 0 0 42px rgba(101,155,255,.16); } }
+@keyframes metric-reveal { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes ledger-page-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes constellation-card-in { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes plugin-star-appear { from { opacity: 0; transform: scale(.2); } to { opacity: 1; transform: scale(1); } }
+
+@media (min-width: 721px) {
+  .music-atmosphere.scene-dashboard { left: 30%; width: min(760px,54vw); }
+  .astral-observatory { height: 100svh; min-height: 0; }
+  .astral-stage { height: 100svh; min-height: 0; overflow: hidden; }
+  .fate-console { height: 100svh; min-height: 0; padding-top: 62px; padding-bottom: 38px; }
+  .orbit-cosmos { height: clamp(310px,calc(100svh - 530px),400px); }
+  .astrolabe-frame { width: min(88%,calc(100svh - 530px),400px); }
+  .desktop-star-map { bottom: clamp(86px,10vh,110px); animation: none; }
+  .desktop-star-map .recharts-scatter-symbol { animation: none; }
+}
+
+@media (max-width: 1120px) and (min-width: 721px) {
+  .astral-chronicle, .desktop-star-map { width: clamp(200px,22vw,240px); left: 20px; }
+  .astral-stage { grid-template-columns: minmax(0,1fr) minmax(500px,49vw); }
+  .fate-console { padding-right: 18px; }
+  .orbit-cosmos { height: clamp(310px,calc(100svh - 530px),400px); }
+  .astrolabe-frame { width: min(86%,calc(100svh - 530px),400px); }
+  .orbit-node { width: 102px; }
+  .orbit-node-sigil { width: 56px; height: 56px; }
+  .orbit-node-icon { width: 38px; height: 38px; }
+  .orbit-node-copy strong { font-size: 11px; }
+  .destiny-core { width: 224px; height: 224px; }
+  .destiny-core h1 { font-size: 16px; }
+  .ledger-fact { padding-inline: 8px; grid-template-columns: 21px minmax(62px,1fr) auto; }
+  .ledger-fact strong { font-size: 12px; }
+  .music-atmosphere.scene-dashboard { left: 26%; width: min(620px,47vw); }
+}
+
+@media (max-height: 820px) and (min-width: 721px) {
+  .astral-chronicle { top: 140px; gap: 7px; padding: 12px 14px 15px 18px; }
+  .astral-chronicle > p, .astral-chronicle blockquote { display: none; }
+  .chronicle-event { min-height: 42px; }
+  .chronicle-actions button { min-height: 27px; }
+  .desktop-star-map { min-height: 174px; display: grid; bottom: 130px; padding: 10px 13px 9px 18px; }
+  .desktop-star-map .plugin-constellation { min-height: 82px; }
+  .fate-console { gap: 0; padding-top: 52px; padding-bottom: 28px; }
+  .orbit-cosmos { width: min(100%,500px); height: 330px; }
+  .astrolabe-frame { width: min(78%,300px); }
+  .orbit-node { width: 82px; min-height: 64px; gap: 1px; }
+  .orbit-node-sigil { width: 50px; height: 50px; }
+  .orbit-node-icon { width: 34px; height: 34px; }
+  .orbit-node-icon svg { width: 19px; height: 19px; }
+  .orbit-node-sigil > i { right: 2px; top: 5px; width: 5px; height: 5px; }
+  .orbit-node-copy strong { font-size: 11px; }
+  .orbit-node-copy small { max-width: 56px; font-size: 7px; }
+  .destiny-core { width: 190px; height: 190px; padding: 9px; }
+  .destiny-core > span { font-size: 5px; }
+  .destiny-avatar-wrap { margin: 4px 0; }
+  .destiny-core h1 { font-size: 14px; }
+  .destiny-core p { font-size: 9px; }
+  .destiny-core small { max-width: 120px; min-height: 18px; font-size: 6px; }
+  .ledger-pagination { min-height: 30px; padding-block: 4px 3px; }
+  .ledger-pagination button { height: 22px; }
+  .ledger-page-stage { height: 202px; }
+  .ledger-grid { padding-top: 5px; }
+  .ledger-fact { min-height: 38px; padding-block: 4px; }
+  .ledger-fact > span:not(.ledger-icon) { font-size: 8px; }
+  .ledger-fact strong { font-size: 11px; }
+  .ledger-visual { height: 83px; }
+  .signal-ledger-page { grid-template-rows: minmax(0,1fr) 60px; }
+  .signal-ledger-grid { padding-top: 5px; }
+  .signal-ledger-item { padding-block: 3px; }
+  .signal-ledger-icon { width: 28px; height: 28px; }
+  .signal-ledger-detail { padding-block: 5px; }
+  .signal-ledger-detail-icon { width: 30px; height: 30px; }
+  .star-forecast { min-height: 0; padding-block: 6px; }
+  .metric-panel { height: 100%; min-height: 0; margin: 0; padding-block: 4px; }
+  .metric-panel header { min-height: 28px; }
+  .metric-chart { height: 51px; min-height: 0; }
+  .fate-actions { padding-block: 7px 9px; }
+  .fate-action { min-height: 39px; }
+  .vessel-mini, .astral-covenant { min-height: 36px; padding-block: 4px 6px; }
+  .astral-footer > div { display: none; }
+  .astral-footer { justify-content: flex-end; bottom: 7px; }
+  .music-atmosphere.scene-dashboard { bottom: 0; }
+}
+
+@media (max-width: 720px), (orientation: portrait) {
+  .video-stage[data-scene="dashboard"] .video-scrim { background: linear-gradient(180deg, rgba(2,4,13,.15), transparent 30%, rgba(4,7,20,.08) 62%, #050817 100%); }
+  .astral-observatory { min-height: 100svh; overflow: visible; }
+  .astral-topbar { min-height: 66px; padding: max(10px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) 8px max(14px,env(safe-area-inset-left)); }
+  .astral-topbar::after { display: none; }
+  .astral-topbar .brand small { display: none; }
+  .astral-topbar .brand strong { max-width: 134px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; }
+  .astral-topbar .brand-mark { width: 34px; height: 34px; }
+  .astral-meta { gap: 7px; }
+  .astral-time { display: none; }
+  .astral-guest { width: 31px; padding: 0; justify-content: center; font-size: 0; }
+  .astral-live { width: 31px; padding: 0; justify-content: center; font-size: 0; }
+  .astral-icon-button { width: 32px; height: 32px; }
+  .astral-stage { min-height: 100svh; display: block; }
+  .astral-chronicle, .plugin-star-map { display: none; }
+  .astral-video-space { height: 50svh; min-height: 350px; max-height: 520px; }
+  .fate-console { min-height: 0; display: block; padding: 0 0 calc(104px + env(safe-area-inset-bottom)); background: linear-gradient(180deg, rgba(5,8,23,.05), #050817 18%, #050817); }
+  .orbit-cosmos { width: 100%; height: min(112vw,460px); min-height: 410px; max-height: 460px; margin-top: 0; }
+  .astrolabe-frame { width: min(100%,430px); }
+  .astrolabe-art { opacity: .34; }
+  .orbit-node { width: 82px; min-height: 64px; gap: 1px; }
+  .orbit-node-sigil { width: 52px; height: 52px; }
+  .orbit-node-icon { width: 34px; height: 34px; }
+  .orbit-node-icon svg { width: 20px; height: 20px; }
+  .orbit-node-sigil > i { right: 2px; top: 5px; width: 5px; height: 5px; }
+  .orbit-node-copy strong { font-size: 11px; }
+  .orbit-node-copy small { max-width: 58px; font-size: 7px; }
+  .destiny-core { width: 190px; height: 190px; padding: 9px; }
+  .destiny-core > span { font-size: 5px; }
+  .destiny-avatar-wrap { margin: 4px 0; }
+  .destiny-core h1 { font-size: 14px; }
+  .destiny-core p { font-size: 10px; }
+  .destiny-core small { max-width: 120px; font-size: 6px; }
+  .fate-ledger { width: calc(100% - 24px); margin: -8px 12px 0; border-radius: 18px; background: rgba(7,12,31,.92); backdrop-filter: blur(14px); }
+  .ledger-pagination { min-height: 36px; padding: 7px 10px 5px; }
+  .ledger-pagination > div:first-child { gap: 6px; }
+  .ledger-pagination > div:first-child span { display: none; }
+  .ledger-pagination button { min-width: 54px; padding-inline: 7px; }
+  .ledger-page-stage { height: 282px; }
+  .ledger-grid { padding: 8px 10px 0; }
+  .ledger-fact { min-height: 54px; grid-template-columns: 21px minmax(58px,1fr); grid-template-rows: auto auto; gap: 1px 7px; padding: 8px 7px; }
+  .ledger-fact strong { grid-column: 2; font-size: 11px; }
+  .ledger-fact small { grid-column: 2; font-size: 6px; }
+  .ledger-fact > span:not(.ledger-icon) { font-size: 8px; }
+  .ledger-visual { height: 112px; margin-inline: 10px; }
+  .signal-ledger-grid { padding: 8px 10px 0; }
+  .signal-ledger-item { grid-template-columns: 30px minmax(0,1fr) 7px; gap: 7px; padding-inline: 7px; }
+  .signal-ledger-icon { width: 28px; height: 28px; }
+  .signal-ledger-copy strong { font-size: 10px; }
+  .signal-ledger-detail { margin-inline: 10px; padding-inline: 9px; }
+  .signal-ledger-detail > div { grid-template-columns: 1fr; gap: 2px; }
+  .signal-ledger-detail strong, .signal-ledger-detail small { grid-column: 1; }
+  .star-forecast { margin: 0; padding-inline: 7px; }
+  .star-forecast div { gap-column: 7px; }
+  .star-forecast strong { font-size: 10px; }
+  .star-forecast small { font-size: 7px; }
+  .metric-panel { height: 100%; min-height: 0; margin: 0; padding: 5px 7px 4px; }
+  .metric-chart { height: 69px; min-height: 0; }
+  .mobile-star-map {
+    width: calc(100% - 24px);
+    min-height: 230px;
+    display: grid;
+    position: relative;
+    z-index: 2;
+    left: auto;
+    top: auto;
+    margin: 14px 12px 0;
+    padding: 15px 16px 12px 20px;
+    border: 1px solid rgba(181,211,255,.18);
+    border-left-color: rgba(181,222,255,.34);
+    border-radius: 18px;
+    background: linear-gradient(135deg, rgba(8,16,40,.94), rgba(6,11,29,.9));
+    box-shadow: inset 0 1px rgba(255,255,255,.03), 0 22px 50px rgba(0,0,0,.18);
+    backdrop-filter: blur(14px);
+  }
+  .mobile-star-map .plugin-constellation { min-height: 136px; }
+  /* Keep the mobile constellation on the same Recharts animation path as desktop.
+     The generic CSS scale-in animation competes with Recharts SVG transforms on
+     mobile browsers, so both layouts leave node/line motion to Recharts. */
+  .mobile-star-map { animation: none; }
+  .mobile-star-map .recharts-scatter-symbol { animation: none; }
+  .fate-actions { grid-template-columns: 1.25fr .9fr; gap: 7px; padding: 10px; }
+  .fate-action { min-height: 45px; gap: 7px; }
+  .fate-action.primary { padding-inline: 12px; }
+  .fate-action.primary strong { font-size: 11px; }
+  .vessel-mini, .astral-covenant { padding-inline: 12px; }
+  .vessel-mini small { max-width: 190px; }
+  .astral-footer { position: relative; left: auto; right: auto; bottom: auto; min-height: 54px; padding: 0 16px calc(10px + env(safe-area-inset-bottom)); background: #050817; }
+  .astral-footer > div strong { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .astral-footer p { display: none; }
+}
+
+@media (max-width: 400px) {
+  .orbit-cosmos { min-height: 390px; }
+  .orbit-node { width: 78px; }
+  .orbit-node-sigil { width: 48px; height: 48px; }
+  .orbit-node-icon { width: 32px; height: 32px; }
+  .destiny-core { width: 174px; height: 174px; }
+  .destiny-core h1 { font-size: 14px; }
+  .fate-actions { grid-template-columns: 1fr; }
+  .fate-action.secondary { min-height: 40px; }
+  .vessel-mini { align-items: flex-end; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .astrolabe-art, .destiny-core, .star-forecast > svg, .orbit-node-sigil::before, .destiny-avatar-wrap img, .avatar-spark, .metric-panel, .plugin-star-map, .plugin-constellation .recharts-scatter-symbol { animation: none !important; }
+}
+
+/* 2026-07 compact destiny portrait + expanded ledger layout */
+.topbar-destiny {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: rgba(225,236,252,.84);
+  filter: drop-shadow(0 8px 26px rgba(1,5,20,.32));
+  animation: fate-rise .8s .04s cubic-bezier(.2,.8,.2,1) both;
+}
+.topbar-destiny-orbit {
+  width: 78px;
+  height: 78px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+.topbar-astrolabe-art {
+  width: 100%;
+  height: 100%;
+  position: absolute;
+  inset: 0;
+  object-fit: contain;
+  opacity: .62;
+  filter: drop-shadow(0 0 14px rgba(113,207,255,.2));
+  animation: astrolabe-drift 108s linear infinite;
+  pointer-events: none;
+}
+.topbar-destiny-core {
+  width: 49px;
+  height: 49px;
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  border: 1px solid rgba(190,226,255,.38);
+  border-radius: 50%;
+  background: rgba(5,12,34,.88);
+  box-shadow: inset 0 0 0 4px rgba(148,206,255,.035), inset 0 0 18px rgba(128,189,255,.13), 0 0 22px rgba(91,178,255,.18);
+}
+.topbar-destiny-core::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 3px;
+  border: 1px solid rgba(191,229,255,.22);
+  border-radius: 50%;
+  pointer-events: none;
+}
+.topbar-destiny-core::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(180deg, transparent 42%, rgba(3,8,25,.62) 100%);
+  pointer-events: none;
+}
+.topbar-destiny-core > img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  border-radius: 50%;
+  filter: saturate(.88) contrast(1.06) brightness(.92);
+  animation: avatar-orbit-spin 26s linear infinite;
+}
+.topbar-avatar-spark {
+  position: absolute;
+  z-index: 4;
+  color: #d7f2ff;
+  filter: drop-shadow(0 0 6px rgba(121,207,255,.9));
+  animation: star-twinkle 2.6s ease-in-out infinite;
+}
+.topbar-avatar-spark-one { right: 5px; top: 7px; }
+.topbar-avatar-spark-two { left: 6px; bottom: 10px; animation-delay: -1.3s; }
+.topbar-destiny-pulse {
+  width: 6px;
+  height: 6px;
+  position: absolute;
+  z-index: 5;
+  right: 7px;
+  bottom: 7px;
+  border: 1px solid rgba(255,255,255,.55);
+  border-radius: 50%;
+  background: #7a829f;
+  box-shadow: 0 0 9px currentColor;
+}
+.topbar-destiny.pulse-healthy .topbar-destiny-pulse { color: var(--green); background: var(--green); }
+.topbar-destiny.pulse-waiting .topbar-destiny-pulse,
+.topbar-destiny.pulse-idle .topbar-destiny-pulse { color: var(--blue); background: var(--blue); }
+.topbar-destiny.pulse-degraded .topbar-destiny-pulse { color: var(--amber); background: var(--amber); animation: node-warning 1.8s ease-in-out infinite; }
+.topbar-destiny.pulse-offline .topbar-destiny-pulse { color: rgba(170,180,202,.55); }
+.topbar-destiny-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.topbar-destiny-copy small {
+  color: rgba(172,207,238,.58);
+  font: 6px/1.2 "Cascadia Code",Consolas,monospace;
+  letter-spacing: .2em;
+  white-space: nowrap;
+}
+.topbar-destiny-copy strong {
+  color: #f1f6ff;
+  font: 500 15px/1.18 "Songti SC","Noto Serif SC",serif;
+  letter-spacing: .12em;
+  white-space: nowrap;
+  text-shadow: 0 0 18px rgba(190,224,255,.18);
+}
+.topbar-destiny-copy span {
+  max-width: 190px;
+  overflow: hidden;
+  color: rgba(184,201,226,.64);
+  font-size: 7px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.astral-topbar {
+  min-height: 96px;
+  padding-block: 9px;
+}
+.astral-stage {
+  grid-template-columns: minmax(0,1fr) clamp(620px,43vw,760px);
+}
+.fate-console {
+  min-height: 0;
+  height: 100svh;
+  justify-content: stretch;
+  gap: 0;
+  padding: 98px clamp(22px,2.3vw,34px) 30px 6px;
+}
+.fate-ledger {
+  width: min(100%,720px);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+}
+.ledger-pagination {
+  min-height: 46px;
+  flex: 0 0 auto;
+  padding: 10px 22px 8px;
+}
+.ledger-pagination > div:first-child span { font-size: 7px; }
+.ledger-pagination > div:first-child strong { font-size: 13px; }
+.ledger-pagination button {
+  min-width: 66px;
+  height: 29px;
+  font-size: 9px;
+}
+.ledger-page-stage {
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.ledger-overview-page {
+  display: grid;
+  grid-template-rows: minmax(220px,1.1fr) minmax(170px,.9fr);
+}
+.ledger-grid {
+  height: 100%;
+  min-height: 0;
+  grid-template-rows: repeat(3,minmax(0,1fr));
+  padding: 12px 22px 0;
+}
+.ledger-fact {
+  min-height: 0;
+  grid-template-columns: 31px minmax(84px,1fr) auto;
+  gap: 2px 11px;
+  padding: 11px 15px;
+}
+.ledger-icon svg { width: 24px; height: 24px; }
+.ledger-fact > span:not(.ledger-icon) { font-size: 10px; }
+.ledger-fact strong { font-size: 17px; }
+.ledger-fact small { font-size: 8px; }
+.ledger-visual {
+  height: auto;
+  min-height: 0;
+  margin: 0 22px;
+}
+.star-forecast { gap: 17px; padding: 18px 17px; }
+.star-forecast > svg { width: 31px; height: 31px; }
+.star-forecast div { gap: 5px 15px; }
+.star-forecast span { font-size: 11px; }
+.star-forecast strong { font-size: 15px; }
+.star-forecast small { font-size: 9px; }
+.metric-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 11px 15px 9px;
+}
+.metric-panel header { min-height: 44px; flex: 0 0 auto; }
+.metric-panel header span { font-size: 7px; }
+.metric-panel header strong { font-size: 14px; }
+.metric-panel header small { font-size: 8px; }
+.metric-panel header > b { font-size: 18px; }
+.metric-chart {
+  height: auto;
+  min-height: 115px;
+  flex: 1 1 auto;
+  margin-top: 5px;
+}
+.signal-ledger-page { grid-template-rows: minmax(0,1fr) 94px; }
+.signal-ledger-grid {
+  grid-template-rows: repeat(3,minmax(0,1fr));
+  padding: 12px 22px 0;
+}
+.signal-ledger-item { padding: 11px 15px; }
+.signal-ledger-icon { width: 39px; height: 39px; }
+.signal-ledger-copy strong { font-size: 13px; }
+.signal-ledger-copy small { font-size: 8px; }
+.signal-ledger-detail { margin: 0 22px; padding: 13px 15px; }
+.signal-ledger-detail-icon { width: 42px; height: 42px; }
+.signal-ledger-detail strong { font-size: 14px; }
+.signal-ledger-detail small { font-size: 9px; }
+.fate-actions {
+  flex: 0 0 auto;
+  gap: 12px;
+  padding: 14px 22px 15px;
+}
+.fate-action { min-height: 54px; }
+.fate-action.primary strong { font-size: 16px; }
+.vessel-mini, .astral-covenant {
+  min-height: 58px;
+  flex: 0 0 auto;
+  padding: 10px 22px 12px;
+}
+.vessel-mini strong { font-size: 12px; }
+.vessel-mini small { max-width: 390px; font-size: 9px; }
+.vessel-mini-actions button { width: 37px; height: 37px; }
+
+@media (max-width: 1120px) and (min-width: 721px) {
+  .astral-stage { grid-template-columns: minmax(0,1fr) minmax(540px,55vw); }
+  .fate-console { padding-right: 18px; }
+  .topbar-destiny-copy span { max-width: 145px; }
+  .ledger-fact { padding-inline: 11px; }
+}
+
+@media (max-height: 820px) and (min-width: 721px) {
+  .astral-topbar { min-height: 84px; padding-block: 5px; }
+  .topbar-destiny-orbit { width: 68px; height: 68px; }
+  .topbar-destiny-core { width: 43px; height: 43px; }
+  .topbar-destiny-copy strong { font-size: 13px; }
+  .fate-console { padding-top: 86px; padding-bottom: 24px; }
+  .ledger-pagination { min-height: 39px; padding-block: 7px 6px; }
+  .ledger-pagination button { height: 25px; }
+  .ledger-page-stage { height: auto; min-height: 0; flex: 1 1 auto; }
+  .ledger-overview-page { grid-template-rows: minmax(150px,1fr) minmax(112px,.72fr); }
+  .ledger-grid { padding-top: 7px; }
+  .ledger-fact { min-height: 0; padding-block: 7px; }
+  .ledger-fact strong { font-size: 14px; }
+  .ledger-icon svg { width: 21px; height: 21px; }
+  .ledger-visual { height: auto; }
+  .metric-panel { height: 100%; min-height: 0; padding-block: 6px; }
+  .metric-panel header { min-height: 34px; }
+  .metric-chart { height: auto; min-height: 76px; flex: 1 1 auto; }
+  .star-forecast { padding-block: 10px; }
+  .fate-actions { padding-block: 9px 10px; }
+  .fate-action { min-height: 45px; }
+  .vessel-mini, .astral-covenant { min-height: 46px; padding-block: 6px 8px; }
+}
+
+@media (max-width: 720px), (orientation: portrait) {
+  .astral-topbar {
+    min-height: 70px;
+    padding: max(6px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) 5px max(12px,env(safe-area-inset-left));
+  }
+  .topbar-destiny { gap: 6px; }
+  .topbar-destiny-orbit { width: 56px; height: 56px; }
+  .topbar-destiny-core { width: 36px; height: 36px; }
+  .topbar-avatar-spark-one { right: 3px; top: 4px; }
+  .topbar-avatar-spark-two { left: 4px; bottom: 6px; }
+  .topbar-destiny-pulse { width: 5px; height: 5px; right: 5px; bottom: 5px; }
+  .topbar-destiny-copy { gap: 1px; }
+  .topbar-destiny-copy small { display: none; }
+  .topbar-destiny-copy strong { max-width: 92px; overflow: hidden; font-size: 12px; text-overflow: ellipsis; }
+  .topbar-destiny-copy span { max-width: 92px; font-size: 6px; }
+  .astral-video-space { height: 48svh; min-height: 330px; max-height: 500px; }
+  .fate-console {
+    height: auto;
+    min-height: 0;
+    display: block;
+    padding: 0 0 calc(104px + env(safe-area-inset-bottom));
+  }
+  .fate-ledger {
+    width: calc(100% - 24px);
+    height: auto;
+    margin: 0 12px;
+    border-radius: 18px;
+  }
+  .ledger-pagination { min-height: 42px; padding: 8px 12px 6px; }
+  .ledger-pagination > div:first-child strong { font-size: 12px; }
+  .ledger-pagination button { min-width: 58px; height: 27px; }
+  .ledger-page-stage {
+    height: clamp(400px,112vw,500px);
+    min-height: 400px;
+    flex: 0 0 auto;
+  }
+  .ledger-overview-page { grid-template-rows: minmax(240px,1fr) minmax(150px,.68fr); }
+  .ledger-grid { padding: 9px 12px 0; }
+  .ledger-fact {
+    min-height: 0;
+    grid-template-columns: 26px minmax(58px,1fr);
+    grid-template-rows: auto auto auto;
+    gap: 2px 8px;
+    padding: 10px 9px;
+  }
+  .ledger-icon { grid-row: 1 / span 3; }
+  .ledger-icon svg { width: 21px; height: 21px; }
+  .ledger-fact strong { grid-column: 2; font-size: 14px; }
+  .ledger-fact small { grid-column: 2; font-size: 7px; }
+  .ledger-fact > span:not(.ledger-icon) { font-size: 9px; }
+  .ledger-visual { height: auto; margin-inline: 12px; }
+  .star-forecast { padding: 13px 10px; }
+  .star-forecast > svg { width: 27px; height: 27px; }
+  .star-forecast div { grid-template-columns: 1fr; gap: 4px; }
+  .star-forecast strong, .star-forecast small { grid-column: 1; white-space: normal; }
+  .star-forecast strong { font-size: 12px; }
+  .star-forecast small { font-size: 8px; }
+  .metric-panel { padding: 8px 9px 7px; }
+  .metric-panel header { min-height: 39px; }
+  .metric-panel header strong { font-size: 12px; }
+  .metric-panel header > b { font-size: 15px; }
+  .metric-chart { height: auto; min-height: 100px; flex: 1 1 auto; }
+  .signal-ledger-page { grid-template-rows: minmax(0,1fr) 88px; }
+  .signal-ledger-grid { padding: 9px 12px 0; }
+  .signal-ledger-item { padding: 9px; }
+  .signal-ledger-detail { margin-inline: 12px; padding: 10px; }
+  .fate-actions { gap: 8px; padding: 12px; }
+  .fate-action { min-height: 49px; }
+  .fate-action.primary strong { font-size: 12px; }
+  .vessel-mini, .astral-covenant { min-height: 56px; padding: 9px 12px 11px; }
+  .vessel-mini small { max-width: 210px; }
+}
+
+@media (max-width: 400px) {
+  .topbar-destiny-copy span { display: none; }
+  .topbar-destiny-copy strong { max-width: 78px; }
+  .ledger-page-stage { height: 420px; min-height: 420px; }
+  .ledger-overview-page { grid-template-rows: 252px 168px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .topbar-astrolabe-art,
+  .topbar-destiny-core > img,
+  .topbar-avatar-spark,
+  .topbar-destiny { animation: none !important; }
+}
+
+/* Desktop fate-ledger slide rail */
+@media (min-width: 721px) and (orientation: landscape) {
+  .fate-console {
+    z-index: 13;
+    transform: translate3d(0,0,0);
+    transition: transform .72s cubic-bezier(.22,.82,.2,1);
+    will-change: transform;
+  }
+  .fate-console.is-collapsed {
+    transform: translate3d(calc(100% - 34px),0,0);
+  }
+  .fate-console-toggle {
+    width: 36px;
+    height: 82px;
+    display: grid;
+    place-items: center;
+    position: absolute;
+    z-index: 8;
+    left: max(0px,calc(50% - 360px));
+    top: 54%;
+    transform: translate(-50%,-50%);
+    padding: 0;
+    color: rgba(171,224,255,.38);
+    border: 0;
+    border-radius: 18px;
+    background: transparent;
+    box-shadow: none;
+    cursor: pointer;
+    transition: color .35s ease, filter .35s ease, transform .28s ease;
+  }
+  .fate-console-wave {
+    position: relative;
+    width: 24px;
+    height: 58px;
+    display: block;
+    pointer-events: none;
+  }
+  .fate-console-wave i {
+    position: absolute;
+    top: 50%;
+    border: 1px solid transparent;
+    border-left-color: currentColor;
+    border-radius: 50%;
+    transform-origin: center;
+    filter: drop-shadow(0 0 4px rgba(126,211,255,.22));
+    will-change: opacity, transform;
+  }
+  .fate-console-wave i:first-child {
+    width: 10px;
+    height: 30px;
+    right: 5px;
+    animation: console-wave-inner 2.8s ease-in-out infinite;
+  }
+  .fate-console-wave i:last-child {
+    width: 17px;
+    height: 48px;
+    right: 0;
+    opacity: .38;
+    animation: console-wave-outer 2.8s ease-in-out .24s infinite;
+  }
+  .fate-console-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .fate-console-toggle:hover {
+    color: rgba(205,239,255,.68);
+    filter: drop-shadow(0 0 7px rgba(111,204,255,.18));
+    transform: translate(-50%,-50%) scale(1.03);
+  }
+  .fate-console-toggle:active {
+    transform: translate(-50%,-50%) scale(.96);
+  }
+  .fate-console.is-collapsed .fate-console-toggle {
+    color: rgba(191,233,255,.52);
+  }
+
+}
+
+@media (max-width: 720px), (orientation: portrait) {
+  .fate-console,
+  .fate-console.is-collapsed {
+    transform: none;
+    transition: none;
+    will-change: auto;
+  }
+  .fate-console-toggle { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fate-console { transition-duration: .01ms !important; }
+  .fate-console-wave i { animation: none !important; }
+}
+
+@keyframes console-wave-inner {
+  0%,100% { opacity: .22; transform: translate3d(0,-50%,0) scaleX(.82); }
+  48% { opacity: .62; transform: translate3d(-1px,-50%,0) scaleX(1.05); }
+}
+
+@keyframes console-wave-outer {
+  0%,100% { opacity: .12; transform: translate3d(-2px,-50%,0) scaleX(.78); }
+  52% { opacity: .42; transform: translate3d(1px,-50%,0) scaleX(1.08); }
+}
+
+/* v2.3 · upper-left rotating fate-astrolabe arc */
+.astral-observatory {
+  isolation: isolate;
+}
+
+.astral-observatory::before {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  left: clamp(-640px, -32vw, -460px);
+  top: clamp(-900px, -47vw, -700px);
+  width: clamp(1100px, 76vw, 1420px);
+  aspect-ratio: 1;
+  pointer-events: none;
+  background: url("/fate-astrolabe.png") center / contain no-repeat;
+  opacity: .25;
+  mix-blend-mode: screen;
+  filter: drop-shadow(0 0 16px rgba(117, 221, 255, .16));
+  transform: rotate(0deg);
+  transform-origin: 50% 50%;
+  will-change: transform;
+  animation: fate-astrolabe-background-spin 92s linear infinite;
+}
+
+/* Keep every dashboard control above the decorative rotating layer. */
+.astral-stage {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes fate-astrolabe-background-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 720px), (orientation: portrait) {
+  .astral-observatory::before {
+    left: -390px;
+    top: -500px;
+    width: 820px;
+    opacity: .25;
+    animation-duration: 118s;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .astral-observatory::before {
+    animation: none !important;
+  }
+}

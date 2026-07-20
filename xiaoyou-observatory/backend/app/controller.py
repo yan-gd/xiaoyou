@@ -104,6 +104,13 @@ class ContainerController:
                 return ControllerResult(True, json.dumps(payload, ensure_ascii=False))
             if action == "stats":
                 payload = {
+                    "host_cpu_percent": 7.5,
+                    "host_memory_percent": 46.8,
+                    "host_memory_usage": "958.5MiB / 2.00GiB",
+                    "container_cpu_percent": 2.4 if self._mock_running else 0.0,
+                    "container_memory_percent": 18.7 if self._mock_running else 0.0,
+                    "container_memory_usage": "382.6MiB / 2GiB" if self._mock_running else "0B / 2GiB",
+                    # Backwards-compatible aliases for older backends.
                     "cpu_percent": 2.4 if self._mock_running else 0.0,
                     "memory_percent": 18.7 if self._mock_running else 0.0,
                     "memory_usage": "382.6MiB / 2GiB" if self._mock_running else "0B / 2GiB",
@@ -120,6 +127,7 @@ class ContainerController:
 Start auto replying.
 [INFO][2026-07-12 11:42:18][trace_service.py:385] - [Trace] stage=input_received status=accepted trace_id=mock
 [INFO][2026-07-12 11:42:20][trace_service.py:385] - [Trace] stage=model_call_completed status=ok trace_id=mock elapsed_ms=1840
+[INFO][2026-07-12 11:42:20][chat_gpt_bot.py:94] - [TokenUsage] usage_id=mock-chat-001 component=xiaoyouchat total_tokens=4286 prompt_tokens=3921 completion_tokens=365
 [INFO][2026-07-12 11:42:21][trace_service.py:385] - [Trace] stage=outbound_completed status=ok trace_id=mock delivered=True
 [INFO][2026-07-12 11:42:21][trace_service.py:385] - [Trace] stage=long_memory_recorded status=saved trace_id=mock
 """.strip()
