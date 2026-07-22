@@ -16,6 +16,7 @@ from plugins.xiaoyou_common.outbound_dispatcher import (
     send_action,
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.conversation_coordinator import claim_action
 from plugins.xiaoyou_common.inner_state_service import get_inner_state_service
 from plugins.xiaoyou_common.proactive_decision_service import decide_proactive_action
@@ -32,7 +33,12 @@ from plugins.xiaoyou_common.context_service import (
 )
 
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "proactive_state.json")
+DATA_FILE = runtime_path(
+    "proactive_love",
+    "proactive_state.json",
+    env_var="PROACTIVE_LOVE_STATE_PATH",
+    legacy_paths=(os.path.join(os.path.dirname(__file__), "proactive_state.json"),),
+)
 STATE_STORE = JsonStateStore(DATA_FILE, name="proactive_love", default_factory=dict)
 LOCK = threading.Lock()
 THREAD_STARTED = False

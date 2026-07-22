@@ -28,14 +28,18 @@ from datetime import datetime, timedelta
 
 from common.log import logger
 from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
 
-ARCHIVE_DIR = os.path.join(
-    os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(__file__),
+ARCHIVE_FILE = runtime_path(
     "xiaoyou_conversation",
+    "conversation.db",
+    env_var="XIAOYOU_CONVERSATION_ARCHIVE_PATH",
+    legacy_paths=(
+        os.path.join(os.path.dirname(__file__), "xiaoyou_conversation", "conversation.db"),
+    ),
 )
-ARCHIVE_FILE = os.path.join(ARCHIVE_DIR, "conversation.db")
 VALID_ROLES = ("user", "assistant")
 SENSITIVE_RE = re.compile(
     r"(?:sk-[A-Za-z0-9_-]{12,}|密码|验证码|银行卡|身份证|api[_ -]?key|access[_ -]?token)",

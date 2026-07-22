@@ -8,6 +8,7 @@ from plugins import *
 from common.log import logger
 from lib import itchat
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
 from plugins.xiaoyou_common.conversation_coordinator import note_user_activity
 from plugins.xiaoyou_common.trace_service import (
     attach_input_trace,
@@ -15,8 +16,15 @@ from plugins.xiaoyou_common.trace_service import (
 )
 
 
-STATE_DIR = os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(__file__)
-STATE_FILE = os.path.join(STATE_DIR, "xiaoyou_identity.json")
+STATE_FILE = runtime_path(
+    "xiaoyou_identity",
+    "state.json",
+    env_var="XIAOYOU_IDENTITY_STATE_PATH",
+    legacy_paths=(
+        os.path.join(appdata_root(), "xiaoyou_identity.json"),
+        os.path.join(os.path.dirname(__file__), "xiaoyou_identity.json"),
+    ),
+)
 BACKUP_FILE = STATE_FILE + ".backup"
 STATE_STORE = JsonStateStore(
     STATE_FILE,

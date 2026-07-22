@@ -161,8 +161,8 @@ flowchart LR
 插件：`plugins/short_memory`
 
 ```text
-plugins/short_memory/short_memory.json
-plugins/short_memory/short_memory.json.backup
+data/short_memory/short_memory.json
+data/short_memory/short_memory.json.backup
 ```
 
 当前使用 schema v2，包含 UUID、source、最近原话、异步摘要、待归档消息、内容审查隔离以及主备份容灾。只有确认当前单条消息本身仍被供应商拒绝时才隔离对应原文；组合上下文被拒绝不再证明整批历史有问题，也不会永久排除整批近期聊天。
@@ -440,15 +440,12 @@ docker compose up -d --force-recreate
 ```text
 .env
 data/
-plugins/short_memory/short_memory.json*
-plugins/reminder_love/reminders.json*
-plugins/proactive_love/proactive_state.json*
-plugins/conversation_followup/followup_state.json*
-plugins/xiaoyou_chat/recovery_state.json*
 disabled_plugins/
 ```
 
 这些文件可能包含聊天原文、提醒、联系人标识、登录状态和个人偏好，不应推送。
+
+所有可变插件状态统一从 `APPDATA_DIR` 读取并写入；容器中为 `/app/data`，宿主机对应项目 `data/`。首次启动时若 data 目标尚不存在，系统会把旧插件目录中的主状态和 `.backup` 原子复制过去，之后只以 data 中的文件为准，旧文件保留作回退证据。
 
 ## 验证
 

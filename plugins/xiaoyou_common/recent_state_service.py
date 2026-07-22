@@ -17,15 +17,19 @@ from datetime import datetime
 from common.log import logger
 from plugins.xiaoyou_common.context_service import build_context_snapshot
 from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
 
-STATE_DIR = os.path.join(
-    os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(__file__),
+STATE_FILE = runtime_path(
     "xiaoyou_recent_state",
+    "state.json",
+    env_var="XIAOYOU_RECENT_STATE_PATH",
+    legacy_paths=(
+        os.path.join(os.path.dirname(__file__), "xiaoyou_recent_state", "state.json"),
+    ),
 )
-STATE_FILE = os.path.join(STATE_DIR, "state.json")
 STATE_BACKUP_FILE = STATE_FILE + ".backup"
 
 DEFAULT_TTLS = {

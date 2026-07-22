@@ -31,6 +31,7 @@ from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.outbound_dispatcher import resolve_receiver, send_text
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.conversation_coordinator import claim_action
 from plugins.xiaoyou_common.trace_service import ensure_trace
 
@@ -89,7 +90,14 @@ class ConversationFollowup(Plugin):
         self.api_base = os.getenv("OPEN_AI_API_BASE", "").rstrip("/")
         self.api_key = os.getenv("OPEN_AI_API_KEY", "")
 
-        self.state_path = Path(__file__).with_name("followup_state.json")
+        self.state_path = Path(
+            runtime_path(
+                "conversation_followup",
+                "followup_state.json",
+                env_var="CONVERSATION_FOLLOWUP_STATE_PATH",
+                legacy_paths=(Path(__file__).with_name("followup_state.json"),),
+            )
+        )
         self.state_store = JsonStateStore(
             self.state_path,
             name="conversation_followup",

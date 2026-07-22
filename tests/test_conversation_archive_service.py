@@ -24,8 +24,12 @@ common_log_module.logger = _Logger()
 plugins_module = types.ModuleType("plugins")
 plugins_common_module = types.ModuleType("plugins.xiaoyou_common")
 gateway_module = types.ModuleType("plugins.xiaoyou_common.model_gateway")
+runtime_paths_module = types.ModuleType("plugins.xiaoyou_common.runtime_paths")
 thinking_module = types.ModuleType("plugins.xiaoyou_common.thinking_config")
 gateway_module.chat_completion = lambda **kwargs: None
+runtime_paths_module.runtime_path = (
+    lambda namespace, filename, **kwargs: str(ROOT / "data" / namespace / filename)
+)
 thinking_module.build_thinking_payload = lambda prefix: {"enable_thinking": False}
 _stub_names = (
     "common",
@@ -33,6 +37,7 @@ _stub_names = (
     "plugins",
     "plugins.xiaoyou_common",
     "plugins.xiaoyou_common.model_gateway",
+    "plugins.xiaoyou_common.runtime_paths",
     "plugins.xiaoyou_common.thinking_config",
 )
 _previous_modules = {name: sys.modules.get(name) for name in _stub_names}
@@ -41,6 +46,7 @@ sys.modules["common.log"] = common_log_module
 sys.modules["plugins"] = plugins_module
 sys.modules["plugins.xiaoyou_common"] = plugins_common_module
 sys.modules["plugins.xiaoyou_common.model_gateway"] = gateway_module
+sys.modules["plugins.xiaoyou_common.runtime_paths"] = runtime_paths_module
 sys.modules["plugins.xiaoyou_common.thinking_config"] = thinking_module
 
 SPEC = importlib.util.spec_from_file_location(

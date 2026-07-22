@@ -53,6 +53,9 @@ def load_service():
         "datetime": datetime,
         "logger": Logger(),
         "JsonStateStore": MemoryStore,
+        "runtime_path": lambda namespace, filename, **kwargs: os.path.join(
+            ROOT, "data", namespace, filename
+        ),
         "build_context_snapshot": lambda **kwargs: types.SimpleNamespace(
             time_context="当前时间",
             character_context="小悠人格",

@@ -14,6 +14,16 @@ services: # Docker Compose 服务集合。
       CHANNEL_TYPE: 'wx' # 使用个人微信 itchat/WebWx 通道。
       HOT_RELOAD: 'true' # 允许框架热加载插件配置；关键环境变量变更仍需重建容器。
       APPDATA_DIR: '/app/data' # 容器内登录态与应用数据目录，对应上面的 ./data 挂载。
+      SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。
+      REMINDER_LOVE_STATE_PATH: '/app/data/reminder_love/reminders.json' # 提醒任务状态。
+      PROACTIVE_LOVE_STATE_PATH: '/app/data/proactive_love/proactive_state.json' # 主动消息调度状态。
+      CONVERSATION_FOLLOWUP_STATE_PATH: '/app/data/conversation_followup/followup_state.json' # 中断追问状态。
+      XIAOYOU_IDENTITY_STATE_PATH: '/app/data/xiaoyou_identity/state.json' # 稳定身份映射状态。
+      XIAOYOU_RECOVERY_STATE_PATH: '/app/data/xiaoyou_chat/recovery_state.json' # 模型中断后的重连状态。
+      XIAOYOU_RECENT_STATE_PATH: '/app/data/xiaoyou_recent_state/state.json' # 当前话题、指代和未完事项。
+      XIAOYOU_INNER_STATE_PATH: '/app/data/xiaoyou_inner_state/state.json' # 小悠短时内在状态。
+      XIAOYOU_LIFE_PHOTO_STATE_PATH: '/app/data/xiaoyou_life_photo/state.json' # 生活照会话状态。
+      XIAOYOU_CONVERSATION_ARCHIVE_PATH: '/app/data/xiaoyou_conversation/conversation.db' # 原始对话与情节记忆数据库。
       TZ: 'Asia/Shanghai' # 容器时区；影响现实时间、提醒、主动消息和日志时间。
       XIAOYOU_RELATIONSHIP_PROFILE_PATH: '/app/data/xiaoyou_profile/relationship_profile.json' # 私密人物与关系档案路径；位于data挂载中，不提交到Git。
       XIAOYOU_CALENDAR_ATTENTION_HOUR: '8' # 重要日期当天8点后给统一主动中枢一次感知机会，不代表固定发送祝福。

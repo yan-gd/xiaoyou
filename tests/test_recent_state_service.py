@@ -55,6 +55,9 @@ def load_service():
         "datetime": datetime,
         "logger": Logger(),
         "JsonStateStore": MemoryStore,
+        "runtime_path": lambda namespace, filename, **kwargs: os.path.join(
+            ROOT, "data", namespace, filename
+        ),
         "build_context_snapshot": lambda **kwargs: types.SimpleNamespace(
             time_context="当前时间",
             short_memory="YoYo：我刚吃完饭，但还是没睡够\n小悠：那就陪你歇一会儿",

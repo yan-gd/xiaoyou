@@ -11,6 +11,7 @@ from datetime import datetime
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.trace_service import ensure_trace, trace_event
 import plugins
 from plugins import *
@@ -27,7 +28,12 @@ from plugins.xiaoyou_common.conversation_archive_service import (
 )
 
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "short_memory.json")
+DATA_FILE = runtime_path(
+    "short_memory",
+    "short_memory.json",
+    env_var="SHORT_MEMORY_STATE_PATH",
+    legacy_paths=(os.path.join(os.path.dirname(__file__), "short_memory.json"),),
+)
 BACKUP_FILE = DATA_FILE + ".backup"
 STATE_STORE = JsonStateStore(
     DATA_FILE,

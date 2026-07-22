@@ -16,6 +16,7 @@ from datetime import datetime
 from common.log import logger
 from plugins.xiaoyou_common.context_service import build_context_snapshot
 from plugins.xiaoyou_common.model_gateway import chat_completion
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
@@ -74,10 +75,23 @@ def _parse_json(value):
 
 class InnerStateService:
     def __init__(self, path=None):
-        appdata = os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(
-            os.path.dirname(os.path.abspath(__file__))
+        path = path or runtime_path(
+            "xiaoyou_inner_state",
+            "state.json",
+            env_var="XIAOYOU_INNER_STATE_PATH",
+            legacy_paths=(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "xiaoyou_inner_state",
+                    "state.json",
+                ),
+                os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "xiaoyou_inner_state",
+                    "state.json",
+                ),
+            ),
         )
-        path = path or os.path.join(appdata, "xiaoyou_inner_state", "state.json")
         self.store = JsonStateStore(
             path,
             backup_path=path + ".backup",

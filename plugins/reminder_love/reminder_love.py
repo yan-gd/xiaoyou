@@ -12,6 +12,7 @@ from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.outbound_dispatcher import resolve_receiver, send_text
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import runtime_path
 from plugins.xiaoyou_common.conversation_coordinator import claim_action
 import plugins
 from plugins import *
@@ -26,7 +27,12 @@ from plugins.xiaoyou_common.context_service import (
 from plugins.xiaoyou_common.intent_fastpath import might_need_capability
 
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "reminders.json")
+DATA_FILE = runtime_path(
+    "reminder_love",
+    "reminders.json",
+    env_var="REMINDER_LOVE_STATE_PATH",
+    legacy_paths=(os.path.join(os.path.dirname(__file__), "reminders.json"),),
+)
 STATE_STORE = JsonStateStore(DATA_FILE, name="reminder_love", default_factory=dict)
 LOCK = threading.Lock()
 THREAD_STARTED = False

@@ -30,6 +30,7 @@ from plugins.xiaoyou_common.outbound_dispatcher import (
     send_image,
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
 from plugins.xiaoyou_common.relationship_profile_service import (
     get_relationship_profile_service,
 )
@@ -46,9 +47,17 @@ from plugins.xiaoyou_life_photo.plan_rules import (
 
 PLUGIN_DIR = os.path.dirname(__file__)
 PROFILE_FILE = os.path.join(PLUGIN_DIR, "assets", "xiaoyou_body_profile.json")
-APPDATA_DIR = os.getenv("APPDATA_DIR", "").strip() or PLUGIN_DIR
+APPDATA_DIR = appdata_root()
 DATA_DIR = os.path.join(APPDATA_DIR, "xiaoyou_life_photo")
-STATE_FILE = os.path.join(DATA_DIR, "state.json")
+STATE_FILE = runtime_path(
+    "xiaoyou_life_photo",
+    "state.json",
+    env_var="XIAOYOU_LIFE_PHOTO_STATE_PATH",
+    legacy_paths=(
+        os.path.join(PLUGIN_DIR, "xiaoyou_life_photo", "state.json"),
+        os.path.join(PLUGIN_DIR, "state.json"),
+    ),
+)
 BACKUP_FILE = STATE_FILE + ".backup"
 STATE_STORE = JsonStateStore(
     STATE_FILE,

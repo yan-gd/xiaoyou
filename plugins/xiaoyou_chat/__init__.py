@@ -8,6 +8,7 @@ from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.outbound_dispatcher import resolve_receiver, send_text
 from plugins.xiaoyou_common.state_store import JsonStateStore
+from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
 from plugins.xiaoyou_common.conversation_coordinator import claim_action
 
 import plugins
@@ -38,8 +39,16 @@ from plugins.xiaoyou_common.conversation_archive_service import (
 )
 
 
-RECOVERY_DIR = os.getenv("APPDATA_DIR", "").strip() or os.path.dirname(__file__)
-RECOVERY_FILE = os.path.join(RECOVERY_DIR, "xiaoyou_recovery_state.json")
+RECOVERY_FILE = runtime_path(
+    "xiaoyou_chat",
+    "recovery_state.json",
+    env_var="XIAOYOU_RECOVERY_STATE_PATH",
+    legacy_paths=(
+        os.path.join(appdata_root(), "xiaoyou_recovery_state.json"),
+        os.path.join(os.path.dirname(__file__), "recovery_state.json"),
+        os.path.join(os.path.dirname(__file__), "xiaoyou_recovery_state.json"),
+    ),
+)
 RECOVERY_BACKUP_FILE = RECOVERY_FILE + ".backup"
 RECOVERY_STORE = JsonStateStore(
     RECOVERY_FILE,
