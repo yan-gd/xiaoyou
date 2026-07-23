@@ -33,6 +33,15 @@ class SplitReply(Plugin):
         if not reply or reply.type != ReplyType.TEXT:
             return
 
+        # App voice turns are rendered as one playable audio event by
+        # AppChannel. Sending their text through the generic dispatcher would
+        # bypass TTS and produce inconsistent text-only replies. This flag is
+        # set only by AppChannel after an authenticated voice upload, so
+        # WeChat splitting remains unchanged.
+        context_kwargs = getattr(context, "kwargs", {}) or {}
+        if context_kwargs.get("xiaoyou_app_voice_reply"):
+            return
+
         if not context_is_current(channel, context):
             logger.info("[SplitReply] stale reply cancelled before split send")
             self._cancel_original_reply(e_context, context, reply)

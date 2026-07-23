@@ -20,6 +20,18 @@ pluginManagement {
     }
 }
 
+// Some Flutter plugins still declare their own legacy buildscript classpath.
+// Seed those project-scoped repositories with the same fast mirrors used by
+// the app so a clean machine does not fall back to dozens of slow remote HEAD
+// requests before it can configure the plugin.
+gradle.beforeProject {
+    buildscript.repositories {
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/central")
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+    }
+}
+
 plugins {
     id("dev.flutter.flutter-plugin-loader") version "1.0.0"
     id("com.android.application") version "9.0.1" apply false

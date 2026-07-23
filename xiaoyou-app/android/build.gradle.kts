@@ -21,6 +21,19 @@ subprojects {
     project.evaluationDependsOn(":app")
 }
 
+// Flutter Secure Storage's JNI bridge currently pins compileSdk 35. The app
+// already targets the installed Android 36 SDK, so keep every library module
+// on that same compatible SDK instead of requiring a redundant platform copy.
+subprojects {
+    if (name != "app") {
+        afterEvaluate {
+            extensions
+                .findByType(com.android.build.api.dsl.LibraryExtension::class.java)
+                ?.compileSdk = 36
+        }
+    }
+}
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }

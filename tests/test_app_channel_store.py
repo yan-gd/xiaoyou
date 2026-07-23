@@ -20,6 +20,18 @@ def _load_app_channel(monkeypatch, tmp_path):
         TEXT = 1
         IMAGE = 2
         IMAGE_URL = 3
+        VOICE = 4
+
+    class _AppVoiceError(RuntimeError):
+        pass
+
+    class _AppVoiceService:
+        available = True
+        asr_model = "qwen3-asr-flash"
+        tts_model = "cosyvoice-v3-flash"
+
+        def transcribe(self, *_args, **_kwargs):
+            return "测试语音"
 
     class _Context(dict):
         def __init__(self, context_type, content):
@@ -63,6 +75,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "plugins.xiaoyou_common.app_transport": types.ModuleType(
             "plugins.xiaoyou_common.app_transport"
         ),
+        "plugins.xiaoyou_common.app_voice_service": types.ModuleType(
+            "plugins.xiaoyou_common.app_voice_service"
+        ),
         "plugins.xiaoyou_common.conversation_coordinator": types.ModuleType(
             "plugins.xiaoyou_common.conversation_coordinator"
         ),
@@ -90,6 +105,9 @@ def _load_app_channel(monkeypatch, tmp_path):
     app_transport.get_app_service = lambda: None
     app_transport.register_app_service = lambda service: service
     app_transport.register_app_store = lambda _store: None
+    app_voice = modules["plugins.xiaoyou_common.app_voice_service"]
+    app_voice.AppVoiceError = _AppVoiceError
+    app_voice.AppVoiceService = _AppVoiceService
     modules[
         "plugins.xiaoyou_common.conversation_coordinator"
     ].note_user_activity = lambda *args, **kwargs: None
@@ -213,8 +231,75 @@ def test_app_channel_configuration_is_safe_by_default():
         "XIAOYOU_APP_DEFAULT_PROACTIVE: "
         "'${XIAOYOU_APP_DEFAULT_PROACTIVE:-false}'"
     ) in compose
+    assert "XIAOYOU_APP_VOICE_ENABLED" in compose
+    assert "XIAOYOU_APP_TTS_MODEL: 'cosyvoice-v3-flash'" in compose
+    assert "XIAOYOU_APP_TTS_VOICE: 'longyan_v3'" in compose
     assert "XIAOYOU_APP_ENABLED=false" in env_example
     assert '"AppChannel"' in plugins
+
+
+def test_app_voice_messages_keep_audio_transcript_and_receipt_text(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-voice", "yoyo", platform="android")
+
+    uploaded = store.save_media_bytes(
+        b"m4a-test-payload",
+        "phone-voice",
+        "audio/mp4",
+    )
+    assert uploaded["media_id"]
+    assert store.accept_input(
+        message_id="voice-input-1",
+        session_id="yoyo",
+        device_id="phone-voice",
+        kind="voice",
+        text="我想你了",
+        media_id=uploaded["media_id"],
+        mime_type="audio/mp4",
+        duration_ms=2300,
+        client_sequence=2,
+    )
+
+    assert store.queue_action(
+        action_id="voice-action-1",
+        session_id="yoyo",
+        device_id="phone-voice",
+        source="chat_channel",
+        voice_bytes=b"wav-test-payload",
+        voice_mime_type="audio/wav",
+        voice_text="我也想你呀",
+        voice_duration_ms=1800,
+        input_id="voice-input-1",
+        user_text="我想你了",
+    )
+    events = store.events_after("phone-voice")
+    assert len(events) == 1
+    assert events[0]["kind"] == "voice"
+    assert events[0]["text"] == "我也想你呀"
+    assert events[0]["duration_ms"] == 1800
+    assert events[0]["media_id"]
+
+    receipt = store.acknowledge(
+        "voice-action-1",
+        "phone-voice",
+        "complete",
+    )
+    assert receipt["sent_text"] == "我也想你呀"
+    assert receipt["delivery_complete"]
+
+    history = store.history("phone-voice")
+    user_voice = next(item for item in history if item["id"] == "voice-input-1")
+    assistant_voice = next(
+        item for item in history if item["id"] == events[0]["event_id"]
+    )
+    assert user_voice["kind"] == "voice"
+    assert user_voice["duration_ms"] == 2300
+    assert assistant_voice["kind"] == "voice"
+    assert assistant_voice["text"] == "我也想你呀"
 
 
 def test_outbound_dispatcher_queues_app_without_claiming_delivery(

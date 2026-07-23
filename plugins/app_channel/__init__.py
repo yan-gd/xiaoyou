@@ -24,6 +24,10 @@ from bridge.reply import ReplyType
 from channel.chat_channel import ChatChannel
 from common.log import logger
 from plugins import Plugin
+from plugins.xiaoyou_common.app_voice_service import (
+    AppVoiceError,
+    AppVoiceService,
+)
 from plugins.xiaoyou_common.app_transport import (
     app_receiver,
     get_app_service,
@@ -101,7 +105,11 @@ class AppInboxStore:
                     message_id TEXT PRIMARY KEY,
                     session_id TEXT NOT NULL,
                     device_id TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'text',
                     text TEXT NOT NULL,
+                    media_id TEXT NOT NULL DEFAULT '',
+                    mime_type TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
                     client_sequence INTEGER,
                     client_created_at INTEGER,
                     status TEXT NOT NULL DEFAULT 'accepted',
@@ -146,6 +154,7 @@ class AppInboxStore:
                     media_id TEXT NOT NULL DEFAULT '',
                     remote_url TEXT NOT NULL DEFAULT '',
                     mime_type TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     acknowledged_at INTEGER,
                     FOREIGN KEY(action_id) REFERENCES actions(action_id)
@@ -171,6 +180,28 @@ class AppInboxStore:
                     """
                     ALTER TABLE inputs
                     ADD COLUMN status TEXT NOT NULL DEFAULT 'accepted'
+                    """
+                )
+            for column, definition in (
+                ("kind", "TEXT NOT NULL DEFAULT 'text'"),
+                ("media_id", "TEXT NOT NULL DEFAULT ''"),
+                ("mime_type", "TEXT NOT NULL DEFAULT ''"),
+                ("duration_ms", "INTEGER NOT NULL DEFAULT 0"),
+            ):
+                if column not in input_columns:
+                    connection.execute(
+                        "ALTER TABLE inputs ADD COLUMN %s %s"
+                        % (column, definition)
+                    )
+            event_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(events)")
+            }
+            if "duration_ms" not in event_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE events
+                    ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0
                     """
                 )
             connection.execute(
@@ -253,6 +284,10 @@ class AppInboxStore:
         session_id,
         device_id,
         text,
+        kind="text",
+        media_id="",
+        mime_type="",
+        duration_ms=0,
         client_sequence=None,
         client_created_at=None,
     ):
@@ -268,25 +303,47 @@ class AppInboxStore:
                     connection.execute(
                         """
                         UPDATE inputs
-                        SET status='accepted', accepted_at=?
+                        SET kind=?, text=?, media_id=?, mime_type=?,
+                            duration_ms=?, client_sequence=?,
+                            client_created_at=?, status='accepted',
+                            accepted_at=?
                         WHERE message_id=?
                         """,
-                        (now, str(message_id)),
+                        (
+                            "voice" if str(kind) == "voice" else "text",
+                            str(text),
+                            str(media_id or ""),
+                            str(mime_type or ""),
+                            max(0, int(duration_ms or 0)),
+                            int(client_sequence)
+                            if client_sequence is not None
+                            else None,
+                            int(client_created_at)
+                            if client_created_at
+                            else None,
+                            now,
+                            str(message_id),
+                        ),
                     )
                     return True
                 return False
             cursor = connection.execute(
                 """
                 INSERT INTO inputs(
-                    message_id, session_id, device_id, text,
+                    message_id, session_id, device_id, kind, text,
+                    media_id, mime_type, duration_ms,
                     client_sequence, client_created_at, status, accepted_at
-                ) VALUES(?, ?, ?, ?, ?, ?, 'accepted', ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)
                 """,
                 (
                     str(message_id),
                     str(session_id),
                     str(device_id),
+                    "voice" if str(kind) == "voice" else "text",
                     str(text),
+                    str(media_id or ""),
+                    str(mime_type or ""),
+                    max(0, int(duration_ms or 0)),
                     int(client_sequence) if client_sequence is not None else None,
                     int(client_created_at) if client_created_at else None,
                     now,
@@ -309,6 +366,28 @@ class AppInboxStore:
                 (status, str(message_id or "")),
             )
 
+    def input_by_id(self, message_id, device_id):
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT *
+                FROM inputs
+                WHERE message_id=? AND device_id=?
+                """,
+                (str(message_id or ""), _safe_device_id(device_id)),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "message_id": str(row["message_id"]),
+            "kind": str(row["kind"] or "text"),
+            "text": str(row["text"] or ""),
+            "media_id": str(row["media_id"] or ""),
+            "mime_type": str(row["mime_type"] or ""),
+            "duration_ms": int(row["duration_ms"] or 0),
+            "status": str(row["status"] or ""),
+        }
+
     def queue_action(
         self,
         *,
@@ -319,6 +398,11 @@ class AppInboxStore:
         parts=None,
         image_path="",
         image_url="",
+        voice_path="",
+        voice_bytes=None,
+        voice_mime_type="",
+        voice_text="",
+        voice_duration_ms=0,
         trace_id="",
         input_id="",
         source_message_ids=None,
@@ -343,7 +427,13 @@ class AppInboxStore:
         ]
         if input_id and str(input_id) not in source_message_ids:
             source_message_ids.append(str(input_id))
-        if not parts and not image_path and not image_url:
+        if (
+            not parts
+            and not image_path
+            and not image_url
+            and not voice_path
+            and not voice_bytes
+        ):
             return False
 
         now = int(time.time())
@@ -356,7 +446,20 @@ class AppInboxStore:
                 return True
 
             media = self._copy_media(image_path, device_id) if image_path else None
-            event_count = len(parts) + int(bool(media or image_url))
+            voice_media = None
+            if voice_bytes:
+                voice_media = self.save_media_bytes(
+                    voice_bytes,
+                    device_id,
+                    voice_mime_type,
+                )
+            elif voice_path:
+                voice_media = self._copy_media(voice_path, device_id)
+            event_count = (
+                len(parts)
+                + int(bool(media or image_url))
+                + int(bool(voice_media))
+            )
             if event_count < 1:
                 return False
             inserted = connection.execute(
@@ -390,6 +493,27 @@ class AppInboxStore:
                     (action_id, message_id),
                 )
             position = 0
+            if voice_media:
+                connection.execute(
+                    """
+                    INSERT INTO events(
+                        event_id, action_id, device_id, position, kind, text,
+                        media_id, mime_type, duration_ms, created_at
+                    ) VALUES(?, ?, ?, ?, 'voice', ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        uuid.uuid4().hex,
+                        action_id,
+                        device_id,
+                        position,
+                        str(voice_text or ""),
+                        voice_media["media_id"],
+                        voice_media["mime_type"],
+                        max(0, int(voice_duration_ms or 0)),
+                        now,
+                    ),
+                )
+                position += 1
             if media or image_url:
                 connection.execute(
                     """
@@ -442,8 +566,8 @@ class AppInboxStore:
             self.changed.notify_all()
         return True
 
-    def _copy_media(self, image_path, device_id):
-        source = Path(str(image_path or "")).resolve()
+    def _copy_media(self, source_path, device_id):
+        source = Path(str(source_path or "")).resolve()
         if not source.is_file():
             return None
         try:
@@ -452,12 +576,59 @@ class AppInboxStore:
         except OSError:
             return None
         suffix = source.suffix.lower()
-        if suffix not in (".jpg", ".jpeg", ".png", ".webp", ".gif"):
+        if suffix not in (
+            ".aac",
+            ".flac",
+            ".jpg",
+            ".jpeg",
+            ".m4a",
+            ".mp3",
+            ".ogg",
+            ".opus",
+            ".png",
+            ".wav",
+            ".webm",
+            ".webp",
+            ".gif",
+        ):
             suffix = ".bin"
         media_id = uuid.uuid4().hex
         target = MEDIA_DIR / (media_id + suffix)
         shutil.copy2(str(source), str(target))
         mime_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO media(media_id, device_id, local_path, mime_type, created_at)
+                VALUES(?, ?, ?, ?, ?)
+                """,
+                (media_id, device_id, str(target), mime_type, int(time.time())),
+            )
+        return {"media_id": media_id, "mime_type": mime_type}
+
+    def save_media_bytes(self, payload, device_id, mime_type):
+        payload = bytes(payload or b"")
+        device_id = _safe_device_id(device_id)
+        if not payload or not device_id or len(payload) > 25 * 1024 * 1024:
+            return None
+        mime_type = str(mime_type or "application/octet-stream").split(
+            ";", 1
+        )[0].strip().lower()
+        suffix = {
+            "audio/aac": ".aac",
+            "audio/flac": ".flac",
+            "audio/m4a": ".m4a",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/opus": ".opus",
+            "audio/wav": ".wav",
+            "audio/webm": ".webm",
+            "audio/x-m4a": ".m4a",
+        }.get(mime_type, ".bin")
+        media_id = uuid.uuid4().hex
+        target = MEDIA_DIR / (media_id + suffix)
+        target.write_bytes(payload)
         with self.lock, self._connect() as connection:
             connection.execute(
                 """
@@ -511,6 +682,7 @@ class AppInboxStore:
             "media_id": str(row["media_id"] or ""),
             "remote_url": str(row["remote_url"] or ""),
             "mime_type": str(row["mime_type"] or ""),
+            "duration_ms": int(row["duration_ms"] or 0),
             "source": str(row["source"] or ""),
             "created_at": int(row["created_at"]),
             "acknowledged": bool(row["acknowledged_at"]),
@@ -531,7 +703,8 @@ class AppInboxStore:
         with self.lock, self._connect() as connection:
             input_rows = connection.execute(
                 """
-                SELECT message_id, text, accepted_at
+                SELECT message_id, kind, text, media_id, mime_type,
+                       duration_ms, accepted_at
                 FROM inputs
                 WHERE device_id=? %s
                 ORDER BY accepted_at DESC
@@ -558,8 +731,11 @@ class AppInboxStore:
             {
                 "id": str(row["message_id"]),
                 "role": "user",
-                "kind": "text",
+                "kind": str(row["kind"] or "text"),
                 "text": str(row["text"]),
+                "media_id": str(row["media_id"] or ""),
+                "mime_type": str(row["mime_type"] or ""),
+                "duration_ms": int(row["duration_ms"] or 0),
                 "created_at": int(row["accepted_at"]),
             }
             for row in input_rows
@@ -573,6 +749,8 @@ class AppInboxStore:
                 "text": str(row["text"] or ""),
                 "media_id": str(row["media_id"] or ""),
                 "remote_url": str(row["remote_url"] or ""),
+                "mime_type": str(row["mime_type"] or ""),
+                "duration_ms": int(row["duration_ms"] or 0),
                 "created_at": int(row["created_at"]),
                 "terminal_status": str(row["terminal_status"] or "queued"),
                 "requested_parts": int(row["requested_parts"] or 0),
@@ -678,7 +856,8 @@ class AppInboxStore:
         sent_text = "\n".join(
             str(row["text"] or "").strip()
             for row in delivered_rows
-            if str(row["kind"]) == "text" and str(row["text"] or "").strip()
+            if str(row["kind"]) in ("text", "voice")
+            and str(row["text"] or "").strip()
         )
         return {
             "action_id": action_id,
@@ -747,9 +926,10 @@ class AppInboxStore:
 class AppRuntimeChannel(ChatChannel):
     """A ChatChannel whose send target is the durable App inbox."""
 
-    def __init__(self, store, canonical_session_id):
+    def __init__(self, store, canonical_session_id, voice_service=None):
         self.store = store
         self.canonical_session_id = canonical_session_id
+        self.voice_service = voice_service or AppVoiceService()
         super().__init__()
 
     def submit_text(
@@ -784,6 +964,87 @@ class AppRuntimeChannel(ChatChannel):
         if not inserted:
             return False
 
+        self._produce_text(
+            text=text,
+            message_id=message_id,
+            device_id=device_id,
+            voice_reply=False,
+        )
+        return True
+
+    def submit_voice(
+        self,
+        *,
+        audio_bytes,
+        mime_type,
+        duration_ms,
+        message_id,
+        device_id,
+        client_sequence=None,
+        client_created_at=None,
+    ):
+        device_id = _safe_device_id(device_id)
+        message_id = str(message_id or "").strip()
+        if not message_id or len(message_id) > 128:
+            raise ValueError("invalid_message_id")
+        if not device_id:
+            raise ValueError("invalid_device_id")
+        existing = self.store.input_by_id(message_id, device_id)
+        if existing and existing["status"] != "failed":
+            return {
+                "accepted": False,
+                "duplicate": True,
+                **existing,
+            }
+
+        transcript = self.voice_service.transcribe(
+            audio_bytes,
+            mime_type,
+            session_id=self.canonical_session_id,
+            input_id=message_id,
+        )
+        media = self.store.save_media_bytes(audio_bytes, device_id, mime_type)
+        if not media:
+            raise ValueError("invalid_audio")
+        inserted = self.store.accept_input(
+            message_id=message_id,
+            session_id=self.canonical_session_id,
+            device_id=device_id,
+            kind="voice",
+            text=transcript,
+            media_id=media["media_id"],
+            mime_type=media["mime_type"],
+            duration_ms=duration_ms,
+            client_sequence=client_sequence,
+            client_created_at=client_created_at,
+        )
+        if not inserted:
+            existing = self.store.input_by_id(message_id, device_id) or {}
+            return {
+                "accepted": False,
+                "duplicate": True,
+                "message_id": message_id,
+                **existing,
+            }
+
+        self._produce_text(
+            text=transcript,
+            message_id=message_id,
+            device_id=device_id,
+            voice_reply=True,
+        )
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "message_id": message_id,
+            "kind": "voice",
+            "text": transcript,
+            "media_id": media["media_id"],
+            "mime_type": media["mime_type"],
+            "duration_ms": max(0, int(duration_ms or 0)),
+        }
+
+    def _produce_text(self, *, text, message_id, device_id, voice_reply):
         receiver = app_receiver(device_id)
         kwargs = {
             "session_id": self.canonical_session_id,
@@ -795,6 +1056,8 @@ class AppRuntimeChannel(ChatChannel):
             "xiaoyou_input_id": message_id,
             "xiaoyou_source_message_ids": [message_id],
             "xiaoyou_defer_memory_until_delivery": True,
+            "xiaoyou_input_kind": "voice" if voice_reply else "text",
+            "xiaoyou_app_voice_reply": bool(voice_reply),
         }
         context = Context(ContextType.TEXT, text)
         context.kwargs = kwargs
@@ -819,7 +1082,6 @@ class AppRuntimeChannel(ChatChannel):
             self.store.mark_input_status(message_id, "failed")
             raise
         self.store.mark_input_status(message_id, "queued")
-        return True
 
     def send(self, reply, context):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -832,12 +1094,41 @@ class AppRuntimeChannel(ChatChannel):
         parts = []
         image_path = ""
         image_url = ""
+        voice_bytes = None
+        voice_mime_type = ""
+        voice_text = ""
+        voice_duration_ms = 0
         if reply_type == getattr(ReplyType.TEXT, "name", "TEXT"):
-            parts = [content]
+            if kwargs.get("xiaoyou_app_voice_reply"):
+                try:
+                    voice = self.voice_service.synthesize(
+                        content,
+                        session_id=str(
+                            kwargs.get("session_id")
+                            or self.canonical_session_id
+                        ),
+                        trace_id=kwargs.get("xiaoyou_trace_id", ""),
+                        input_id=kwargs.get("xiaoyou_input_id", ""),
+                    )
+                    voice_bytes = voice.data
+                    voice_mime_type = voice.mime_type
+                    voice_duration_ms = voice.duration_ms
+                    voice_text = content
+                except AppVoiceError:
+                    logger.warning(
+                        "[AppChannel] App-only voice reply fell back to text "
+                        "action_id=%s",
+                        action_id,
+                    )
+                    parts = [content]
+            else:
+                parts = [content]
         elif reply_type in ("IMAGE",):
             image_path = content
         elif reply_type in ("IMAGE_URL",):
             image_url = content
+        elif reply_type in ("VOICE",):
+            voice_path = content
         else:
             logger.warning(
                 "[AppChannel] unsupported reply type=%s action_id=%s",
@@ -854,6 +1145,11 @@ class AppRuntimeChannel(ChatChannel):
             parts=parts,
             image_path=image_path,
             image_url=image_url,
+            voice_path=locals().get("voice_path", ""),
+            voice_bytes=voice_bytes,
+            voice_mime_type=voice_mime_type,
+            voice_text=voice_text,
+            voice_duration_ms=voice_duration_ms,
             trace_id=kwargs.get("xiaoyou_trace_id", ""),
             input_id=kwargs.get("xiaoyou_input_id", ""),
             source_message_ids=kwargs.get("xiaoyou_source_message_ids") or [],
@@ -921,6 +1217,27 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         try:
+            if parsed.path == "/v1/voice-messages":
+                audio_bytes = self._voice_body()
+                result = self.plugin.runtime.submit_voice(
+                    audio_bytes=audio_bytes,
+                    mime_type=self.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    ),
+                    duration_ms=self._integer(
+                        self.headers.get("X-Audio-Duration-Ms"), 0
+                    ),
+                    message_id=self.headers.get("X-Message-Id"),
+                    device_id=self.headers.get("X-Device-Id"),
+                    client_sequence=self._integer(
+                        self.headers.get("X-Client-Sequence"), 0
+                    ),
+                    client_created_at=self._integer(
+                        self.headers.get("X-Client-Created-At"), 0
+                    ),
+                )
+                self._json(202, result)
+                return
             payload = self._body()
             if parsed.path == "/v1/devices":
                 device_id = _safe_device_id(payload.get("device_id"))
@@ -968,6 +1285,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._json(404, {"error": "not_found"})
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
+        except AppVoiceError as exc:
+            self._json(502, {"error": str(exc)})
         except Exception:
             logger.exception("[AppChannel] request failed path=%s", parsed.path)
             self._json(500, {"error": "internal_error"})
@@ -991,6 +1310,29 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("invalid_json_object")
         return payload
+
+    def _voice_body(self):
+        maximum = max(
+            1024,
+            min(
+                int(
+                    os.getenv(
+                        "XIAOYOU_APP_VOICE_MAX_BYTES",
+                        str(6 * 1024 * 1024),
+                    )
+                ),
+                10 * 1024 * 1024,
+            ),
+        )
+        length = self._integer(self.headers.get("Content-Length"), 0)
+        if length < 1 or length > maximum:
+            raise ValueError("invalid_audio_size")
+        mime_type = str(
+            self.headers.get("Content-Type") or ""
+        ).split(";", 1)[0].strip().lower()
+        if not mime_type.startswith("audio/"):
+            raise ValueError("invalid_audio_type")
+        return self.rfile.read(length)
 
     def _sse(self, device_id, query):
         after = self._integer((query.get("after") or [0])[0], 0)
@@ -1052,7 +1394,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.0-http-sse-receipts",
+    version="1.1-app-voice",
     author="yoyo",
     desire_priority=10001,
 )
@@ -1081,7 +1423,10 @@ class AppChannel(Plugin):
         if existing is not None:
             self.store = existing.store
             self.runtime = existing.runtime
+            self.runtime.voice_service = AppVoiceService()
             self.httpd = existing.httpd
+            AppRequestHandler.plugin = self
+            register_app_service(self)
             logger.info(
                 "[AppChannel] reused existing HTTP runtime after plugin reload"
             )
@@ -1089,7 +1434,11 @@ class AppChannel(Plugin):
 
         self.store = AppInboxStore()
         register_app_store(self.store)
-        self.runtime = AppRuntimeChannel(self.store, self.canonical_session_id)
+        self.runtime = AppRuntimeChannel(
+            self.store,
+            self.canonical_session_id,
+            voice_service=AppVoiceService(),
+        )
         host = os.getenv("XIAOYOU_APP_HOST", "0.0.0.0").strip() or "0.0.0.0"
         port = int(os.getenv("XIAOYOU_APP_PORT", "8787"))
         AppRequestHandler.plugin = self
@@ -1101,11 +1450,15 @@ class AppChannel(Plugin):
             name="XiaoyouAppHTTP",
         ).start()
         logger.info(
-            "[AppChannel] inited bind=%s:%s database=%s session=%s",
+            "[AppChannel] inited bind=%s:%s database=%s session=%s voice=%s "
+            "asr=%s tts=%s",
             host,
             port,
             DATABASE_PATH,
             self.canonical_session_id,
+            self.runtime.voice_service.available,
+            self.runtime.voice_service.asr_model,
+            self.runtime.voice_service.tts_model,
         )
 
     def acknowledge(self, *, action_id, device_id, status, event_ids):
