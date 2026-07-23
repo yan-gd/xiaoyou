@@ -80,28 +80,28 @@ def plan_context(current_user_text, input_messages=None, *, thinking_enabled=Fal
 
     if _matches(compact, ("我改主意", "纠正一下", "不是这样的", "以后不要", "从现在起", "现在改成")):
         return _plan(
-            "correction", True, "normal", _result_limit("ALIYUN_MEMORY_RECALL_RESULTS", 5),
+            "correction", True, "normal", _result_limit("LONG_MEMORY_RECALL_RESULTS", 5),
             (CORRECTION, SEMANTIC, RELATIONSHIP, PROJECT, PENDING, LEGACY),
             4400, {"current_input": 1200, "recent_state": 700, "recent_conversation": 1800, "long_memory": 1500, "upstream_fallback": 300},
             "latest user correction may supersede durable memory", thinking_enabled,
         )
     if _matches(compact, ("还记得", "你记得", "以前", "之前", "上次", "当时", "曾经", "哪天", "什么时候")):
         return _plan(
-            "recall", True, "recovery", _result_limit("ALIYUN_MEMORY_RECALL_RESULTS", 5),
+            "recall", True, "recovery", _result_limit("LONG_MEMORY_RECALL_RESULTS", 5),
             (EPISODIC, SEMANTIC, RELATIONSHIP, PENDING, LEGACY),
             4600, {"current_input": 900, "recent_state": 700, "recent_conversation": 1700, "long_memory": 1900, "upstream_fallback": 300},
             "explicit recall benefits from episodic and semantic memory", thinking_enabled,
         )
     if _matches(compact, ("记住", "要记得", "我喜欢", "我不喜欢", "我讨厌", "我的习惯", "以后叫我", "偏好")):
         return _plan(
-            "preference", True, "normal", _result_limit("ALIYUN_MEMORY_RECALL_RESULTS", 5),
+            "preference", True, "normal", _result_limit("LONG_MEMORY_RECALL_RESULTS", 5),
             (SEMANTIC, RELATIONSHIP, CORRECTION, LEGACY),
             4000, {"current_input": 1100, "recent_state": 650, "recent_conversation": 1550, "long_memory": 1400, "upstream_fallback": 300},
             "preference or explicit remember request may update semantic memory", thinking_enabled,
         )
     if _matches(compact, ("项目", "代码", "架构", "部署", "服务器", "容器", "方案", "报错", "测试", "继续做")):
         return _plan(
-            "project", True, "normal", _result_limit("ALIYUN_MEMORY_RECALL_RESULTS", 5),
+            "project", True, "normal", _result_limit("LONG_MEMORY_RECALL_RESULTS", 5),
             (PROJECT, PENDING, EPISODIC, SEMANTIC, LEGACY),
             5200, {"current_input": 1600, "recent_state": 900, "recent_conversation": 2200, "long_memory": 1500, "upstream_fallback": 500},
             "project work needs active thread and prior decisions", True,
@@ -119,7 +119,7 @@ def plan_context(current_user_text, input_messages=None, *, thinking_enabled=Fal
             "short continuation should rely on working memory", thinking_enabled,
         )
     return _plan(
-        "general", True, "normal", _result_limit("ALIYUN_MEMORY_NORMAL_CHAT_RESULTS", 3),
+        "general", True, "normal", _result_limit("LONG_MEMORY_NORMAL_CHAT_RESULTS", 3),
         (EPISODIC, SEMANTIC, RELATIONSHIP, PROJECT, PENDING, CORRECTION, LEGACY),
         4000, {"current_input": 1200, "recent_state": 700, "recent_conversation": 1800, "long_memory": 1100, "upstream_fallback": 300},
         "general turn receives a small mixed-memory budget", thinking_enabled,
@@ -174,7 +174,7 @@ def _matches(text, phrases):
 
 def _result_limit(key, default):
     try:
-        maximum = max(1, int(os.getenv("ALIYUN_MEMORY_MAX_RESULTS", "5")))
+        maximum = max(1, int(os.getenv("LONG_MEMORY_MAX_RESULTS", "5")))
         wanted = max(1, int(os.getenv(key, str(default))))
     except Exception:
         maximum, wanted = 5, int(default)

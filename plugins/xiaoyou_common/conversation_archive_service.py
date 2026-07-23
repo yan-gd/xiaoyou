@@ -11,7 +11,7 @@ bounded.  This service separates durable retention from selective recall:
   unfinished-thread relevance and importance, then expands hits back to raw
   neighboring messages.
 
-The archive never replaces ShortMemory or AliyunMemory.  All failures are
+The archive never replaces ShortMemory or LongTermMemory. All failures are
 fail-open for chat delivery, and assistant messages remain conversation
 evidence rather than proof of user facts.
 """

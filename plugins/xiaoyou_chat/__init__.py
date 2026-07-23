@@ -389,7 +389,7 @@ class XiaoyouChat(Plugin):
         kwargs["xiaoyou_context_plan"] = plan.as_dict()
         structured_ready = bool(
             kwargs.get("short_memory_context_ready")
-            or kwargs.get("aliyun_memory_context_ready")
+            or kwargs.get("long_memory_context_ready")
             or kwargs.get("xiaoyou_episodic_context_ready")
         )
         upstream_context = ""
@@ -409,7 +409,7 @@ class XiaoyouChat(Plugin):
             recent_state=kwargs.get("xiaoyou_recent_state_context", ""),
             short_memory=short_memory_context,
             episodic_memory=kwargs.get("xiaoyou_episodic_context", ""),
-            long_memory=kwargs.get("aliyun_memory_context", ""),
+            long_memory=kwargs.get("long_memory_context", ""),
             upstream_context=upstream_context,
             max_chars=os.getenv("XIAOYOU_CONTEXT_MAX_CHARS", "7000"),
             max_tokens=plan.context_max_tokens,

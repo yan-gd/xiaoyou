@@ -14,7 +14,7 @@ SPEC.loader.exec_module(MODULE)
 plan_context = MODULE.plan_context
 
 
-def test_emotional_turn_uses_working_memory_without_cloud_retrieval():
+def test_emotional_turn_uses_working_memory_without_long_memory_retrieval():
     plan = plan_context("今天好累，抱抱我")
 
     assert plan.mode == "emotional"

@@ -61,7 +61,7 @@ class ContextService:
             return ""
 
         try:
-            memory = self._instances().get("ALIYUNMEMORY")
+            memory = self._instances().get("LONGTERMMEMORY")
             build_context = getattr(memory, "build_memory_context", None)
             if not callable(build_context):
                 logger.info(

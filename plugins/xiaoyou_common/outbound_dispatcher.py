@@ -322,6 +322,7 @@ def send_action(
         )
         receipt.ok = bool(requested_delivered and not receipt.stale and not receipt.error)
         _record_delivered_memory(receipt, record_memory, memory_text)
+        _record_delivered_long_memory(receipt, context=context)
         _log_completed(receipt, requested_parts=len(normalized_parts))
         return receipt
 
@@ -390,6 +391,67 @@ def record_assistant_message(
         return False
 
 
+def record_delivered_assistant_long_memory(
+    session_id,
+    text,
+    source,
+    *,
+    user_text="",
+    action_id="",
+    trace_id="",
+    input_id="",
+    delivery_complete=True,
+    terminal_status="complete",
+    completed_at=0,
+):
+    """Queue a delivered assistant turn for role-bound long-memory governance."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id or not text:
+        return False
+    try:
+        import plugins
+
+        manager = getattr(plugins, "instance", None)
+        instances = getattr(manager, "instances", {}) if manager else {}
+        long_memory = instances.get("LONGTERMMEMORY")
+        record = getattr(
+            long_memory,
+            "append_delivered_assistant_message",
+            None,
+        )
+        if not callable(record):
+            logger.warning(
+                "[OutboundDispatcher] LongTermMemory delivered API unavailable "
+                "source=%s session=%s",
+                str(source or "outbound")[:60],
+                session_id,
+            )
+            return False
+        return bool(
+            record(
+                session_id,
+                text,
+                user_text=str(user_text or ""),
+                source=str(source or "outbound"),
+                action_id=str(action_id or ""),
+                trace_id=str(trace_id or ""),
+                input_id=str(input_id or ""),
+                delivery_complete=bool(delivery_complete),
+                terminal_status=str(terminal_status or "complete"),
+                completed_at=int(completed_at or time.time()),
+            )
+        )
+    except Exception:
+        logger.exception(
+            "[OutboundDispatcher] LongTermMemory delivered write failed "
+            "source=%s session=%s",
+            str(source or "outbound")[:60],
+            session_id,
+        )
+        return False
+
+
 def _normalize_parts(text="", parts=None):
     if parts is None:
         parts = [text]
@@ -444,6 +506,30 @@ def _record_delivered_memory(receipt, enabled, memory_text):
     receipt.memory_record_id = str(memory_record_id or "")
     receipt.memory_recorded = bool(receipt.memory_record_id)
     return receipt.memory_recorded
+
+
+def _record_delivered_long_memory(receipt, context=None):
+    if not receipt.sent_text:
+        return False
+    context_kwargs = getattr(context, "kwargs", {}) or {}
+    if receipt.ok:
+        terminal_status = "complete"
+    elif receipt.stale:
+        terminal_status = "stale_partial"
+    else:
+        terminal_status = "partial"
+    return record_delivered_assistant_long_memory(
+        receipt.session_id,
+        receipt.sent_text,
+        receipt.source,
+        user_text=context_kwargs.get("long_memory_user_text", ""),
+        action_id=receipt.action_id,
+        trace_id=receipt.trace_id,
+        input_id=receipt.input_id,
+        delivery_complete=receipt.ok,
+        terminal_status=terminal_status,
+        completed_at=time.time(),
+    )
 
 
 def _log_rejected(receipt):

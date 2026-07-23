@@ -15,8 +15,8 @@ PAIR_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)")
 MODEL_RE = re.compile(
     r"\[ModelGateway\] completed component=([^\s]+) purpose=([^\s]+).*?elapsed=([0-9.]+)s"
 )
-MEMORY_RE = re.compile(r"\[AliyunMemory\] injected (\d+) memories plan=([^\s]+)")
-SKIP_RE = re.compile(r"\[AliyunMemory\] retrieval skipped plan=([^\s]+)")
+MEMORY_RE = re.compile(r"\[LongTermMemory\] injected (\d+) memories plan=([^\s]+)")
+SKIP_RE = re.compile(r"\[LongTermMemory\] retrieval skipped plan=([^\s]+)")
 PLAN_RE = re.compile(r"context pack compiled .*?tokens=(\d+)/(\d+) plan=([^\s]+)")
 GOVERN_RE = re.compile(
     r"governance completed .*?extracted=(\d+) eligible=(\d+) written=(\d+) failed=(\d+)"

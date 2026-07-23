@@ -36,13 +36,13 @@ def test_compose_caps_bubbles_and_uses_requested_delay():
 
 
 def test_long_memory_is_dynamic_and_filters_low_ranked_candidates():
-    source = (ROOT / "plugins" / "aliyun_memory" / "aliyun_memory.py").read_text(encoding="utf-8")
+    source = (ROOT / "plugins" / "long_memory" / "long_memory.py").read_text(encoding="utf-8")
 
     assert "plan_context(" in source
     assert "allowed_memory_types=plan.allowed_memory_types" in source
     assert "if not plan.use_long_memory" in source
-    assert "ALIYUN_MEMORY_MIN_RETRIEVAL_SCORE" in source
-    assert "dynamic_limit=%s" in source
+    assert "LONG_MEMORY_MIN_SIMILARITY" in source
+    assert "self._cosine_similarity(" in source
 
 
 def test_explicit_remember_request_is_part_of_governance_policy():

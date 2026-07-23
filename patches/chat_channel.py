@@ -18,6 +18,9 @@ from plugins.xiaoyou_common.trace_service import (
     activate_context_trace,
     trace_event,
 )
+from plugins.xiaoyou_common.outbound_dispatcher import (
+    record_delivered_assistant_long_memory,
+)
 
 try:
     from voice.audio_convert import any_to_wav
@@ -364,8 +367,30 @@ class ChatChannel(Channel):
                         attrs={"source": "chat_channel", "requested_parts": 1},
                     )
                 _send_ok = self._send(reply, context)
+                _kwargs = getattr(context, "kwargs", {}) or {}
+                if (
+                    _send_ok
+                    and getattr(reply, "type", None) == ReplyType.TEXT
+                    and str(getattr(reply, "content", "") or "").strip()
+                ):
+                    _session_id = str(
+                        _kwargs.get("session_id")
+                        or context.get("session_id", "")
+                        or ""
+                    ).strip()
+                    record_delivered_assistant_long_memory(
+                        _session_id,
+                        str(reply.content or ""),
+                        "chat_channel",
+                        user_text=_kwargs.get("long_memory_user_text", ""),
+                        action_id=_action_id,
+                        trace_id=_kwargs.get("xiaoyou_trace_id", ""),
+                        input_id=_kwargs.get("xiaoyou_input_id", ""),
+                        delivery_complete=True,
+                        terminal_status="complete",
+                        completed_at=time.time(),
+                    )
                 if _trace_link:
-                    _kwargs = getattr(context, "kwargs", {}) or {}
                     trace_event(
                         "outbound_completed",
                         status="ok" if _send_ok else "failed",

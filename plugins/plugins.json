@@ -12,7 +12,7 @@
             "enabled": true,
             "priority": 9999
         },
-        "AliyunMemory": {
+        "LongTermMemory": {
             "enabled": true,
             "priority": 900
         },

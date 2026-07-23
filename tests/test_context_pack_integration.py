@@ -9,7 +9,7 @@ def test_memory_providers_publish_structured_sections_for_main_chat():
         ROOT / "plugins" / "short_memory" / "short_memory.py"
     ).read_text(encoding="utf-8")
     long_source = (
-        ROOT / "plugins" / "aliyun_memory" / "aliyun_memory.py"
+        ROOT / "plugins" / "long_memory" / "long_memory.py"
     ).read_text(encoding="utf-8")
 
     assert 'kwargs["short_memory_context_ready"] = True' in short_source
@@ -18,8 +18,8 @@ def test_memory_providers_publish_structured_sections_for_main_chat():
     assert 'kwargs["short_memory_summary_context"] = str(summary_context or "")' in short_source
     assert "build_active_history(" in short_source
     assert "record_message(" in short_source
-    assert 'kwargs["aliyun_memory_context_ready"] = True' in long_source
-    assert 'kwargs["aliyun_memory_context"] = memory_block' in long_source
+    assert 'kwargs["long_memory_context_ready"] = True' in long_source
+    assert 'kwargs["long_memory_context"] = memory_block' in long_source
     assert "plan_context(" in long_source
     assert "allowed_memory_types=plan.allowed_memory_types" in long_source
 

@@ -132,34 +132,32 @@ services: # Docker Compose 服务集合。
       XIAOYOU_LIFE_PHOTO_OUTPUT_FORMAT: 'jpeg' # 保存和发送格式，可用 jpeg 或 png；jpeg体积更小。
       XIAOYOU_LIFE_PHOTO_TIMEOUT: '240' # 单次Seedream最多等待240秒；超时后不盲目重试，避免重复计费。
       XIAOYOU_LIFE_PHOTO_PROACTIVE_ENABLED: 'true' # 允许小悠在合适语境主动分享生活照。
-      # ===== 阿里云长期记忆 =====
-      ALIYUN_MEMORY_ENABLED: 'true' # 启用阿里云百炼长期记忆检索与写入。
-      ALIYUN_MEMORY_API_KEY: '${ALIYUN_MEMORY_KEY}' # 长期记忆库所属百炼账号的Key；与模型账号KEY独立，禁止混用。
-      ALIYUN_MEMORY_USER_ID: 'yoyo' # 记忆库中的固定用户ID，应与稳定会话ID保持一致。
-      ALIYUN_MEMORY_MAX_RESULTS: '5' # 普通聊天最多注入5条长期记忆；实际数量会按本轮语义动态缩减。
-      ALIYUN_MEMORY_THRESHOLD: '0.55' # 语义相关度最低阈值；越高越严格，越低越容易召回无关内容。
-      ALIYUN_MEMORY_MIN_RETRIEVAL_SCORE: '0.30' # 重排综合分低于0.30的候选不再为了凑数量注入。
-      ALIYUN_MEMORY_SHORT_CHAT_RESULTS: '2' # 简短承接句最多注入2条长期记忆，主要依靠近期对话接话。
-      ALIYUN_MEMORY_NORMAL_CHAT_RESULTS: '4' # 一般完整消息最多注入4条长期记忆。
-      ALIYUN_MEMORY_RECALL_RESULTS: '5' # 明确询问以前、偏好或约定时最多注入5条。
-      ALIYUN_MEMORY_LIBRARY_ID: '${ALIYUN_MEMORY_LIBRARY_ID:-}' # 百炼记忆库ID，来自宿主机 .env；必须属于该Key可访问的账号或授权范围。
-      ALIYUN_MEMORY_RECOVERY_FETCH_K: '40' # 恢复/重连时先扩大到40条候选，再做时间与语义重排。
-      ALIYUN_MEMORY_RECOVERY_TIME_WEIGHT: '0.65' # 恢复场景中的近期时间权重，占比0至1。
-      ALIYUN_MEMORY_EXPLICIT_TIME_WEIGHT: '0.75' # 用户明确提到时间时的时间权重，占比0至1。
-      ALIYUN_MEMORY_NORMAL_TIME_WEIGHT: '0.25' # 普通聊天的时间权重，占比0至1；其余主要由语义相关度决定。
-      ALIYUN_MEMORY_GOVERNANCE_ENABLED: 'true' # 长期记忆先提取候选、核验证据并去重覆盖，再写入百炼。
-      ALIYUN_MEMORY_LEGACY_WRITE_FALLBACK: 'false' # 禁止降级为“每轮用户+助手原文直接写入”，避免助手猜测污染记忆。
+      # ===== 长期记忆：本地 SQLite + 模型语义向量 =====
+      LONG_MEMORY_ENABLED: 'true' # 启用本地长期记忆写入与语义检索。
+      LONG_MEMORY_DB_PATH: '/app/data/long_memory/memories.db' # 长期记忆正文与向量数据库；由 data 挂载持久化。
+      LONG_MEMORY_USER_ID: 'yoyo' # 本地数据库中的固定用户ID，应与稳定会话ID保持一致。
+      LONG_MEMORY_MAX_RESULTS: '5' # 单轮最多注入5条长期记忆。
+      LONG_MEMORY_NORMAL_CHAT_RESULTS: '4' # 一般完整消息最多注入4条长期记忆。
+      LONG_MEMORY_RECALL_RESULTS: '5' # 明确回忆、偏好或约定场景最多注入5条。
+      LONG_MEMORY_MIN_SIMILARITY: '0.30' # 模型向量相似度低于此值的记忆不注入。
+      LONG_MEMORY_MAX_SCAN: '2000' # 单次本地语义排序最多读取2000条，限制内存占用。
+      LONG_MEMORY_BACKFILL_BATCH_SIZE: '30' # 旧治理账本迁入后，后台每批补建30条向量，不阻塞聊天。
+      LONG_MEMORY_SQLITE_TIMEOUT: '8' # SQLite锁等待上限；失败时不阻塞主回复。
+      LONG_MEMORY_EMBEDDING_MODEL: 'text-embedding-v4' # 仅计算语义向量；记忆正文仍只保存在本地数据库。
+      LONG_MEMORY_EMBEDDING_DIMENSIONS: '512' # 提升相近个人记忆的语义区分度；本地开销仍很小。
+      LONG_MEMORY_EMBEDDING_TIMEOUT: '8' # 单次语义向量请求超时；失败时跳过本轮长期记忆。
+      LONG_MEMORY_EMBEDDING_API_KEY: '${KEY}' # 复用模型账号Key计算向量，不再连接阿里云记忆库。
+      LONG_MEMORY_EMBEDDING_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1' # OpenAI兼容Embedding接口。
+      LONG_MEMORY_GOVERNANCE_ENABLED: 'true' # 用户原话先经模型提取和证据治理，再写入本地数据库。
       MEMORY_GOVERNANCE_STATE_PATH: '/app/data/xiaoyou_memory/memory_governance.json' # 本地候选、证据和写入结果审计账本。
       MEMORY_GOVERNANCE_MODEL: 'qwen3.7-plus' # 后台记忆候选提取模型，不占用主回复链路。
       MEMORY_GOVERNANCE_ENABLE_THINKING: 'false' # 候选提取关闭思考以控制费用；严格校验在代码层完成。
       MEMORY_GOVERNANCE_TIMEOUT: '45' # 单次后台候选提取最长等待45秒，失败时不写入。
       MEMORY_GOVERNANCE_MIN_CONFIDENCE: '0.82' # 模型置信度低于0.82的候选拒绝写入。
       MEMORY_GOVERNANCE_MIN_IMPORTANCE: '0.68' # 长期价值低于0.68的候选拒绝写入。
-      MEMORY_GOVERNANCE_MAX_CANDIDATES: '4' # 每轮最多批准4条，抑制过度记忆。
+      MEMORY_GOVERNANCE_SAFETY_MAX_CANDIDATES: '12' # 仅防异常输出；模型自行判断本轮应提取0条或多条。
       MEMORY_GOVERNANCE_EXISTING_TOP_N: '30' # 提取前提供最多30条现有受治理记忆，促使模型复用语义键而非制造近义重复。
       MEMORY_GOVERNANCE_AUDIT_LIMIT: '500' # 本地保留最近500条治理决策，便于排查误记。
-      MEMORY_GOVERNANCE_PROVIDER_DEDUPE: 'true' # 新增前检索旧百炼节点，近似重复时复用原节点而不再创建副本。
-      MEMORY_GOVERNANCE_PROVIDER_DEDUPE_TOP_N: '10' # 每个候选最多比较10条高相关旧节点，避免扫描全部云记忆。
 
       # ===== MCP 搜索、天气、地点与路线 =====
       XIAOYOU_MCP_ENABLED: 'true' # 启用 MCP 外部工具路由。
@@ -203,7 +201,7 @@ services: # Docker Compose 服务集合。
       VISION_IDENTITY_HASH_DISTANCE: '8' # 微信压缩后图片感知哈希允许最多8位差异；越大越宽松，也越可能误匹配。
 
       # ===== 兼容性本地记忆配置 =====
-      MEMORY_ENABLED: 'true' # 保留框架兼容记忆开关；小悠主要长期记忆仍由 AliyunMemory 负责。
+      MEMORY_ENABLED: 'true' # 保留上游框架兼容记忆开关；小悠的长期记忆由 LongTermMemory 负责。
       MEMORY_MAX_ITEMS: '80' # 兼容记忆最多保留80项。
       MEMORY_INJECT_TOP_N: '20' # 兼容记忆每轮最多注入20项。
       MEMORY_AUTO_CAPTURE: 'true' # 自动从对话中捕获可能有价值的兼容记忆。
@@ -232,7 +230,7 @@ services: # Docker Compose 服务集合。
       SHORT_MEMORY_PENDING_ARCHIVE_MAX: '80' # 待摘要原文最多保留80条；失败时原文仍优先保留。
 
       # ===== ConversationArchive 终身原文、ActiveWindow 与情节记忆 =====
-      XIAOYOU_CONVERSATION_ARCHIVE_ENABLED: 'true' # 将每条真实user/assistant原文写入本地SQLite；与ShortMemory和阿里云长期记忆并存。
+      XIAOYOU_CONVERSATION_ARCHIVE_ENABLED: 'true' # 将每条真实user/assistant原文写入本地SQLite；与ShortMemory和本地长期记忆并存。
       XIAOYOU_ACTIVE_WINDOW_HOURS: '6' # 最近6小时按现实时间作为精确原生多轮窗口，不因微信消息频繁而过早遗忘。
       XIAOYOU_ACTIVE_WINDOW_MAX_MESSAGES: '400' # ActiveWindow数据库读取安全上限；真正注入量仍受上面的token预算约束。
       XIAOYOU_ARCHIVE_SQLITE_TIMEOUT: '8' # SQLite锁等待上限；归档失败时聊天链路保持可用。
