@@ -1,5 +1,9 @@
 {
     "plugins": {
+        "AppChannel": {
+            "enabled": true,
+            "priority": 10001
+        },
         "XiaoyouIdentity": {
             "enabled": true,
             "priority": 10000

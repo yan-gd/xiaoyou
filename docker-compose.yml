@@ -19,6 +19,12 @@ services: # Docker Compose 服务集合。
       CHANNEL_TYPE: 'wx' # 使用个人微信 itchat/WebWx 通道。
       HOT_RELOAD: 'true' # 允许框架热加载插件配置；关键环境变量变更仍需重建容器。
       APPDATA_DIR: '/app/data' # 容器内登录态与应用数据目录，对应上面的 ./data 挂载。
+      XIAOYOU_APP_ENABLED: '${XIAOYOU_APP_ENABLED:-false}' # 默认关闭；配置长随机令牌并完成 HTTPS 反代后再开启。
+      XIAOYOU_APP_TOKEN: '${XIAOYOU_APP_TOKEN:-}' # App Bearer 令牌；至少24字符，禁止写入客户端源码或提交仓库。
+      XIAOYOU_APP_HOST: '0.0.0.0' # 容器内监听地址；宿主机端口仍只绑定127.0.0.1。
+      XIAOYOU_APP_PORT: '8787' # App HTTP/SSE 服务端口。
+      XIAOYOU_APP_DB_PATH: '/app/data/app_channel/app.db' # App设备、输入幂等、输出收件箱和送达回执。
+      XIAOYOU_APP_DEFAULT_PROACTIVE: '${XIAOYOU_APP_DEFAULT_PROACTIVE:-false}' # 无明确来源的主动消息默认仍走微信；开启后优先进入最近App设备收件箱。
       SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。
       REMINDER_LOVE_STATE_PATH: '/app/data/reminder_love/reminders.json' # 提醒任务状态。
       PROACTIVE_LOVE_STATE_PATH: '/app/data/proactive_love/proactive_state.json' # 主动消息调度状态。

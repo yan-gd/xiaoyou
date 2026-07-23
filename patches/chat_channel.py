@@ -358,6 +358,9 @@ class ChatChannel(Channel):
                     else None
                 )
                 _action_id = uuid.uuid4().hex[:16]
+                _kwargs = getattr(context, "kwargs", {}) or {}
+                _kwargs["xiaoyou_outbound_action_id"] = _action_id
+                context.kwargs = _kwargs
                 if _trace_link:
                     trace_event(
                         "outbound_started",
@@ -368,8 +371,12 @@ class ChatChannel(Channel):
                     )
                 _send_ok = self._send(reply, context)
                 _kwargs = getattr(context, "kwargs", {}) or {}
+                _delivery_deferred = bool(
+                    _kwargs.get("xiaoyou_delivery_deferred")
+                )
                 if (
                     _send_ok
+                    and not _delivery_deferred
                     and getattr(reply, "type", None) == ReplyType.TEXT
                     and str(getattr(reply, "content", "") or "").strip()
                 ):
@@ -392,17 +399,28 @@ class ChatChannel(Channel):
                     )
                 if _trace_link:
                     trace_event(
-                        "outbound_completed",
-                        status="ok" if _send_ok else "failed",
+                        (
+                            "outbound_queued"
+                            if _send_ok and _delivery_deferred
+                            else "outbound_completed"
+                        ),
+                        status=(
+                            "queued"
+                            if _send_ok and _delivery_deferred
+                            else ("ok" if _send_ok else "failed")
+                        ),
                         link=_trace_link,
                         action_id=_action_id,
                         memory_record_id=_kwargs.get("xiaoyou_memory_record_id", ""),
                         attrs={
                             "source": "chat_channel",
                             "ok": bool(_send_ok),
-                            "delivered": bool(_send_ok),
+                            "delivered": bool(_send_ok and not _delivery_deferred),
+                            "delivery_deferred": _delivery_deferred,
                             "requested_parts": 1,
-                            "sent_parts": 1 if _send_ok else 0,
+                            "sent_parts": (
+                                1 if _send_ok and not _delivery_deferred else 0
+                            ),
                             "memory_recorded": bool(
                                 _kwargs.get("xiaoyou_memory_record_id")
                             ),
@@ -411,8 +429,8 @@ class ChatChannel(Channel):
 
     def _send(self, reply: Reply, context: Context, retry_cnt=0):
         try:
-            self.send(reply, context)
-            return True
+            result = self.send(reply, context)
+            return result is not False
         except Exception as e:
             logger.error("[chat_channel] sendMsg error: {}".format(str(e)))
             if isinstance(e, NotImplementedError):
@@ -575,12 +593,25 @@ class ChatChannel(Channel):
         # 使用最后一条消息的微信元数据作为回复目标，同时保留完整发送顺序。
         context = contexts[-1]
         context.content = "\n".join(messages)
+        source_message_ids = []
+        for item in contexts:
+            item_kwargs = getattr(item, "kwargs", {}) or {}
+            item_ids = item_kwargs.get("xiaoyou_source_message_ids") or []
+            if isinstance(item_ids, str):
+                item_ids = [item_ids]
+            if not item_ids and item_kwargs.get("xiaoyou_input_id"):
+                item_ids = [item_kwargs.get("xiaoyou_input_id")]
+            for message_id in item_ids:
+                message_id = str(message_id or "").strip()
+                if message_id and message_id not in source_message_ids:
+                    source_message_ids.append(message_id)
         self._set_context_input_metadata(
             context,
             version=batch.get("version"),
             messages=messages,
             first_ts=batch.get("first_ts"),
             session_key=batch.get("session_key"),
+            source_message_ids=source_message_ids,
         )
         if context.get("xiaoyou_trace_id"):
             trace_event(
@@ -611,6 +642,7 @@ class ChatChannel(Channel):
         messages=None,
         first_ts=None,
         session_key=None,
+        source_message_ids=None,
     ):
         kwargs = getattr(context, "kwargs", {}) or {}
 
@@ -625,6 +657,8 @@ class ChatChannel(Channel):
             kwargs["xiaoyou_input_batch_size"] = len(messages)
         if first_ts is not None:
             kwargs["xiaoyou_input_batch_first_ts"] = float(first_ts)
+        if source_message_ids:
+            kwargs["xiaoyou_source_message_ids"] = list(source_message_ids)
 
         context.kwargs = kwargs
 

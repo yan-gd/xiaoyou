@@ -241,6 +241,8 @@ class ShortMemory(Plugin):
             return
         if kwargs.get("short_memory_skip_reply"):
             return
+        if kwargs.get("xiaoyou_defer_memory_until_delivery"):
+            return
 
         session_id = kwargs.get("short_memory_session_id") or self._get_session_id(context)
         if not session_id or not self._session_allowed(session_id):

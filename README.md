@@ -372,6 +372,18 @@ cow-legacy/
 
 以下步骤部署小悠本体。命轨观测台是独立服务，不影响小悠运行；本体启动后如需部署网站，请继续阅读 [`xiaoyou-observatory/README.md`](xiaoyou-observatory/README.md)。
 
+### 手机 App 通道
+
+仓库包含一个默认关闭的 App 通道和 Flutter 客户端源码：
+
+- [`plugins/app_channel`](plugins/app_channel) 在现有进程中复用同一个 `ChatChannel`、插件链和固定会话 `yoyo`
+- [`xiaoyou-app`](xiaoyou-app) 是 Android/iOS Flutter 客户端
+- 所有设备、输入幂等、输出事件和送达回执保存在 `data/app_channel/app.db`
+- App 回复只有在客户端提交不可变终态回执后，才会写入助手短期/长期记忆
+- 独立的 `docker-compose.app.yml` 只把 App API 映射到 `127.0.0.1:8787`；主 Compose 不新增端口
+
+完整开启方式、接口协议、Nginx 示例和影响说明见 [`docs/app-channel.md`](docs/app-channel.md)。
+
 ### 1. 克隆与配置
 
 ```bash

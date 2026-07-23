@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Central outbound dispatcher for Xiaoyou's direct WeChat actions.
+"""Central outbound dispatcher for Xiaoyou's direct channel actions.
 
 Capability plugins decide *what* should be sent.  This module owns the shared
-side effects: resolving the current WeChat receiver, serializing sends per
+side effects: resolving the current receiver, serializing sends per
 canonical session, checking turn freshness, collecting delivery receipts and
 writing successfully delivered external assistant messages to ShortMemory.
 """
 
+import os
 import threading
 import time
 import uuid
@@ -36,6 +37,8 @@ class SendReceipt:
         input_id="",
         memory_record_id="",
         lease_id="",
+        queued=False,
+        deferred_delivery=False,
     ):
         self.action_id = str(action_id or "")
         self.source = str(source or "")
@@ -51,6 +54,8 @@ class SendReceipt:
         self.input_id = str(input_id or "")
         self.memory_record_id = str(memory_record_id or "")
         self.lease_id = str(lease_id or "")
+        self.queued = bool(queued)
+        self.deferred_delivery = bool(deferred_delivery)
 
     @property
     def sent_text(self):
@@ -62,7 +67,7 @@ class SendReceipt:
 
 
 def resolve_receiver(session_id, fallback=""):
-    """Resolve the current temporary WeChat receiver for a canonical session.
+    """Resolve an explicit App endpoint or the current WeChat receiver.
 
     When XiaoyouIdentity is loaded its answer is authoritative, including an
     empty answer used to prevent sending to a stale login-period identifier.
@@ -70,6 +75,27 @@ def resolve_receiver(session_id, fallback=""):
     """
     session_id = str(session_id or "").strip()
     fallback = str(fallback or "").strip()
+    try:
+        from plugins.xiaoyou_common.app_transport import (
+            is_app_receiver,
+            preferred_app_receiver,
+        )
+
+        if is_app_receiver(fallback):
+            return fallback
+        prefer_app = os.getenv(
+            "XIAOYOU_APP_DEFAULT_PROACTIVE",
+            "false",
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if not fallback and prefer_app:
+            preferred = preferred_app_receiver(session_id)
+            if preferred:
+                return preferred
+    except Exception:
+        logger.exception(
+            "[OutboundDispatcher] App receiver lookup failed session=%s",
+            session_id or "-",
+        )
     try:
         import plugins
 
@@ -245,6 +271,52 @@ def send_action(
         return receipt
     if not image_path and not normalized_parts:
         receipt.error = "empty_action"
+        _log_rejected(receipt)
+        return receipt
+
+    try:
+        from plugins.xiaoyou_common.app_transport import (
+            is_app_receiver,
+            queue_app_action,
+        )
+
+        if is_app_receiver(receiver):
+            if not context_is_current(channel, context, freshness_check):
+                receipt.stale = True
+                receipt.error = "stale_before_queue"
+                _log_rejected(receipt)
+                return receipt
+            queued = queue_app_action(
+                action_id=action_id,
+                session_id=session_id,
+                receiver=receiver,
+                source=source,
+                parts=normalized_parts,
+                image_path=image_path,
+                trace_id=trace_link.trace_id,
+                input_id=trace_link.input_id,
+                source_message_ids=context_kwargs.get(
+                    "xiaoyou_source_message_ids"
+                ) or [],
+                user_text=context_kwargs.get("long_memory_user_text", ""),
+            )
+            receipt.ok = bool(queued)
+            receipt.queued = bool(queued)
+            receipt.deferred_delivery = bool(queued)
+            if not queued:
+                receipt.error = "app_inbox_unavailable"
+                _log_rejected(receipt)
+            else:
+                _log_queued(receipt, requested_parts=len(normalized_parts))
+            return receipt
+    except Exception:
+        receipt.error = "app_queue_exception"
+        logger.exception(
+            "[OutboundDispatcher] App queue failed action_id=%s source=%s session=%s",
+            action_id,
+            source,
+            session_id,
+        )
         _log_rejected(receipt)
         return receipt
 
@@ -561,6 +633,33 @@ def _log_rejected(receipt):
         _mask_receiver(receipt.receiver),
         receipt.stale,
         receipt.error or "-",
+    )
+
+
+def _log_queued(receipt, requested_parts):
+    trace_event(
+        "outbound_queued",
+        status="queued",
+        trace_id=receipt.trace_id,
+        input_id=receipt.input_id,
+        session_id=receipt.session_id,
+        action_id=receipt.action_id,
+        lease_id=receipt.lease_id,
+        attrs={
+            "source": receipt.source,
+            "transport": "app",
+            "requested_parts": int(requested_parts or 0),
+            "delivery_deferred": True,
+        },
+    )
+    logger.info(
+        "[OutboundDispatcher] queued action_id=%s source=%s session=%s "
+        "receiver=%s parts=%s",
+        receipt.action_id,
+        receipt.source,
+        receipt.session_id or "-",
+        _mask_receiver(receipt.receiver),
+        int(requested_parts or 0),
     )
 
 
