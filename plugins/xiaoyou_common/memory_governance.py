@@ -63,9 +63,11 @@ _SECRET_PATTERNS = (
 
 def _default_state():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "entries": [],
         "audit": [],
+        "turn_sequences": {},
+        "processed_input_ids": {},
     }
 
 
@@ -131,12 +133,12 @@ class MemoryGovernance:
         trace_id="",
         input_id="",
         session_id="",
+        turn_sequence=0,
     ):
-        """Govern one completed turn and return a non-sensitive summary.
+        """Govern one committed user turn and return a non-sensitive summary.
 
-        ``assistant_text`` must remain unused.  It exists so callers can move
-        from transcript writes to governed writes without changing lifecycle
-        timing.
+        ``assistant_text`` must remain unused. It remains only for compatibility
+        with callers migrating from transcript-based writes.
         """
         del assistant_text
         user_text = str(user_text or "").strip()
@@ -149,13 +151,29 @@ class MemoryGovernance:
                 session_id=session_id,
             )
             return {"extracted": 0, "eligible": 0, "written": 0, "failed": 0}
+
+        resolved_sequence = self._reserve_turn_sequence(
+            session_id=session_id,
+            input_id=input_id,
+            requested_sequence=turn_sequence,
+            trace_id=trace_id,
+        )
+        if resolved_sequence is None:
+            return {"extracted": 0, "eligible": 0, "written": 0, "failed": 1}
+        if resolved_sequence <= 0:
+            return {"extracted": 0, "eligible": 0, "written": 0, "failed": 0}
+        turn_links = {
+            "trace_id": trace_id,
+            "input_id": input_id,
+            "session_id": session_id,
+            "turn_sequence": resolved_sequence,
+        }
+
         if self._is_transient_reminder(user_text):
             self._record_audit(
                 action="turn_skipped",
                 reason="transient_reminder_owned_by_reminder_service",
-                trace_id=trace_id,
-                input_id=input_id,
-                session_id=session_id,
+                **turn_links,
             )
             return {"extracted": 0, "eligible": 0, "written": 0, "failed": 0}
 
@@ -177,9 +195,7 @@ class MemoryGovernance:
             self._record_audit(
                 action="extraction_failed",
                 reason=type(exc).__name__,
-                trace_id=trace_id,
-                input_id=input_id,
-                session_id=session_id,
+                **turn_links,
             )
             return {"extracted": 0, "eligible": 0, "written": 0, "failed": 1}
 
@@ -198,18 +214,14 @@ class MemoryGovernance:
                 self._record_audit(
                     action="candidate_rejected",
                     reason=reason,
-                    trace_id=trace_id,
-                    input_id=input_id,
-                    session_id=session_id,
+                    **turn_links,
                 )
                 continue
 
             summary["eligible"] += 1
             entry, should_write = self._upsert_candidate(
                 candidate,
-                trace_id=trace_id,
-                input_id=input_id,
-                session_id=session_id,
+                **turn_links,
             )
             if not entry or not should_write:
                 continue
@@ -234,6 +246,77 @@ class MemoryGovernance:
                 summary["failed"] += 1
 
         return summary
+
+    def _reserve_turn_sequence(
+        self,
+        *,
+        session_id,
+        input_id="",
+        requested_sequence=0,
+        trace_id="",
+    ):
+        """Persist one monotonic sequence before slow extraction begins."""
+        with self._lock:
+            state = self._load_state()
+            if state is None:
+                return None
+
+            session_key = str(session_id or "_default")[:160]
+            clean_input_id = str(input_id or "")[:160]
+            current = self._positive_int(
+                state["turn_sequences"].get(session_key),
+            )
+            requested = self._positive_int(requested_sequence)
+            processed = state["processed_input_ids"].setdefault(session_key, [])
+
+            if clean_input_id and clean_input_id in processed:
+                self._append_audit(
+                    state,
+                    "turn_skipped",
+                    None,
+                    "duplicate_input_id",
+                    {
+                        "trace_id": trace_id,
+                        "input_id": clean_input_id,
+                        "session_id": session_key,
+                        "turn_sequence": current,
+                    },
+                )
+                return 0 if self.store.save(state) else None
+
+            if requested and requested <= current:
+                self._append_audit(
+                    state,
+                    "turn_skipped",
+                    None,
+                    "stale_turn_sequence",
+                    {
+                        "trace_id": trace_id,
+                        "input_id": clean_input_id,
+                        "session_id": session_key,
+                        "turn_sequence": requested,
+                    },
+                )
+                return 0 if self.store.save(state) else None
+
+            sequence = requested or (current + 1)
+            state["turn_sequences"][session_key] = sequence
+            if clean_input_id:
+                processed.append(clean_input_id)
+                state["processed_input_ids"][session_key] = processed[-256:]
+            self._append_audit(
+                state,
+                "turn_sequence_reserved",
+                None,
+                "",
+                {
+                    "trace_id": trace_id,
+                    "input_id": clean_input_id,
+                    "session_id": session_key,
+                    "turn_sequence": sequence,
+                },
+            )
+            return sequence if self.store.save(state) else None
 
     def _validate_candidate(self, raw, user_text):
         if not isinstance(raw, dict):
@@ -294,10 +377,42 @@ class MemoryGovernance:
                     active = item
                     break
 
+            incoming_sequence = self._positive_int(links.get("turn_sequence"))
+            active_sequence = self._positive_int(
+                (active or {}).get("source_turn_sequence"),
+            )
+            incoming_session = str(links.get("session_id") or "_default")[:160]
+            active_session = str(
+                (active or {}).get("source_session_id") or "_default",
+            )[:160]
+            if (
+                active
+                and incoming_sequence
+                and active_sequence
+                and incoming_session == active_session
+                and incoming_sequence < active_sequence
+            ):
+                self._append_audit(
+                    state,
+                    "candidate_rejected",
+                    active,
+                    "stale_turn_sequence",
+                    links,
+                )
+                if not self.store.save(state):
+                    return None, False
+                return None, False
+
             evidence_item = self._evidence_item(candidate["evidence"], now)
             if active and self._normalized(active.get("content")) == self._normalized(candidate["content"]):
                 active["last_confirmed_at"] = now
                 active["updated_at"] = now
+                if incoming_sequence >= active_sequence:
+                    active["source_turn_sequence"] = incoming_sequence
+                    active["source_input_id"] = str(
+                        links.get("input_id") or ""
+                    )[:160]
+                    active["source_session_id"] = incoming_session
                 active["confidence"] = max(
                     self._unit_float(active.get("confidence")),
                     candidate["confidence"],
@@ -324,6 +439,9 @@ class MemoryGovernance:
                 "confidence": candidate["confidence"],
                 "importance": candidate["importance"],
                 "source_role": "user",
+                "source_turn_sequence": incoming_sequence,
+                "source_input_id": str(links.get("input_id") or "")[:160],
+                "source_session_id": incoming_session,
                 "evidence": [evidence_item],
                 "created_at": now,
                 "updated_at": now,
@@ -430,6 +548,9 @@ class MemoryGovernance:
             value = str((links or {}).get(key) or "")
             if value:
                 event[key] = value[:160]
+        turn_sequence = self._positive_int((links or {}).get("turn_sequence"))
+        if turn_sequence:
+            event["turn_sequence"] = turn_sequence
         state["audit"].append(event)
         if len(state["audit"]) > self.audit_limit:
             state["audit"] = state["audit"][-self.audit_limit:]
@@ -442,6 +563,8 @@ class MemoryGovernance:
         state = value if isinstance(value, dict) else _default_state()
         entries = state.get("entries")
         audit = state.get("audit")
+        turn_sequences = state.get("turn_sequences")
+        processed_input_ids = state.get("processed_input_ids")
         normalized_entries = entries if isinstance(entries, list) else []
         for item in normalized_entries:
             if isinstance(item, dict):
@@ -449,10 +572,28 @@ class MemoryGovernance:
                     item.get("memory_type"),
                     item.get("category"),
                 )
+        normalized_sequences = {}
+        if isinstance(turn_sequences, dict):
+            for session_id, sequence in turn_sequences.items():
+                session_key = str(session_id or "_default")[:160]
+                normalized_sequences[session_key] = self._positive_int(sequence)
+        normalized_inputs = {}
+        if isinstance(processed_input_ids, dict):
+            for session_id, input_ids in processed_input_ids.items():
+                if not isinstance(input_ids, list):
+                    continue
+                session_key = str(session_id or "_default")[:160]
+                normalized_inputs[session_key] = [
+                    str(input_id)[:160]
+                    for input_id in input_ids[-256:]
+                    if str(input_id or "")
+                ]
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "entries": normalized_entries,
             "audit": audit if isinstance(audit, list) else [],
+            "turn_sequences": normalized_sequences,
+            "processed_input_ids": normalized_inputs,
         }
 
     def _extract_with_model(
@@ -638,6 +779,13 @@ class MemoryGovernance:
             return max(0.0, min(1.0, float(value)))
         except Exception:
             return 0.0
+
+    @staticmethod
+    def _positive_int(value):
+        try:
+            return max(0, int(value))
+        except Exception:
+            return 0
 
     @staticmethod
     def _float_setting(explicit, key, default):

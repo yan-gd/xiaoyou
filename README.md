@@ -202,7 +202,7 @@ ALIYUN_MEMORY_LIBRARY_ID=your_bailian_memory_library_id_here
 
 `KEY` 用于聊天、视觉和分类等模型调用；`ALIYUN_MEMORY_KEY` 必须填写创建该记忆库的百炼账号 Key。两个 Key 可以属于不同账号，不能用模型账号 Key 替代记忆库账号 Key。记忆专用 Key 缺失时插件会明确报警且不发起云记忆请求，不会静默回退到模型 Key。
 
-长期记忆写入采用治理链路：后台模型只读取当前用户原话，提取最多 4 条长期候选；代码再核验候选类别、置信度、重要度、敏感信息以及证据是否逐字存在于用户原话。通过后按稳定 `memory_key` 合并：相同事实只更新确认时间，事实被纠正时通过百炼 `PATCH` 原地更新旧记忆片段，不保留相互冲突的云端副本。小悠自己的回复既不进入提取模型，也不会作为证据或正文写入长期记忆。
+长期记忆写入采用治理链路：连续输入完成合并后，当前用户原话立即进入每会话 FIFO 后台队列，不依赖小悠是否成功生成或发送回复；不同会话仍可并行，同一会话严格按提交顺序处理。后台模型只读取当前用户原话，提取最多 4 条长期候选；代码再核验候选类别、置信度、重要度、敏感信息以及证据是否逐字存在于用户原话。通过后按稳定 `memory_key` 合并：相同事实只更新确认时间，事实被纠正时通过百炼 `PATCH` 原地更新旧记忆片段，不保留相互冲突的云端副本。治理账本持久化每会话顺序号与最近处理过的输入 ID，旧任务和重复事件不能反向覆盖新事实。小悠自己的回复既不进入提取模型，也不会作为证据或正文写入长期记忆。
 
 提醒创建、查询和取消由 ReminderLove 独立管理并带生命周期，不进入永久长期记忆；“老婆、老公、宝贝”等单次亲昵称呼也不能单独证明关系已经确立。新增候选写入前还会检索旧百炼节点并做保守的近义比较，命中时复用旧节点，减少本地新治理账本无法直接识别 1597 条旧记忆而产生的重复。
 
@@ -398,12 +398,16 @@ XIAOYOU_TARGET_NICKNAME=
 ### 2. 构建与启动
 
 ```bash
-docker build -t cow-legacy-local:vision-no-think .
+docker compose build chatgpt-on-wechat
 docker compose up -d
 docker logs -f cow-legacy
 ```
 
 根据日志扫码登录个人微信小号。
+
+构建上下文使用仓库根目录的 `.dockerignore` 白名单，只会把 `Dockerfile`
+和 `patches/` 交给 Docker daemon；`.env`、`data/`、日志、测试缓存和其他
+运行态文件不会进入构建上下文。
 
 ### 3. 更新
 
@@ -411,11 +415,12 @@ docker logs -f cow-legacy
 
 ```bash
 git pull --ff-only
-docker build -t cow-legacy-local:vision-no-think .
-docker compose up -d --force-recreate
+docker compose up -d --build --force-recreate chatgpt-on-wechat
 ```
 
-不要用仓库中的空文件覆盖服务器真实记忆和状态文件。
+`plugins/`、`data/` 和两个核心聊天补丁均由 Compose 挂载。上述命令会让
+核心补丁、插件和镜像启动引导代码在同一次更新中生效，避免新插件与旧
+`chat_channel.py` 混装。不要用仓库中的空文件覆盖服务器真实记忆和状态文件。
 
 ## 常用命令
 
@@ -429,8 +434,8 @@ docker compose config
 重新构建：
 
 ```bash
-docker build --no-cache -t cow-legacy-local:vision-no-think .
-docker compose up -d --force-recreate
+docker compose build --no-cache chatgpt-on-wechat
+docker compose up -d --force-recreate chatgpt-on-wechat
 ```
 
 ## 运行态数据

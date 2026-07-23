@@ -3,7 +3,6 @@ import os
 import re
 import json
 import time
-import threading
 import requests
 from datetime import datetime, timezone
 
@@ -25,6 +24,7 @@ from plugins.xiaoyou_common.memory_schema import (
     normalize_memory_type,
 )
 from plugins.xiaoyou_common.trace_service import trace_event
+from plugins.xiaoyou_common.session_fifo import PerSessionFIFO
 
 
 @plugins.register(
@@ -32,7 +32,7 @@ from plugins.xiaoyou_common.trace_service import trace_event
     desire_priority=900,
     hidden=False,
     desc="Use Alibaba Bailian Memory Library for long-term memory",
-    version="0.5-governed-write",
+    version="0.6-session-fifo",
     author="YOYO"
 )
 class AliyunMemory(Plugin):
@@ -66,6 +66,11 @@ class AliyunMemory(Plugin):
                 )
             except Exception:
                 logger.exception("[AliyunMemory] memory governance initialization failed")
+        self.memory_write_queue = PerSessionFIFO(
+            self._process_memory_job,
+            on_error=self._on_memory_job_error,
+            thread_name_prefix="aliyun-memory",
+        )
 
         if self.enabled and not self.api_key:
             logger.warning(
@@ -836,6 +841,66 @@ class AliyunMemory(Plugin):
             summary.get("failed", 0),
         )
 
+    def _enqueue_memory_turn(
+        self,
+        *,
+        mode,
+        user_text,
+        assistant_text="",
+        trace_id="",
+        input_id="",
+        session_id="",
+    ):
+        payload = {
+            "mode": str(mode or ""),
+            "user_text": str(user_text or ""),
+            "assistant_text": str(assistant_text or ""),
+            "trace_id": str(trace_id or ""),
+            "input_id": str(input_id or ""),
+        }
+        sequence = self.memory_write_queue.submit(session_id, payload)
+        logger.info(
+            "[AliyunMemory] queued session=%s sequence=%s mode=%s",
+            str(session_id or "-")[:40],
+            sequence,
+            payload["mode"],
+        )
+        return sequence
+
+    def _process_memory_job(self, session_id, queue_sequence, payload):
+        del queue_sequence
+        mode = str((payload or {}).get("mode") or "")
+        if mode == "governed":
+            self._govern_memory_turn(
+                (payload or {}).get("user_text", ""),
+                "",
+                (payload or {}).get("trace_id", ""),
+                (payload or {}).get("input_id", ""),
+                session_id,
+            )
+            return
+        if mode == "legacy":
+            self._add_memory(
+                (payload or {}).get("user_text", ""),
+                (payload or {}).get("assistant_text", ""),
+                (payload or {}).get("trace_id", ""),
+                (payload or {}).get("input_id", ""),
+                session_id,
+            )
+            return
+        raise ValueError("unsupported memory job mode: %s" % mode)
+
+    @staticmethod
+    def _on_memory_job_error(session_id, sequence, payload, error):
+        logger.error(
+            "[AliyunMemory] queued write failed session=%s sequence=%s mode=%s error=%s",
+            str(session_id or "-")[:40],
+            sequence,
+            str((payload or {}).get("mode") or ""),
+            type(error).__name__,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
     def _memory_write_id(self, response):
         try:
             data = response.json()
@@ -884,6 +949,21 @@ class AliyunMemory(Plugin):
         self.last_user_msg[session_id] = user_text
 
         kwargs = getattr(context, "kwargs", {}) or {}
+        kwargs["aliyun_memory_user_text"] = user_text
+        if (
+            self.governance_enabled
+            and self.memory_governance is not None
+            and not kwargs.get("xiaoyou_skip_long_memory_write")
+            and not kwargs.get("aliyun_memory_governance_enqueued")
+        ):
+            kwargs["aliyun_memory_governance_enqueued"] = True
+            kwargs["aliyun_memory_queue_sequence"] = self._enqueue_memory_turn(
+                mode="governed",
+                user_text=user_text,
+                trace_id=kwargs.get("xiaoyou_trace_id", ""),
+                input_id=kwargs.get("xiaoyou_input_id", ""),
+                session_id=session_id,
+            )
         kwargs["aliyun_memory_context_ready"] = True
         kwargs["aliyun_memory_context"] = ""
         plan = plan_context(
@@ -944,10 +1024,17 @@ class AliyunMemory(Plugin):
         if reply.type != ReplyType.TEXT:
             return
 
-        session_id = context.get("session_id", self.user_id)
-        user_text = self.last_user_msg.get(session_id)
-        assistant_text = reply.content
         kwargs = getattr(context, "kwargs", {}) or {}
+        if self.governance_enabled and self.memory_governance is not None:
+            return
+        if not self.legacy_write_fallback:
+            return
+
+        session_id = context.get("session_id", self.user_id)
+        user_text = kwargs.get("aliyun_memory_user_text") or self.last_user_msg.get(
+            session_id
+        )
+        assistant_text = reply.content
 
         if not user_text or not assistant_text:
             return
@@ -960,25 +1047,14 @@ class AliyunMemory(Plugin):
             )
             return
 
-        target = None
-        if self.governance_enabled and self.memory_governance is not None:
-            target = self._govern_memory_turn
-        elif self.legacy_write_fallback:
-            logger.warning(
-                "[AliyunMemory] using explicitly enabled legacy transcript write fallback"
-            )
-            target = self._add_memory
-        if target is None:
-            return
-
-        threading.Thread(
-            target=target,
-            args=(
-                user_text,
-                assistant_text,
-                kwargs.get("xiaoyou_trace_id", ""),
-                kwargs.get("xiaoyou_input_id", ""),
-                session_id,
-            ),
-            daemon=True
-        ).start()
+        logger.warning(
+            "[AliyunMemory] using explicitly enabled legacy transcript write fallback"
+        )
+        self._enqueue_memory_turn(
+            mode="legacy",
+            user_text=user_text,
+            assistant_text=assistant_text,
+            trace_id=kwargs.get("xiaoyou_trace_id", ""),
+            input_id=kwargs.get("xiaoyou_input_id", ""),
+            session_id=session_id,
+        )

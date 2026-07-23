@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import threading
 from pathlib import Path
 
 
@@ -77,6 +78,8 @@ def test_writes_only_validated_user_supported_candidate_and_never_stores_assista
     assert writes[0]["source_role"] == "user"
     assert store.state["entries"][0]["status"] == "written"
     assert store.state["entries"][0]["provider_memory_id"] == "provider-1"
+    assert store.state["entries"][0]["source_turn_sequence"] == 1
+    assert store.state["entries"][0]["source_session_id"] == "yoyo"
     assert "你一定讨厌长回复" not in repr(store.state)
     assert store.state["entries"][0]["evidence"][0]["source_role"] == "user"
 
@@ -315,3 +318,116 @@ def test_extractor_failure_fails_closed_without_legacy_write():
     assert summary["failed"] == 1
     assert writes == []
     assert store.state["audit"][-1]["action"] == "extraction_failed"
+
+
+def test_persisted_sequence_and_input_id_make_replayed_turn_idempotent():
+    store = FakeStore()
+    calls = []
+    governance = MemoryGovernance(
+        store=store,
+        extractor=lambda **kwargs: calls.append(kwargs["input_id"]) or [],
+        writer=lambda **kwargs: {"ok": True},
+        now=lambda: 6000,
+    )
+
+    first = governance.process_turn(
+        user_text="first durable statement",
+        input_id="input-1",
+        session_id="yoyo",
+    )
+    duplicate = governance.process_turn(
+        user_text="first durable statement",
+        input_id="input-1",
+        session_id="yoyo",
+    )
+    restarted = MemoryGovernance(
+        store=store,
+        extractor=lambda **kwargs: calls.append(kwargs["input_id"]) or [],
+        writer=lambda **kwargs: {"ok": True},
+        now=lambda: 6001,
+    )
+    restarted.process_turn(
+        user_text="second durable statement",
+        input_id="input-2",
+        session_id="yoyo",
+    )
+
+    assert first == {"extracted": 0, "eligible": 0, "written": 0, "failed": 0}
+    assert duplicate == {"extracted": 0, "eligible": 0, "written": 0, "failed": 0}
+    assert calls == ["input-1", "input-2"]
+    assert store.state["turn_sequences"]["yoyo"] == 2
+    assert store.state["processed_input_ids"]["yoyo"] == ["input-1", "input-2"]
+    assert any(
+        event.get("reason") == "duplicate_input_id"
+        for event in store.state["audit"]
+    )
+
+
+def test_delayed_older_turn_cannot_overwrite_a_newer_correction():
+    store = FakeStore()
+    old_started = threading.Event()
+    release_old = threading.Event()
+    writes = []
+
+    def extract(**kwargs):
+        if kwargs["input_id"] == "old":
+            old_started.set()
+            assert release_old.wait(1)
+            return [
+                candidate(
+                    content="YoYo prefers red.",
+                    evidence="red",
+                    memory_key="preference.color",
+                    category="durable_preference",
+                )
+            ]
+        return [
+            candidate(
+                content="YoYo now prefers blue.",
+                evidence="blue",
+                memory_key="preference.color",
+                category="durable_preference",
+            )
+        ]
+
+    governance = MemoryGovernance(
+        store=store,
+        extractor=extract,
+        writer=lambda **kwargs: writes.append(kwargs["candidate"]) or {"ok": True},
+        now=lambda: 7000,
+    )
+
+    old_thread = threading.Thread(
+        target=lambda: governance.process_turn(
+            user_text="red",
+            input_id="old",
+            session_id="yoyo",
+            turn_sequence=1,
+        )
+    )
+    old_thread.start()
+    assert old_started.wait(1)
+
+    newer = governance.process_turn(
+        user_text="blue",
+        input_id="new",
+        session_id="yoyo",
+        turn_sequence=2,
+    )
+    release_old.set()
+    old_thread.join(1)
+
+    assert not old_thread.is_alive()
+    assert newer["written"] == 1
+    active = [
+        entry
+        for entry in store.state["entries"]
+        if entry["status"] in {"approved", "failed", "written"}
+    ]
+    assert [entry["content"] for entry in active] == ["YoYo now prefers blue."]
+    assert active[0]["source_turn_sequence"] == 2
+    assert [entry["content"] for entry in writes] == ["YoYo now prefers blue."]
+    assert any(
+        event.get("reason") == "stale_turn_sequence"
+        for event in store.state["audit"]
+    )

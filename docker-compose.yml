@@ -1,6 +1,9 @@
 services: # Docker Compose 服务集合。
   chatgpt-on-wechat: # 小悠本体服务名；执行 compose 命令时使用这个名称。
     image: cow-legacy-local:vision-no-think # 本地构建的小悠镜像名称与标签。
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: cow-legacy # 固定容器名；观测台的最小权限控制器依赖此名称。
     restart: always # 容器退出或 Docker 重启后自动拉起；手动 stop 后需手动 start。
     security_opt: # 容器安全配置列表。
@@ -8,6 +11,8 @@ services: # Docker Compose 服务集合。
     volumes: # 宿主机持久化目录挂载。
       - ./plugins:/app/plugins # 插件源码热挂载；修改插件通常无需重建镜像。
       - ./data:/app/data # 微信登录态和运行数据持久化；禁止提交到 Git。
+      - ./patches/chat_channel.py:/app/channel/chat_channel.py:ro # 核心消息链路与当前仓库保持同版，避免旧镜像混装新插件。
+      - ./patches/chat_gpt_bot.py:/app/bot/chatgpt/chat_gpt_bot.py:ro # 核心模型适配层与当前仓库保持同版。
     environment: # 以下全部是容器环境变量；秒数类参数均以 seconds 为单位。
 
       # ===== 基础运行与微信通道 =====

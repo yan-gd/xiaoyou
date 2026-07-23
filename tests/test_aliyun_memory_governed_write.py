@@ -40,12 +40,21 @@ def test_provider_dedupe_reuses_legacy_cloud_node_before_creating_a_new_one():
     assert "allowed_memory_types=(memory_type,)" in method
 
 
-def test_reply_hook_routes_to_governance_before_any_explicit_legacy_fallback():
+def test_committed_user_text_is_queued_before_reply_generation():
+    source = PLUGIN_PATH.read_text(encoding="utf-8")
+    method = _method_source(source, "on_handle_context", "on_decorate_reply")
+
+    assert 'mode="governed"' in method
+    assert "self._enqueue_memory_turn(" in method
+    assert 'kwargs["aliyun_memory_user_text"] = user_text' in method
+
+
+def test_reply_hook_only_keeps_the_explicit_legacy_fallback():
     source = PLUGIN_PATH.read_text(encoding="utf-8")
     method = source[source.index("    def on_decorate_reply("):]
 
-    governed = method.index("target = self._govern_memory_turn")
-    legacy = method.index("target = self._add_memory")
-    assert governed < legacy
-    assert "elif self.legacy_write_fallback" in method
+    assert "if self.governance_enabled and self.memory_governance is not None:" in method
+    assert "if not self.legacy_write_fallback:" in method
+    assert 'mode="legacy"' in method
     assert 'kwargs.get("xiaoyou_skip_long_memory_write")' in method
+    assert "threading.Thread(" not in source
