@@ -13,14 +13,15 @@ def _load_module():
     return module
 
 
-def test_ordinary_relationship_chat_bypasses_all_capability_models(monkeypatch):
+def test_photo_capability_always_uses_model_while_legacy_gates_remain(monkeypatch):
     monkeypatch.setenv("XIAOYOU_FAST_CHAT_ROUTE_ENABLED", "true")
     module = _load_module()
 
     for text in ("我想你了嘛", "我休息一会儿", "你得等等", "爱你悠悠"):
         assert module.might_need_capability(text, "reminder") is False
-        assert module.might_need_capability(text, "photo") is False
+        assert module.might_need_capability(text, "photo") is True
         assert module.might_need_capability(text, "external") is False
+    assert module.might_need_capability("嗯嗯好～", "photo") is True
 
 
 def test_domain_shaped_text_keeps_semantic_router(monkeypatch):

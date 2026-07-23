@@ -916,7 +916,10 @@ YoYo当前相关原话：
     def _record_photo_memory(self, session_id, share, source):
         visual = re.sub(r"\s+", " ", str(share.get("visual_prompt") or "")).strip()[:500]
         caption = re.sub(r"\s+", " ", str(share.get("caption") or "")).strip()[:500]
-        text = "[小悠分享了一张日常照片；画面：%s]" % (visual or "生活瞬间")
+        text = (
+            "[内部媒体事件：照片已实际送达；该记录不是小悠的微信文字；画面：%s]"
+            % (visual or "生活瞬间")
+        )
         if caption:
             text += " " + caption
         record_assistant_message(

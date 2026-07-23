@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """Conservative local gates for Xiaoyou's semantic capability routers.
 
-The gates never execute a capability.  They only identify ordinary chat that
-does not contain even a domain anchor, allowing it to bypass three sequential
-LLM classifiers.  Ambiguous or capability-shaped text still goes through the
-existing semantic model and keeps its full context-aware decision process.
+The gates never execute a capability. They only identify ordinary chat that
+can bypass the legacy reminder and external-tool classifiers. Photo routing is
+always model-first because an apparently generic continuation can complete a
+photo action established by the recent conversation.
 """
 
 import os
@@ -14,10 +14,6 @@ import re
 _ANCHORS = {
     "reminder": (
         "提醒", "闹钟", "叫醒", "到时候叫我", "记得叫我", "别忘了叫我",
-    ),
-    "photo": (
-        "照片", "自拍", "拍一张", "拍张", "发张", "发一张", "看看你",
-        "看下你", "看一下你", "给我看看", "长什么样", "穿什么",
     ),
     "external": (
         "天气", "气温", "下雨", "下雪", "空气质量", "路线", "导航",
@@ -36,9 +32,11 @@ def fast_route_enabled():
 
 def might_need_capability(text, capability, *, pending_user_image=False):
     """Return True when the semantic classifier must still inspect the text."""
-    if not fast_route_enabled():
+    del pending_user_image
+    capability = str(capability or "").strip().lower()
+    if capability == "photo":
         return True
-    if capability == "photo" and pending_user_image:
+    if not fast_route_enabled():
         return True
 
     normalized = re.sub(r"\s+", "", str(text or "")).lower()
@@ -47,7 +45,7 @@ def might_need_capability(text, capability, *, pending_user_image=False):
     if re.search(r"https?://|www\.", normalized, re.I) and capability == "external":
         return True
 
-    anchors = _ANCHORS.get(str(capability or "").strip().lower())
+    anchors = _ANCHORS.get(capability)
     if not anchors:
         return True
     if any(anchor.lower() in normalized for anchor in anchors):

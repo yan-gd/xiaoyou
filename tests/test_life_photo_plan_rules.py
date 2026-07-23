@@ -16,24 +16,30 @@ RULES_PATH = os.path.join(
 SPEC = importlib.util.spec_from_file_location("xiaoyou_life_photo_plan_rules", RULES_PATH)
 RULES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RULES)
+PLUGIN_PATH = os.path.join(
+    ROOT,
+    "plugins",
+    "xiaoyou_life_photo",
+    "__init__.py",
+)
+CHAT_PATH = os.path.join(
+    ROOT,
+    "plugins",
+    "xiaoyou_chat",
+    "__init__.py",
+)
 
 
 def load_seedream_prompt_builder():
-    plugin_path = os.path.join(
-        ROOT,
-        "plugins",
-        "xiaoyou_life_photo",
-        "__init__.py",
-    )
-    with open(plugin_path, "r", encoding="utf-8") as handle:
-        tree = ast.parse(handle.read(), filename=plugin_path)
+    with open(PLUGIN_PATH, "r", encoding="utf-8") as handle:
+        tree = ast.parse(handle.read(), filename=PLUGIN_PATH)
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "XiaoyouLifePhoto":
             for item in node.body:
                 if isinstance(item, ast.FunctionDef) and item.name == "_build_seedream_prompt":
                     module = ast.Module(body=[item], type_ignores=[])
                     namespace = {"json": json}
-                    exec(compile(module, plugin_path, "exec"), namespace)
+                    exec(compile(module, PLUGIN_PATH, "exec"), namespace)
                     return namespace["_build_seedream_prompt"]
     raise AssertionError("_build_seedream_prompt not found")
 
@@ -191,6 +197,22 @@ class LifePhotoPlanRulesTest(unittest.TestCase):
         self.assertIn("最后的YoYo自拍只定义YoYo", prompt)
         self.assertIn("严禁换脸、融脸", prompt)
         self.assertIn("21", prompt)
+
+    def test_delivered_photo_history_is_marked_as_internal_media_event(self):
+        with open(PLUGIN_PATH, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        self.assertIn("内部媒体事件：照片已实际送达", source)
+        self.assertIn("该记录不是小悠的微信文字", source)
+        self.assertNotIn("[小悠分享了一张日常照片；画面：", source)
+
+    def test_text_chat_cannot_simulate_an_image_attachment(self):
+        with open(CHAT_PATH, "r", encoding="utf-8") as handle:
+            source = handle.read()
+
+        self.assertIn("不能附加或发送图片", source)
+        self.assertIn("不得用画面描述、提示词、方括号媒体记录", source)
+        self.assertIn("不得声称照片已经拍好或发出", source)
 
 
 if __name__ == "__main__":

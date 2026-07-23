@@ -39,7 +39,6 @@ def load_service():
             short_memory="最近对话上下文"
         ),
         "build_thinking_payload": lambda prefix: {},
-        "might_need_capability": lambda *args, **kwargs: True,
         "chat_completion": None,
     }
     exec(compile(ast.Module(body=selected, type_ignores=[]), SOURCE_PATH, "exec"), namespace)
@@ -145,11 +144,39 @@ class PhotoSemanticRouteTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(1, len(calls))
 
+    def test_casual_acknowledgement_still_uses_recent_context_model_route(self):
+        calls = []
+
+        def complete(**kwargs):
+            calls.append(kwargs)
+            return self._result({
+                "route": "generate_xiaoyou_photo",
+                "time_scope": "now",
+                "subject": "xiaoyou",
+                "confidence": 0.94,
+                "reason": "承接小悠刚刚立即分享照片的动作",
+            })
+
+        self.service["chat_completion"] = complete
+        route = self.service["classify_photo_semantics"](
+            text="嗯嗯好～",
+            session_id="yoyo",
+            context=DummyContext(),
+        )
+
+        self.assertTrue(route.should_generate)
+        self.assertEqual(1, len(calls))
+        prompt = calls[0]["payload"]["messages"][1]["content"]
+        self.assertIn("最近对话上下文", prompt)
+        self.assertIn("不能要求当前原话独自重复照片对象", prompt)
+
     def test_source_contains_no_keyword_or_regex_router(self):
         with open(SOURCE_PATH, "r", encoding="utf-8") as handle:
             source = handle.read()
         self.assertNotIn("re.compile", source)
         self.assertNotIn("re.search", source)
+        self.assertNotIn("might_need_capability", source)
+        self.assertNotIn("fast chat bypass", source)
 
 
 if __name__ == "__main__":

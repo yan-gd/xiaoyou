@@ -15,7 +15,6 @@ from common.log import logger
 from plugins.xiaoyou_common.context_service import build_context_snapshot
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
-from plugins.xiaoyou_common.intent_fastpath import might_need_capability
 
 
 ROUTE_GENERATE = "generate_xiaoyou_photo"
@@ -64,26 +63,6 @@ def classify_photo_semantics(
         _cache_route(context, text, route)
         return route
 
-    if not might_need_capability(
-        text,
-        "photo",
-        pending_user_image=pending_user_image,
-    ):
-        route = PhotoSemanticRoute(
-            route=ROUTE_INDEPENDENT,
-            time_scope="unclear",
-            subject="unknown",
-            confidence=1.0,
-            reason="ordinary chat fast path",
-            model_ok=True,
-        )
-        _cache_route(context, text, route)
-        logger.info(
-            "[PhotoIntentService] fast chat bypass session=%s",
-            _mask_session(session_id),
-        )
-        return route
-
     snapshot = build_context_snapshot(
         content=text,
         session_id=session_id,
@@ -106,6 +85,8 @@ def classify_photo_semantics(
 - “等会、进去以后、下次、以后再”属于future，不能现在生成。
 - YoYo说自己拍了、看到了或保存了一张照片，不等于要求小悠生成新照片。
 - 当前有待理解图片时，明确的新照片生成请求优先于图片补充；完全无关的新话题则选择independent_text。
+- 必须结合最近对话理解省略表达，不能要求当前原话独自重复照片对象。若小悠刚刚明确表示马上拍摄或分享照片，而 YoYo 当前是在自然接受、确认、等待或继续这一动作，应视为双方正在执行的即时照片请求，选择generate_xiaoyou_photo和now。
+- 若最近对话表明照片已经真实送达，后续评价或回应不能再次生成同一张照片。
 - 不确定时保守选择independent_text，绝不靠单个词猜测。
 
 最近对话：
