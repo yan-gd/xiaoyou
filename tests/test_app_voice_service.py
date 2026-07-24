@@ -73,7 +73,7 @@ def test_streaming_wav_placeholder_length_uses_actual_downloaded_bytes(
     assert 1790 <= module._wav_duration_ms(bytes(payload)) <= 1810
 
 
-def test_app_voice_uses_qwen_asr_and_volcengine_xiaohe_tts(
+def test_app_voice_uses_qwen_asr_and_volcengine_rouguhunshi_tts(
     monkeypatch,
 ):
     module = _load_voice_service(monkeypatch)
@@ -94,12 +94,12 @@ def test_app_voice_uses_qwen_asr_and_volcengine_xiaohe_tts(
     assert service.asr_model == "qwen3-asr-flash"
     assert service.tts_provider == "volcengine"
     assert service.tts_model == "seed-tts-2.0"
-    assert service.tts_voice == "zh_female_xiaohe_uranus_bigtts"
+    assert service.tts_voice == "ICL_uranus_zh_female_rouguhunshi_tob"
     assert service.asr_available is True
     assert service.tts_available is True
 
     calls = {}
-    audio_parts = [b"ID3-xiaohe-", b"voice"]
+    audio_parts = [b"ID3-rouguhunshi-", b"voice"]
 
     class _Response:
         def __init__(self):
@@ -157,7 +157,7 @@ def test_app_voice_uses_qwen_asr_and_volcengine_xiaohe_tts(
     assert "Authorization" not in calls["headers"]
     assert (
         calls["payload"]["req_params"]["speaker"]
-        == "zh_female_xiaohe_uranus_bigtts"
+        == "ICL_uranus_zh_female_rouguhunshi_tob"
     )
     assert calls["payload"]["req_params"]["audio_params"] == {
         "format": "mp3",

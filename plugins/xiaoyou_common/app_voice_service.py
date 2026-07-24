@@ -58,9 +58,9 @@ class AppVoiceService:
         self.tts_voice = (
             os.getenv(
                 "XIAOYOU_APP_TTS_VOICE",
-                "zh_female_xiaohe_uranus_bigtts",
+                "ICL_uranus_zh_female_rouguhunshi_tob",
             ).strip()
-            or "zh_female_xiaohe_uranus_bigtts"
+            or "ICL_uranus_zh_female_rouguhunshi_tob"
         )
         self.compatible_base_url = (
             os.getenv("XIAOYOU_APP_ASR_BASE_URL")

@@ -3,11 +3,12 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:just_audio/just_audio.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'chat_models.dart';
 import 'media_save_service.dart';
@@ -2769,8 +2770,11 @@ class _MessageRowState extends State<_MessageRow>
   bool _renderReported = false;
   AudioPlayer? _voicePlayer;
   StreamSubscription<PlayerState>? _voiceStateSubscription;
-  StreamSubscription<Duration>? _voiceDurationSubscription;
-  StreamSubscription<void>? _voiceCompleteSubscription;
+  StreamSubscription<Duration?>? _voiceDurationSubscription;
+  AndroidLoudnessEnhancer? _voiceLoudnessEnhancer;
+  File? _voiceTempFile;
+  bool _voiceEffectsReady = false;
+  bool _voiceHasSource = false;
   bool _voiceLoading = false;
   bool _voicePlaying = false;
   Duration _voiceDuration = Duration.zero;
@@ -2787,10 +2791,25 @@ class _MessageRowState extends State<_MessageRow>
   void dispose() {
     _voiceStateSubscription?.cancel();
     _voiceDurationSubscription?.cancel();
-    _voiceCompleteSubscription?.cancel();
     _voicePlayer?.dispose();
+    unawaited(_deleteVoiceTempFile());
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _deleteVoiceTempFile() async {
+    final file = _voiceTempFile;
+    _voiceTempFile = null;
+    if (file == null) {
+      return;
+    }
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (_) {
+      // The OS will eventually clear its temporary directory.
+    }
   }
 
   void _reportRendered() {
@@ -2889,24 +2908,49 @@ class _MessageRowState extends State<_MessageRow>
     if (existing != null) {
       return existing;
     }
-    final player = AudioPlayer();
-    _voiceStateSubscription = player.onPlayerStateChanged.listen((state) {
+    final loudnessEnhancer =
+        Platform.isAndroid ? AndroidLoudnessEnhancer() : null;
+    final player = AudioPlayer(
+      audioPipeline: AudioPipeline(
+        androidAudioEffects: [
+          if (loudnessEnhancer != null) loudnessEnhancer,
+        ],
+      ),
+    );
+    _voiceLoudnessEnhancer = loudnessEnhancer;
+    _voiceStateSubscription = player.playerStateStream.listen((state) {
       if (mounted) {
-        setState(() => _voicePlaying = state == PlayerState.playing);
+        setState(
+          () => _voicePlaying = state.playing &&
+              state.processingState != ProcessingState.completed,
+        );
       }
     });
-    _voiceDurationSubscription = player.onDurationChanged.listen((duration) {
-      if (mounted) {
+    _voiceDurationSubscription = player.durationStream.listen((duration) {
+      if (mounted && duration != null) {
         setState(() => _voiceDuration = duration);
-      }
-    });
-    _voiceCompleteSubscription = player.onPlayerComplete.listen((_) {
-      if (mounted) {
-        setState(() => _voicePlaying = false);
       }
     });
     _voicePlayer = player;
     return player;
+  }
+
+  Future<void> _prepareVoiceEffects(AudioPlayer player) async {
+    if (_voiceEffectsReady) {
+      return;
+    }
+    await player.setVolume(1);
+    final loudnessEnhancer = _voiceLoudnessEnhancer;
+    if (loudnessEnhancer != null) {
+      try {
+        // +6.0206 dB doubles signal amplitude without changing system volume.
+        await loudnessEnhancer.setTargetGain(6.0206);
+        await loudnessEnhancer.setEnabled(true);
+      } catch (_) {
+        // Unsupported devices still play at the normal maximum volume.
+      }
+    }
+    _voiceEffectsReady = true;
   }
 
   Future<void> _toggleVoice() async {
@@ -2918,8 +2962,11 @@ class _MessageRowState extends State<_MessageRow>
       await player.pause();
       return;
     }
-    if (player.state == PlayerState.paused) {
-      await player.resume();
+    if (_voiceHasSource) {
+      if (player.processingState == ProcessingState.completed) {
+        await player.seek(Duration.zero);
+      }
+      unawaited(player.play());
       return;
     }
     final message = widget.message;
@@ -2929,19 +2976,29 @@ class _MessageRowState extends State<_MessageRow>
     }
     setState(() => _voiceLoading = true);
     try {
+      await _prepareVoiceEffects(player);
       if (message.localPath.isNotEmpty) {
-        await player.play(
-          DeviceFileSource(
-            message.localPath,
-            mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
-          ),
-        );
+        final duration = await player.setFilePath(message.localPath);
+        if (mounted && duration != null) {
+          setState(() => _voiceDuration = duration);
+        }
       } else {
         final media = await widget.api!.downloadMedia(message.mediaId);
-        await player.play(
-          BytesSource(media.bytes, mimeType: media.mimeType),
+        final tempDirectory = await getTemporaryDirectory();
+        final file = File(
+          '${tempDirectory.path}${Platform.pathSeparator}'
+          'xiaoyou-voice-${message.mediaId.hashCode.toUnsigned(32)}'
+          '${_audioFileExtension(media.mimeType)}',
         );
+        await file.writeAsBytes(media.bytes, flush: true);
+        _voiceTempFile = file;
+        final duration = await player.setFilePath(file.path);
+        if (mounted && duration != null) {
+          setState(() => _voiceDuration = duration);
+        }
       }
+      _voiceHasSource = true;
+      unawaited(player.play());
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -3651,17 +3708,6 @@ class _EmojiPanel extends StatelessWidget {
     '🏠',
   ];
 
-  static const _quickStickers = [
-    '🥰🥰 想你啦',
-    '🥹 抱抱~',
-    '😘 亲一下',
-    '😤 哼！',
-    '😂 笑死',
-    '🫡 偷看',
-    '💕 爱你',
-    '💤 晚安',
-  ];
-
   final ValueChanged<String> onSelected;
   final VoidCallback onCollapse;
 
@@ -3678,38 +3724,22 @@ class _EmojiPanel extends StatelessWidget {
       child: Column(
         children: [
           SizedBox(
-            height: 39,
-            child: Row(
-              children: [
-                Expanded(
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: _quickStickers.length,
-                    separatorBuilder: (_, __) => const SizedBox(width: 7),
-                    itemBuilder: (context, index) => ActionChip(
-                      label: Text(_quickStickers[index]),
-                      onPressed: () => onSelected(_quickStickers[index]),
-                      visualDensity: VisualDensity.compact,
-                      backgroundColor: Colors.white,
-                      side: const BorderSide(color: Color(0xffeadde4)),
-                    ),
+            height: 38,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: SizedBox(
+                width: 38,
+                height: 38,
+                child: IconButton.filledTonal(
+                  tooltip: '收起表情面板',
+                  onPressed: onCollapse,
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xfff1e5eb),
+                    foregroundColor: _roseDark,
                   ),
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded),
                 ),
-                const SizedBox(width: 7),
-                SizedBox(
-                  width: 38,
-                  height: 38,
-                  child: IconButton.filledTonal(
-                    tooltip: '收起表情面板',
-                    onPressed: onCollapse,
-                    style: IconButton.styleFrom(
-                      backgroundColor: const Color(0xfff1e5eb),
-                      foregroundColor: _roseDark,
-                    ),
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 7),
@@ -5075,6 +5105,19 @@ String _newId(String prefix) {
   final random = Random.secure().nextInt(0x7fffffff).toRadixString(16);
   final time = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
   return prefix.isEmpty ? '$time$random' : '$prefix-$time$random';
+}
+
+String _audioFileExtension(String mimeType) {
+  return switch (mimeType.toLowerCase()) {
+    'audio/aac' => '.aac',
+    'audio/flac' => '.flac',
+    'audio/mpeg' => '.mp3',
+    'audio/ogg' => '.ogg',
+    'audio/opus' => '.opus',
+    'audio/wav' || 'audio/x-wav' => '.wav',
+    'audio/webm' => '.webm',
+    _ => '.m4a',
+  };
 }
 
 bool _sameDay(DateTime a, DateTime b) {

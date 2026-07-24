@@ -510,7 +510,7 @@ def test_app_channel_configuration_is_safe_by_default():
     assert "XIAOYOU_APP_TTS_MODEL: 'seed-tts-2.0'" in compose
     assert (
         "XIAOYOU_APP_TTS_VOICE: "
-        "'zh_female_xiaohe_uranus_bigtts'"
+        "'ICL_uranus_zh_female_rouguhunshi_tob'"
     ) in compose
     assert "XIAOYOU_APP_TTS_API_KEY:" in compose
     assert "XIAOYOU_APP_TTS_ACCESS_KEY:" in compose
