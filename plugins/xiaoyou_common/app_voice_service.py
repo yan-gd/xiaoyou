@@ -62,6 +62,12 @@ class AppVoiceService:
             ).strip()
             or "ICL_uranus_zh_female_rouguhunshi_tob"
         )
+        self.tts_loudness_rate = _bounded_int_env(
+            "XIAOYOU_APP_TTS_LOUDNESS_RATE",
+            default=100,
+            minimum=-50,
+            maximum=100,
+        )
         self.compatible_base_url = (
             os.getenv("XIAOYOU_APP_ASR_BASE_URL")
             or os.getenv("OPEN_AI_API_BASE")
@@ -222,6 +228,7 @@ class AppVoiceService:
                 "provider": self.tts_provider,
                 "model": self.tts_model,
                 "voice": self.tts_voice,
+                "loudness_rate": self.tts_loudness_rate,
                 "characters": len(text),
                 "audio_bytes": len(audio_bytes),
                 "duration_ms": duration_ms,
@@ -230,11 +237,12 @@ class AppVoiceService:
         )
         logger.info(
             "[AppVoice] TTS completed provider=%s model=%s voice=%s "
-            "characters=%s "
+            "loudness_rate=%s characters=%s "
             "duration_ms=%s elapsed=%.2fs",
             self.tts_provider,
             self.tts_model,
             self.tts_voice,
+            self.tts_loudness_rate,
             len(text),
             duration_ms,
             elapsed,
@@ -264,6 +272,7 @@ class AppVoiceService:
                     "audio_params": {
                         "format": "mp3",
                         "sample_rate": 24000,
+                        "loudness_rate": self.tts_loudness_rate,
                     },
                 },
             },
@@ -349,6 +358,15 @@ class AppVoiceService:
 
 def _truthy(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _bounded_int_env(name, *, default, minimum, maximum):
+    raw = str(os.getenv(name, str(default)) or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = int(default)
+    return max(int(minimum), min(value, int(maximum)))
 
 
 def _safe_audio_mime(value):

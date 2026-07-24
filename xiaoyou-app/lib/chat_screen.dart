@@ -2771,9 +2771,7 @@ class _MessageRowState extends State<_MessageRow>
   AudioPlayer? _voicePlayer;
   StreamSubscription<PlayerState>? _voiceStateSubscription;
   StreamSubscription<Duration?>? _voiceDurationSubscription;
-  AndroidLoudnessEnhancer? _voiceLoudnessEnhancer;
   File? _voiceTempFile;
-  bool _voiceEffectsReady = false;
   bool _voiceHasSource = false;
   bool _voiceLoading = false;
   bool _voicePlaying = false;
@@ -2908,16 +2906,7 @@ class _MessageRowState extends State<_MessageRow>
     if (existing != null) {
       return existing;
     }
-    final loudnessEnhancer =
-        Platform.isAndroid ? AndroidLoudnessEnhancer() : null;
-    final player = AudioPlayer(
-      audioPipeline: AudioPipeline(
-        androidAudioEffects: [
-          if (loudnessEnhancer != null) loudnessEnhancer,
-        ],
-      ),
-    );
-    _voiceLoudnessEnhancer = loudnessEnhancer;
+    final player = AudioPlayer();
     _voiceStateSubscription = player.playerStateStream.listen((state) {
       if (mounted) {
         setState(
@@ -2933,24 +2922,6 @@ class _MessageRowState extends State<_MessageRow>
     });
     _voicePlayer = player;
     return player;
-  }
-
-  Future<void> _prepareVoiceEffects(AudioPlayer player) async {
-    if (_voiceEffectsReady) {
-      return;
-    }
-    await player.setVolume(1);
-    final loudnessEnhancer = _voiceLoudnessEnhancer;
-    if (loudnessEnhancer != null) {
-      try {
-        // +6.0206 dB doubles signal amplitude without changing system volume.
-        await loudnessEnhancer.setTargetGain(6.0206);
-        await loudnessEnhancer.setEnabled(true);
-      } catch (_) {
-        // Unsupported devices still play at the normal maximum volume.
-      }
-    }
-    _voiceEffectsReady = true;
   }
 
   Future<void> _toggleVoice() async {
@@ -2976,7 +2947,6 @@ class _MessageRowState extends State<_MessageRow>
     }
     setState(() => _voiceLoading = true);
     try {
-      await _prepareVoiceEffects(player);
       if (message.localPath.isNotEmpty) {
         final duration = await player.setFilePath(message.localPath);
         if (mounted && duration != null) {

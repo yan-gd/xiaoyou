@@ -95,6 +95,7 @@ def test_app_voice_uses_qwen_asr_and_volcengine_rouguhunshi_tts(
     assert service.tts_provider == "volcengine"
     assert service.tts_model == "seed-tts-2.0"
     assert service.tts_voice == "ICL_uranus_zh_female_rouguhunshi_tob"
+    assert service.tts_loudness_rate == 100
     assert service.asr_available is True
     assert service.tts_available is True
 
@@ -162,10 +163,34 @@ def test_app_voice_uses_qwen_asr_and_volcengine_rouguhunshi_tts(
     assert calls["payload"]["req_params"]["audio_params"] == {
         "format": "mp3",
         "sample_rate": 24000,
+        "loudness_rate": 100,
     }
     assert voice.data == b"".join(audio_parts)
     assert voice.mime_type == "audio/mpeg"
     assert voice.duration_ms == 1250
+
+
+def test_volcengine_tts_loudness_rate_is_configurable_and_clamped(
+    monkeypatch,
+):
+    module = _load_voice_service(monkeypatch)
+    monkeypatch.setenv("OPEN_AI_API_KEY", "asr-test-key")
+    monkeypatch.setenv("XIAOYOU_APP_TTS_API_KEY", "speech-test-key")
+
+    monkeypatch.setenv("XIAOYOU_APP_TTS_LOUDNESS_RATE", "45")
+    assert module.AppVoiceService().tts_loudness_rate == 45
+
+    monkeypatch.setenv("XIAOYOU_APP_TTS_LOUDNESS_RATE", "500")
+    assert module.AppVoiceService().tts_loudness_rate == 100
+
+    monkeypatch.setenv("XIAOYOU_APP_TTS_LOUDNESS_RATE", "-500")
+    assert module.AppVoiceService().tts_loudness_rate == -50
+
+    monkeypatch.setenv(
+        "XIAOYOU_APP_TTS_LOUDNESS_RATE",
+        "not-an-integer",
+    )
+    assert module.AppVoiceService().tts_loudness_rate == 100
 
 
 def test_volcengine_tts_supports_legacy_app_id_access_key_auth(

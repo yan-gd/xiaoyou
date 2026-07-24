@@ -9,8 +9,8 @@
 - 键盘、输入栏和对话列表同步平滑上移，最后一条消息不再二次跳动
 - 客户端消息幂等 ID、失败重试和实际接收后的送达回执
 - 相册、拍摄、表情包发送，用户图片会进入小悠现有的视觉理解链路
-- 按下立即录音、上滑取消、语音转写、历史语音播放；Android 播放使用
-  `+6.02 dB` 响度增强（约 2 倍振幅），不修改手机系统音量
+- 按下立即录音、上滑取消、语音转写、历史语音播放；TTS 由服务器使用
+  `loudness_rate=100` 统一生成 2 倍音量，Android/iOS 不再叠加客户端增益
 - 聊天记录搜索、定位高亮、长按回复/复制、新消息计数与未发送草稿恢复
 - 搜索支持今天、近 7/30 天、指定日期以及文字、图片、语音、表情包类型筛选
 - Android 原生后台消息服务、系统真实授权状态、测试通知、通知声音/振动/正文预览，以及字体、消息密度、配色和气泡圆角 DIY
@@ -92,6 +92,7 @@ XIAOYOU_APP_TOKEN=使用 openssl rand -hex 32 生成的随机值
 XIAOYOU_APP_VOICE_ENABLED=true
 XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED=true
 XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
+XIAOYOU_APP_TTS_LOUDNESS_RATE=100
 ```
 
 语音识别默认使用 `qwen3-asr-flash`，语音合成使用
@@ -101,7 +102,8 @@ XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 `XIAOYOU_APP_TTS_APP_ID` 和 `XIAOYOU_APP_TTS_ACCESS_KEY`。所有密钥
 均只留在服务器，不会进入 APK。语音转写作为用户原话进入同一套记忆链路，
 音频文件保存在 `data/app_channel/media/`。用户发送的图片与表情包也保存在该目录，单张限制 8 MiB。
-火山 V3 接口返回 MP3 与真实时长；合成失败会退回文字，不影响本轮回复。
+火山音频生成 HTTP 接口返回 MP3 与真实时长，默认通过
+`loudness_rate=100` 生成 2 倍音量；合成失败会退回文字，不影响本轮回复。
 App 文字回合默认使用 `qwen3.7-plus` 对“用户原话、近期对话、已生成回复”
 做一次语义媒介判断，不使用关键词或正则触发。该判断会增加一次轻量模型
 调用及少量等待；只决定发送文字还是语音，不会重写回复内容。语音输入继续
