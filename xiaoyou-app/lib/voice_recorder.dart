@@ -18,6 +18,7 @@ class RecordedVoice {
 class VoiceRecorderController {
   final AudioRecorder _recorder = AudioRecorder();
   DateTime? _startedAt;
+  Directory? _temporaryDirectory;
   String? _path;
 
   Stream<double> amplitudeStream() {
@@ -26,11 +27,20 @@ class VoiceRecorderController {
         .map((value) => value.current);
   }
 
-  Future<bool> start() async {
-    if (!await _recorder.hasPermission()) {
+  Future<bool> prepare() async {
+    final allowed = await _recorder.hasPermission();
+    if (!allowed) {
       return false;
     }
-    final directory = await getTemporaryDirectory();
+    _temporaryDirectory ??= await getTemporaryDirectory();
+    return true;
+  }
+
+  Future<bool> start() async {
+    if (!await prepare()) {
+      return false;
+    }
+    final directory = _temporaryDirectory!;
     final path = '${directory.path}${Platform.pathSeparator}'
         'xiaoyou-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
     await _recorder.start(

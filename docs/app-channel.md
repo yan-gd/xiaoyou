@@ -155,6 +155,24 @@ X-Client-Created-At: 1784780010
 服务端最多接收 6 MiB；客户端当前限制最长 60 秒。成功响应包含转写文本、
 持久化 `media_id`、MIME 和时长。重试同一 ID 返回原结果，不生成第二轮回复。
 
+### 提交图片或表情包
+
+```http
+POST /v1/image-messages
+Content-Type: image/png
+X-Message-Id: image-唯一ID
+X-Message-Kind: image
+X-Device-Id: yoyo-phone
+X-Client-Sequence: 20
+X-Client-Created-At: 1784780020
+
+<原始图片字节>
+```
+
+`X-Message-Kind` 可为 `image` 或 `sticker`；支持 JPEG、PNG、WebP 和 GIF，
+默认单张最大 8 MiB。图片保存到 `data/app_channel/media/`，并作为
+`ContextType.IMAGE` 进入现有 QwenVision 理解链路，不会新建第二套图片判断。
+
 ### 拉取事件和历史
 
 ```http
@@ -163,7 +181,7 @@ GET /v1/history?device_id=yoyo-phone&limit=200
 GET /v1/media/<media_id>?device_id=yoyo-phone
 ```
 
-事件 `kind` 可以是 `text`、`image` 或 `voice`。语音事件同时带有
+事件 `kind` 可以是 `text`、`image`、`sticker` 或 `voice`。语音事件同时带有
 `text`（转写/对应回复）、`media_id`、`mime_type` 和 `duration_ms`。
 
 ### 提交送达终态
@@ -195,6 +213,7 @@ data/app_channel/media/
 - 语音识别会增加一次 ASR 调用费用和等待时间。
 - 语音回复会增加一次 CosyVoice 调用；TTS 完成后 App 才收到可播放事件。
 - 音频会占用 `data/` 磁盘空间，当前没有自动过期清理。
+- 图片和表情包同样占用 `data/` 磁盘空间，并会增加一次视觉模型调用。
 - App 语音回合不经过文字 SplitReply，以保证整段回复使用同一语音气泡。
 - App 关闭后台时仍没有 FCM/APNs 通知，消息会保存在收件箱并在下次打开时显示。
 - 关闭 `XIAOYOU_APP_VOICE_ENABLED` 只停用 App 语音，不影响文字聊天和微信。

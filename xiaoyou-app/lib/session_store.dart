@@ -31,6 +31,7 @@ class SessionStore {
   static const _baseUrlKey = 'xiaoyou.base_url';
   static const _deviceIdKey = 'xiaoyou.device_id';
   static const _appLockKey = 'xiaoyou.app_lock';
+  static const _draftKey = 'xiaoyou.chat_draft';
   static const _tokenKey = 'xiaoyou.connection_token';
 
   final SharedPreferencesAsync _preferences;
@@ -68,10 +69,23 @@ class SessionStore {
     await _preferences.setBool(_appLockKey, enabled);
   }
 
+  Future<String> readDraft() async {
+    return (await _preferences.getString(_draftKey)) ?? '';
+  }
+
+  Future<void> saveDraft(String value) async {
+    if (value.isEmpty) {
+      await _preferences.remove(_draftKey);
+      return;
+    }
+    await _preferences.setString(_draftKey, value);
+  }
+
   Future<void> clear() async {
     await _secureStorage.delete(key: _tokenKey);
     await _preferences.remove(_baseUrlKey);
     await _preferences.remove(_deviceIdKey);
     await _preferences.remove(_appLockKey);
+    await _preferences.remove(_draftKey);
   }
 }

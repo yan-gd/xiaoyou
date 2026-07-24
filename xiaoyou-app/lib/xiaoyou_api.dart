@@ -122,6 +122,47 @@ class XiaoyouApi {
     );
   }
 
+  Future<ImageSendResult> sendImage({
+    required String messageId,
+    required Uint8List imageBytes,
+    required String mimeType,
+    required String kind,
+    required int sequence,
+  }) async {
+    final uri = _uri('/v1/image-messages');
+    final request = await _client.openUrl('POST', uri);
+    request.persistentConnection = true;
+    request.headers
+      ..set(HttpHeaders.acceptHeader, 'application/json')
+      ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
+      ..set(HttpHeaders.contentTypeHeader, mimeType)
+      ..set('X-Message-Id', messageId)
+      ..set('X-Message-Kind', kind == 'sticker' ? 'sticker' : 'image')
+      ..set('X-Device-Id', deviceId)
+      ..set('X-Client-Sequence', '$sequence')
+      ..set(
+        'X-Client-Created-At',
+        '${DateTime.now().millisecondsSinceEpoch ~/ 1000}',
+      )
+      ..contentLength = imageBytes.length;
+    request.add(imageBytes);
+    final response = await request.close().timeout(
+          const Duration(seconds: 75),
+        );
+    final payload = await _jsonResponse(
+      response,
+      uri,
+      timeout: const Duration(seconds: 75),
+    );
+    return ImageSendResult(
+      accepted: payload['accepted'] == true,
+      duplicate: payload['duplicate'] == true,
+      kind: '${payload['kind'] ?? kind}',
+      mediaId: '${payload['media_id'] ?? ''}',
+      mimeType: '${payload['mime_type'] ?? mimeType}',
+    );
+  }
+
   Future<List<Map<String, dynamic>>> eventsAfter(int sequence) async {
     final payload = await _request(
       'GET',
@@ -257,6 +298,22 @@ class VoiceSendResult {
   final String mediaId;
   final String mimeType;
   final int durationMs;
+}
+
+class ImageSendResult {
+  const ImageSendResult({
+    required this.accepted,
+    required this.duplicate,
+    required this.kind,
+    required this.mediaId,
+    required this.mimeType,
+  });
+
+  final bool accepted;
+  final bool duplicate;
+  final String kind;
+  final String mediaId;
+  final String mimeType;
 }
 
 class MediaPayload {

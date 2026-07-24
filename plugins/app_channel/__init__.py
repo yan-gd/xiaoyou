@@ -59,6 +59,11 @@ def _truthy(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _input_kind(value):
+    value = str(value or "text").strip().lower()
+    return value if value in ("text", "voice", "image", "sticker") else "text"
+
+
 def _safe_device_id(value):
     value = str(value or "").strip()
     if not value or len(value) > 128:
@@ -310,7 +315,7 @@ class AppInboxStore:
                         WHERE message_id=?
                         """,
                         (
-                            "voice" if str(kind) == "voice" else "text",
+                            _input_kind(kind),
                             str(text),
                             str(media_id or ""),
                             str(mime_type or ""),
@@ -339,7 +344,7 @@ class AppInboxStore:
                     str(message_id),
                     str(session_id),
                     str(device_id),
-                    "voice" if str(kind) == "voice" else "text",
+                    _input_kind(kind),
                     str(text),
                     str(media_id or ""),
                     str(mime_type or ""),
@@ -625,6 +630,10 @@ class AppInboxStore:
             "audio/wav": ".wav",
             "audio/webm": ".webm",
             "audio/x-m4a": ".m4a",
+            "image/gif": ".gif",
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
         }.get(mime_type, ".bin")
         media_id = uuid.uuid4().hex
         target = MEDIA_DIR / (media_id + suffix)
@@ -637,7 +646,11 @@ class AppInboxStore:
                 """,
                 (media_id, device_id, str(target), mime_type, int(time.time())),
             )
-        return {"media_id": media_id, "mime_type": mime_type}
+        return {
+            "media_id": media_id,
+            "mime_type": mime_type,
+            "local_path": str(target),
+        }
 
     def events_after(self, device_id, after=0, limit=50):
         device_id = _safe_device_id(device_id)
@@ -1044,6 +1057,83 @@ class AppRuntimeChannel(ChatChannel):
             "duration_ms": max(0, int(duration_ms or 0)),
         }
 
+    def submit_image(
+        self,
+        *,
+        image_bytes,
+        mime_type,
+        kind,
+        message_id,
+        device_id,
+        client_sequence=None,
+        client_created_at=None,
+    ):
+        device_id = _safe_device_id(device_id)
+        message_id = str(message_id or "").strip()
+        kind = (
+            "sticker"
+            if str(kind or "").strip().lower() == "sticker"
+            else "image"
+        )
+        mime_type = str(mime_type or "").split(";", 1)[0].strip().lower()
+        if not message_id or len(message_id) > 128:
+            raise ValueError("invalid_message_id")
+        if not device_id:
+            raise ValueError("invalid_device_id")
+        if not mime_type.startswith("image/"):
+            raise ValueError("invalid_image_type")
+        existing = self.store.input_by_id(message_id, device_id)
+        if existing and existing["status"] != "failed":
+            return {
+                "accepted": False,
+                "duplicate": True,
+                **existing,
+            }
+
+        media = self.store.save_media_bytes(image_bytes, device_id, mime_type)
+        if not media or not media.get("local_path"):
+            raise ValueError("invalid_image")
+        visible_text = (
+            "[YoYo 发来了一张表情包]"
+            if kind == "sticker"
+            else "[YoYo 发来了一张图片]"
+        )
+        inserted = self.store.accept_input(
+            message_id=message_id,
+            session_id=self.canonical_session_id,
+            device_id=device_id,
+            kind=kind,
+            text=visible_text,
+            media_id=media["media_id"],
+            mime_type=media["mime_type"],
+            client_sequence=client_sequence,
+            client_created_at=client_created_at,
+        )
+        if not inserted:
+            existing = self.store.input_by_id(message_id, device_id) or {}
+            return {
+                "accepted": False,
+                "duplicate": True,
+                "message_id": message_id,
+                **existing,
+            }
+
+        self._produce_image(
+            image_path=media["local_path"],
+            kind=kind,
+            message_id=message_id,
+            device_id=device_id,
+        )
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "message_id": message_id,
+            "kind": kind,
+            "text": visible_text,
+            "media_id": media["media_id"],
+            "mime_type": media["mime_type"],
+        }
+
     def _produce_text(self, *, text, message_id, device_id, voice_reply):
         receiver = app_receiver(device_id)
         kwargs = {
@@ -1072,6 +1162,45 @@ class AppRuntimeChannel(ChatChannel):
             self.canonical_session_id,
             activity_ts=time.time(),
             source="app_input",
+            turn_id=message_id,
+            trace_id=context.get("xiaoyou_trace_id", ""),
+            input_id=message_id,
+        )
+        try:
+            self.produce(context)
+        except Exception:
+            self.store.mark_input_status(message_id, "failed")
+            raise
+        self.store.mark_input_status(message_id, "queued")
+
+    def _produce_image(self, *, image_path, kind, message_id, device_id):
+        receiver = app_receiver(device_id)
+        kwargs = {
+            "session_id": self.canonical_session_id,
+            "receiver": receiver,
+            "isgroup": False,
+            "origin_ctype": ContextType.IMAGE,
+            "xiaoyou_transport": "app",
+            "xiaoyou_app_device_id": device_id,
+            "xiaoyou_input_id": message_id,
+            "xiaoyou_source_message_ids": [message_id],
+            "xiaoyou_defer_memory_until_delivery": True,
+            "xiaoyou_input_kind": kind,
+            "xiaoyou_app_voice_reply": False,
+        }
+        context = Context(ContextType.IMAGE, str(image_path))
+        context.kwargs = kwargs
+        for key, value in kwargs.items():
+            context[key] = value
+
+        try:
+            attach_input_trace(context, source="app_receive")
+        except Exception:
+            logger.exception("[AppChannel] failed to attach image input trace")
+        note_user_activity(
+            self.canonical_session_id,
+            activity_ts=time.time(),
+            source="app_image_input",
             turn_id=message_id,
             trace_id=context.get("xiaoyou_trace_id", ""),
             input_id=message_id,
@@ -1217,6 +1346,25 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         try:
+            if parsed.path == "/v1/image-messages":
+                image_bytes = self._image_body()
+                result = self.plugin.runtime.submit_image(
+                    image_bytes=image_bytes,
+                    mime_type=self.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    ),
+                    kind=self.headers.get("X-Message-Kind", "image"),
+                    message_id=self.headers.get("X-Message-Id"),
+                    device_id=self.headers.get("X-Device-Id"),
+                    client_sequence=self._integer(
+                        self.headers.get("X-Client-Sequence"), 0
+                    ),
+                    client_created_at=self._integer(
+                        self.headers.get("X-Client-Created-At"), 0
+                    ),
+                )
+                self._json(202, result)
+                return
             if parsed.path == "/v1/voice-messages":
                 audio_bytes = self._voice_body()
                 result = self.plugin.runtime.submit_voice(
@@ -1334,6 +1482,34 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("invalid_audio_type")
         return self.rfile.read(length)
 
+    def _image_body(self):
+        maximum = max(
+            1024,
+            min(
+                int(
+                    os.getenv(
+                        "XIAOYOU_APP_IMAGE_MAX_BYTES",
+                        str(8 * 1024 * 1024),
+                    )
+                ),
+                16 * 1024 * 1024,
+            ),
+        )
+        length = self._integer(self.headers.get("Content-Length"), 0)
+        if length < 1 or length > maximum:
+            raise ValueError("invalid_image_size")
+        mime_type = str(
+            self.headers.get("Content-Type") or ""
+        ).split(";", 1)[0].strip().lower()
+        if mime_type not in (
+            "image/gif",
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+        ):
+            raise ValueError("invalid_image_type")
+        return self.rfile.read(length)
+
     def _sse(self, device_id, query):
         after = self._integer((query.get("after") or [0])[0], 0)
         events = self.plugin.store.wait_for_events(device_id, after, timeout=25)
@@ -1394,7 +1570,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.1-app-voice",
+    version="1.2-app-media",
     author="yoyo",
     desire_priority=10001,
 )

@@ -31,6 +31,7 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_TTS_VOICE: 'longyan_v3' # 温暖温柔的女声，仅App语音输入触发。
       XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别、合成或音频下载最多等待45秒。
       XIAOYOU_APP_VOICE_MAX_BYTES: '6291456' # 单条App录音最多6MiB；客户端同时限制60秒。
+      XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608' # App上传图片或表情包最大8MiB；Nginx需同步允许8m。
       SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。
       REMINDER_LOVE_STATE_PATH: '/app/data/reminder_love/reminders.json' # 提醒任务状态。
       PROACTIVE_LOVE_STATE_PATH: '/app/data/proactive_love/proactive_state.json' # 主动消息调度状态。

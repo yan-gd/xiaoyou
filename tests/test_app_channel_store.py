@@ -15,6 +15,7 @@ def _load_app_channel(monkeypatch, tmp_path):
 
     class _ContextType(Enum):
         TEXT = 1
+        IMAGE = 2
 
     class _ReplyType(Enum):
         TEXT = 1
@@ -232,10 +233,66 @@ def test_app_channel_configuration_is_safe_by_default():
         "'${XIAOYOU_APP_DEFAULT_PROACTIVE:-false}'"
     ) in compose
     assert "XIAOYOU_APP_VOICE_ENABLED" in compose
+    assert "XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608'" in compose
     assert "XIAOYOU_APP_TTS_MODEL: 'cosyvoice-v3-flash'" in compose
     assert "XIAOYOU_APP_TTS_VOICE: 'longyan_v3'" in compose
     assert "XIAOYOU_APP_ENABLED=false" in env_example
     assert '"AppChannel"' in plugins
+
+
+def test_app_image_is_stored_under_data_with_chat_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-image", "yoyo", platform="android")
+
+    uploaded = store.save_media_bytes(
+        b"\x89PNG\r\n\x1a\nimage-payload",
+        "phone-image",
+        "image/png",
+    )
+    assert uploaded["media_id"]
+    assert Path(uploaded["local_path"]).is_file()
+    assert store.accept_input(
+        message_id="image-input-1",
+        session_id="yoyo",
+        device_id="phone-image",
+        kind="sticker",
+        text="[YoYo 发来了一张表情包]",
+        media_id=uploaded["media_id"],
+        mime_type="image/png",
+        client_sequence=3,
+    )
+
+    history = store.history("phone-image")
+    image = next(item for item in history if item["id"] == "image-input-1")
+    assert image["kind"] == "sticker"
+    assert image["mime_type"] == "image/png"
+    assert image["media_id"] == uploaded["media_id"]
+
+    produced = []
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.produce = produced.append
+    result = runtime.submit_image(
+        image_bytes=b"\x89PNG\r\n\x1a\nsecond-image",
+        mime_type="image/png",
+        kind="image",
+        message_id="image-input-2",
+        device_id="phone-image",
+        client_sequence=4,
+    )
+
+    assert result["accepted"]
+    assert len(produced) == 1
+    assert produced[0].type is module.ContextType.IMAGE
+    assert Path(produced[0].content).is_file()
+    assert produced[0]["xiaoyou_transport"] == "app"
+    assert produced[0]["xiaoyou_input_kind"] == "image"
+    assert store.input_by_id("image-input-2", "phone-image")["status"] == "queued"
 
 
 def test_app_voice_messages_keep_audio_transcript_and_receipt_text(

@@ -379,6 +379,7 @@ cow-legacy/
 - [`plugins/app_channel`](plugins/app_channel) 在现有进程中复用同一个 `ChatChannel`、插件链和固定会话 `yoyo`
 - [`xiaoyou-app`](xiaoyou-app) 是 Android/iOS Flutter 客户端
 - 所有设备、输入幂等、输出事件和送达回执保存在 `data/app_channel/app.db`
+- App 支持文字、语音、拍照、相册图片和表情包；用户图片复用小悠现有视觉理解链路
 - App 回复只有在客户端提交不可变终态回执后，才会写入助手短期/长期记忆
 - 独立的 `docker-compose.app.yml` 只把 App API 映射到 `127.0.0.1:8787`；主 Compose 不新增端口
 

@@ -106,6 +106,56 @@ void main() {
     }
   });
 
+  test('image upload carries identity, kind and raw image bytes', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    late Uint8List received;
+    final subscription = server.listen((request) async {
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in request) {
+        bytes.add(chunk);
+      }
+      received = bytes.takeBytes();
+      expect(request.uri.path, '/v1/image-messages');
+      expect(request.headers.value('X-Message-Id'), 'sticker-1');
+      expect(request.headers.value('X-Message-Kind'), 'sticker');
+      expect(request.headers.value('X-Device-Id'), 'test-device');
+      expect(request.headers.contentType?.mimeType, 'image/png');
+      const responseBody = '{"accepted":true,"duplicate":false,'
+          '"kind":"sticker","media_id":"media-image-1",'
+          '"mime_type":"image/png"}';
+      final encoded = utf8.encode(responseBody);
+      request.response
+        ..statusCode = HttpStatus.accepted
+        ..headers.contentType = ContentType.json
+        ..contentLength = encoded.length
+        ..add(encoded);
+      await request.response.close();
+    });
+    final api = XiaoyouApi(
+      baseUrl: 'http://${server.address.address}:${server.port}',
+      token: 'test-token-with-at-least-24-characters',
+      deviceId: 'test-device',
+    );
+
+    try {
+      final result = await api.sendImage(
+        messageId: 'sticker-1',
+        imageBytes: Uint8List.fromList([137, 80, 78, 71]),
+        mimeType: 'image/png',
+        kind: 'sticker',
+        sequence: 5,
+      );
+      expect(received, [137, 80, 78, 71]);
+      expect(result.accepted, isTrue);
+      expect(result.kind, 'sticker');
+      expect(result.mediaId, 'media-image-1');
+    } finally {
+      api.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('authenticated media download returns playable bytes', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final subscription = server.listen((request) async {

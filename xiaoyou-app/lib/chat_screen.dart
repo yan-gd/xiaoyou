@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
 import 'chat_models.dart';
@@ -37,12 +38,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _sessionStore = SessionStore();
   final _localAuth = LocalAuthentication();
   final _voiceRecorder = VoiceRecorderController();
+  final _imagePicker = ImagePicker();
+  final _messageKeys = <String, GlobalKey>{};
 
   XiaoyouApi? _api;
   SavedConnection? _savedConnection;
   Timer? _pollTimer;
   Timer? _typingTimer;
-  Timer? _keyboardScrollTimer;
+  Timer? _draftTimer;
+  Timer? _highlightTimer;
   Timer? _recordingTimer;
   StreamSubscription<double>? _amplitudeSubscription;
   bool _booting = true;
@@ -52,7 +56,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _awaitingReply = false;
   bool _voiceMode = false;
   bool _recording = false;
+  bool _recordingGestureActive = false;
   bool _recordingCancelling = false;
+  bool _accessoryPanelOpen = false;
+  bool _emojiPanelOpen = false;
+  bool _showJumpToBottom = false;
   bool _locked = false;
   bool _authenticating = false;
   bool _lockEnabled = false;
@@ -60,13 +68,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   int _lastEventSequence = 0;
   int _clientSequence = 0;
   int _recordingDurationMs = 0;
+  int _newMessageCount = 0;
   double _recordingLevel = 0;
+  String _highlightedMessageId = '';
+  Future<void>? _recordingStartTask;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _composerFocus.addListener(_handleComposerFocus);
+    _composer.addListener(_handleDraftChanged);
+    _scrollController.addListener(_handleScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreSession());
   }
 
@@ -75,7 +88,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _pollTimer?.cancel();
     _typingTimer?.cancel();
-    _keyboardScrollTimer?.cancel();
+    _draftTimer?.cancel();
+    _highlightTimer?.cancel();
     _recordingTimer?.cancel();
     _amplitudeSubscription?.cancel();
     _api?.close();
@@ -84,7 +98,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composerFocus
       ..removeListener(_handleComposerFocus)
       ..dispose();
-    _scrollController.dispose();
+    _scrollController
+      ..removeListener(_handleScroll)
+      ..dispose();
     super.dispose();
   }
 
@@ -117,10 +133,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted || !_composerFocus.hasFocus) {
       return;
     }
-    _keyboardScrollTimer?.cancel();
-    _keyboardScrollTimer = Timer(
-      const Duration(milliseconds: 90),
-      () => _scrollToEnd(animated: false),
+    _scrollToEnd(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
     );
   }
 
@@ -128,17 +143,108 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!_composerFocus.hasFocus) {
       return;
     }
-    _scrollToEnd(animated: false);
-    _keyboardScrollTimer?.cancel();
-    _keyboardScrollTimer = Timer(
-      const Duration(milliseconds: 260),
-      () => _scrollToEnd(animated: false),
+    if (_accessoryPanelOpen || _emojiPanelOpen) {
+      setState(() {
+        _accessoryPanelOpen = false;
+        _emojiPanelOpen = false;
+      });
+    }
+    _scrollToEnd();
+  }
+
+  void _handleDraftChanged() {
+    _draftTimer?.cancel();
+    _draftTimer = Timer(
+      const Duration(milliseconds: 350),
+      () => _sessionStore.saveDraft(_composer.text),
     );
+  }
+
+  void _handleScroll() {
+    if (!_scrollController.hasClients) {
+      return;
+    }
+    final distance =
+        _scrollController.position.maxScrollExtent - _scrollController.offset;
+    final show = distance > 180;
+    if (show != _showJumpToBottom && mounted) {
+      setState(() {
+        _showJumpToBottom = show;
+        if (!show) {
+          _newMessageCount = 0;
+        }
+      });
+    }
+  }
+
+  void _pinConversationToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          !_composerFocus.hasFocus ||
+          !_scrollController.hasClients) {
+        return;
+      }
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
+  }
+
+  void _closeInputPanels() {
+    if (!_accessoryPanelOpen && !_emojiPanelOpen) {
+      return;
+    }
+    setState(() {
+      _accessoryPanelOpen = false;
+      _emojiPanelOpen = false;
+    });
+  }
+
+  void _toggleAccessoryPanel() {
+    _composerFocus.unfocus();
+    setState(() {
+      _accessoryPanelOpen = !_accessoryPanelOpen;
+      _emojiPanelOpen = false;
+    });
+    _scrollToEnd();
+    HapticFeedback.selectionClick();
+  }
+
+  void _toggleEmojiPanel() {
+    if (_emojiPanelOpen) {
+      setState(() => _emojiPanelOpen = false);
+      _composerFocus.requestFocus();
+      _scrollToEnd();
+      HapticFeedback.selectionClick();
+      return;
+    }
+    _composerFocus.unfocus();
+    setState(() {
+      _emojiPanelOpen = true;
+      _accessoryPanelOpen = false;
+    });
+    _scrollToEnd();
+    HapticFeedback.selectionClick();
+  }
+
+  void _insertEmoji(String emoji) {
+    final value = _composer.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final start = max(0, selection.start);
+    final end = max(start, selection.end);
+    final next = value.text.replaceRange(start, end, emoji);
+    _composer.value = value.copyWith(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + emoji.length),
+      composing: TextRange.empty,
+    );
+    HapticFeedback.selectionClick();
   }
 
   Future<void> _restoreSession() async {
     try {
       final saved = await _sessionStore.loadConnection();
+      final draft = await _sessionStore.readDraft();
       if (!mounted) {
         return;
       }
@@ -148,6 +254,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _locked = saved?.appLockEnabled ?? false;
         _booting = false;
       });
+      if (draft.isNotEmpty && _composer.text.isEmpty) {
+        _composer
+          ..text = draft
+          ..selection = TextSelection.collapsed(offset: draft.length);
+      }
       if (saved == null) {
         return;
       }
@@ -349,17 +460,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           }
         }
         if (additions.isNotEmpty) {
+          final shouldFollow = !_showJumpToBottom;
+          final incomingCount =
+              additions.where((message) => message.fromXiaoyou).length;
           _registerDeliveryEvents(additions);
           setState(() {
             _messages.addAll(additions);
             if (receivedAssistantReply) {
               _awaitingReply = false;
             }
+            if (!shouldFollow) {
+              _newMessageCount += incomingCount;
+              _showJumpToBottom = true;
+            }
           });
           if (receivedAssistantReply) {
             _typingTimer?.cancel();
           }
-          _scrollToEnd();
+          if (shouldFollow) {
+            _scrollToEnd();
+          }
         }
         await WidgetsBinding.instance.endOfFrame;
         for (final actionId in actions) {
@@ -500,6 +620,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() => _voiceMode = enabled);
     if (enabled) {
       _composerFocus.unfocus();
+      _closeInputPanels();
+      unawaited(_voiceRecorder.prepare());
     } else {
       _composerFocus.requestFocus();
       _handleComposerFocus();
@@ -512,9 +634,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     _composerFocus.unfocus();
+    _recordingGestureActive = true;
+    setState(() {
+      _recording = true;
+      _recordingCancelling = false;
+      _recordingDurationMs = 0;
+      _recordingLevel = 0;
+    });
+    HapticFeedback.mediumImpact();
+    final task = _beginRecording();
+    _recordingStartTask = task;
+    await task;
+  }
+
+  Future<void> _beginRecording() async {
     try {
       final allowed = await _voiceRecorder.start();
       if (!allowed) {
+        _recordingGestureActive = false;
+        if (mounted) {
+          setState(() => _recording = false);
+        }
         _showNotice('需要麦克风权限', '请在系统设置中允许小悠使用麦克风，才能发送语音。');
         return;
       }
@@ -522,13 +662,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         await _voiceRecorder.cancel();
         return;
       }
-      setState(() {
-        _recording = true;
-        _recordingCancelling = false;
-        _recordingDurationMs = 0;
-        _recordingLevel = 0;
-      });
-      HapticFeedback.mediumImpact();
+      if (!_recordingGestureActive) {
+        await _voiceRecorder.cancel();
+        if (mounted) {
+          setState(() => _recording = false);
+        }
+        return;
+      }
       _amplitudeSubscription?.cancel();
       _amplitudeSubscription =
           _voiceRecorder.amplitudeStream().listen((decibels) {
@@ -553,6 +693,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         },
       );
     } catch (error) {
+      _recordingGestureActive = false;
+      if (mounted) {
+        setState(() => _recording = false);
+      }
       _showSnack('录音启动失败，请稍后重试');
     }
   }
@@ -566,6 +710,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _finishRecording({required bool cancel}) async {
+    if (!_recording && _recordingStartTask == null) {
+      return;
+    }
+    _recordingGestureActive = false;
+    final startTask = _recordingStartTask;
+    if (startTask != null) {
+      await startTask;
+      _recordingStartTask = null;
+    }
     if (!_recording) {
       return;
     }
@@ -714,6 +867,208 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
+  Future<void> _pickImage({
+    required ImageSource source,
+    required bool sticker,
+  }) async {
+    if (_api == null || _sending) {
+      return;
+    }
+    _closeInputPanels();
+    try {
+      final picked = await _imagePicker.pickImage(
+        source: source,
+        maxWidth: sticker ? null : 2560,
+        maxHeight: sticker ? null : 2560,
+        imageQuality: sticker ? null : 88,
+        requestFullMetadata: false,
+      );
+      if (picked == null || !mounted) {
+        return;
+      }
+      final file = File(picked.path);
+      final length = await file.length();
+      if (length <= 0 || length > 8 * 1024 * 1024) {
+        _showNotice('图片无法发送', '请选择一张小于 8 MB 的图片。');
+        return;
+      }
+      final mimeType = picked.mimeType ?? _imageMimeType(picked.path);
+      if (!const {
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+        'image/gif',
+      }.contains(mimeType)) {
+        _showNotice('图片格式不支持', '请选择 JPG、PNG、WebP 或 GIF 图片。');
+        return;
+      }
+      await _sendImage(
+        messageId: _newId(sticker ? 'sticker' : 'image'),
+        path: picked.path,
+        mimeType: mimeType,
+        kind: sticker ? 'sticker' : 'image',
+        addLocalMessage: true,
+      );
+    } catch (error) {
+      _showSnack('暂时无法读取图片，请检查相册权限');
+    }
+  }
+
+  String _imageMimeType(String path) {
+    final lower = path.toLowerCase();
+    if (lower.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (lower.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (lower.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    return 'image/jpeg';
+  }
+
+  Future<void> _sendImage({
+    required String messageId,
+    required String path,
+    required String mimeType,
+    required String kind,
+    required bool addLocalMessage,
+  }) async {
+    final api = _api;
+    if (api == null || _sending) {
+      return;
+    }
+    final file = File(path);
+    if (!await file.exists()) {
+      _showSnack('原图片已不存在，请重新选择');
+      return;
+    }
+    final placeholder = kind == 'sticker' ? '[表情包]' : '[图片]';
+    if (addLocalMessage) {
+      setState(() {
+        _sending = true;
+        _messages.add(
+          ChatMessage(
+            id: messageId,
+            role: 'user',
+            kind: kind,
+            text: placeholder,
+            mimeType: mimeType,
+            localPath: path,
+            createdAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            localState: 'sending',
+          ),
+        );
+      });
+    } else {
+      setState(() {
+        _sending = true;
+        final index = _messages.indexWhere((item) => item.id == messageId);
+        if (index >= 0) {
+          _messages[index] = _messages[index].copyWith(localState: 'sending');
+        }
+      });
+    }
+    HapticFeedback.lightImpact();
+    _scrollToEnd();
+    try {
+      _clientSequence += 1;
+      final result = await api.sendImage(
+        messageId: messageId,
+        imageBytes: await file.readAsBytes(),
+        mimeType: mimeType,
+        kind: kind,
+        sequence: _clientSequence,
+      );
+      if (!result.accepted && !result.duplicate) {
+        throw const HttpException('服务器没有接受这张图片');
+      }
+      if (mounted) {
+        final index = _messages.indexWhere((item) => item.id == messageId);
+        if (index >= 0) {
+          setState(() {
+            _messages[index] = _messages[index].copyWith(
+              mediaId: result.mediaId,
+              mimeType: result.mimeType,
+              localState: 'sent',
+            );
+          });
+        }
+      }
+      _beginWaitingForReply();
+    } catch (error) {
+      _updateLocalMessage(messageId, 'failed');
+      _showSnack('图片发送失败，点红色感叹号可重试');
+    } finally {
+      if (mounted) {
+        setState(() => _sending = false);
+      }
+    }
+  }
+
+  void _replyToMessage(ChatMessage message) {
+    final content = message.text.trim().isEmpty
+        ? (message.kind == 'voice' ? '语音消息' : '图片')
+        : message.text.trim();
+    final brief =
+        content.length > 36 ? '${content.substring(0, 36)}…' : content;
+    final speaker = message.fromXiaoyou ? '小悠' : '我';
+    _composer.text = '回复$speaker「$brief」\n';
+    _composer.selection =
+        TextSelection.collapsed(offset: _composer.text.length);
+    _setVoiceMode(false);
+  }
+
+  Future<void> _openSearch() async {
+    if (_messages.isEmpty) {
+      _showSnack('还没有可搜索的聊天记录');
+      return;
+    }
+    final selected = await showModalBottomSheet<ChatMessage>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _MessageSearchSheet(messages: _messages),
+    );
+    if (selected != null && mounted) {
+      _jumpToMessage(selected);
+    }
+  }
+
+  void _jumpToMessage(ChatMessage message) {
+    final index = _messages.indexWhere((item) => item.id == message.id);
+    if (index < 0 || !_scrollController.hasClients) {
+      return;
+    }
+    final ratio = _messages.length <= 1 ? 0.0 : index / (_messages.length - 1);
+    final estimate = _scrollController.position.maxScrollExtent * ratio;
+    _scrollController.animateTo(
+      estimate,
+      duration: const Duration(milliseconds: 380),
+      curve: Curves.easeOutCubic,
+    );
+    setState(() => _highlightedMessageId = message.id);
+    _highlightTimer?.cancel();
+    _highlightTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted && _highlightedMessageId == message.id) {
+        setState(() => _highlightedMessageId = '');
+      }
+    });
+    Future<void>.delayed(const Duration(milliseconds: 420), () {
+      final targetContext = _messageKeys[message.id]?.currentContext;
+      if (targetContext != null && targetContext.mounted) {
+        Scrollable.ensureVisible(
+          targetContext,
+          duration: const Duration(milliseconds: 260),
+          alignment: 0.35,
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
+  }
+
   void _retryFailedMessage(ChatMessage message) {
     if (message.kind == 'voice') {
       if (message.localPath.isEmpty) {
@@ -726,6 +1081,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           path: message.localPath,
           mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
           durationMs: message.durationMs,
+          addLocalMessage: false,
+        ),
+      );
+      return;
+    }
+    if (message.kind == 'image' || message.kind == 'sticker') {
+      if (message.localPath.isEmpty) {
+        _showSnack('原图片已不存在，请重新选择');
+        return;
+      }
+      unawaited(
+        _sendImage(
+          messageId: message.id,
+          path: message.localPath,
+          mimeType: message.mimeType.isEmpty
+              ? _imageMimeType(message.localPath)
+              : message.mimeType,
+          kind: message.kind,
           addLocalMessage: false,
         ),
       );
@@ -874,7 +1247,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _scrollToEnd({bool animated = true}) {
+  void _scrollToEnd({
+    bool animated = true,
+    Duration duration = const Duration(milliseconds: 320),
+    Curve curve = Curves.easeOutCubic,
+  }) {
+    if (mounted && (_showJumpToBottom || _newMessageCount > 0)) {
+      setState(() {
+        _showJumpToBottom = false;
+        _newMessageCount = 0;
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) {
         return;
@@ -883,8 +1266,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (animated) {
         _scrollController.animateTo(
           offset,
-          duration: const Duration(milliseconds: 320),
-          curve: Curves.easeOutCubic,
+          duration: duration,
+          curve: curve,
         );
       } else {
         _scrollController.jumpTo(offset);
@@ -949,118 +1332,175 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Widget _buildConversation() {
     final connected = _api != null;
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     return Scaffold(
-      resizeToAvoidBottomInset: true,
-      body: DecoratedBox(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xfffffbfd), Color(0xfff9f3f6)],
+      resizeToAvoidBottomInset: false,
+      body: TweenAnimationBuilder<double>(
+        tween: Tween<double>(end: keyboardInset),
+        duration: const Duration(milliseconds: 230),
+        curve: Curves.easeOutCubic,
+        builder: (context, bottomInset, child) {
+          if (_composerFocus.hasFocus) {
+            _pinConversationToBottom();
+          }
+          return Padding(
+            padding: EdgeInsets.only(bottom: bottomInset),
+            child: child,
+          );
+        },
+        child: DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xfffffbfd), Color(0xfff9f3f6)],
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Column(
-            children: [
-              _ConversationHeader(
-                status: _status,
-                connected: connected,
-                onAvatarTap: _openProfile,
-                onSettings: _openSettings,
-              ),
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 240),
-                child: _status == '在线'
-                    ? const SizedBox.shrink(key: ValueKey('online'))
-                    : _ConnectionBanner(
-                        key: ValueKey(_status),
-                        status: _status,
-                        onRetry: () {
-                          final saved = _savedConnection;
-                          if (saved != null) {
-                            unawaited(_connectSaved(saved));
-                          }
-                        },
-                      ),
-              ),
-              Expanded(
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: _messages.isEmpty
-                          ? const _EmptyConversation()
-                          : ListView.builder(
-                              controller: _scrollController,
-                              keyboardDismissBehavior:
-                                  ScrollViewKeyboardDismissBehavior.onDrag,
-                              padding: EdgeInsets.fromLTRB(
-                                12,
-                                18,
-                                12,
-                                _awaitingReply ? 74 : 20,
-                              ),
-                              itemCount: _messages.length,
-                              itemBuilder: (context, index) {
-                                final message = _messages[index];
-                                final previous =
-                                    index > 0 ? _messages[index - 1] : null;
-                                final next = index + 1 < _messages.length
-                                    ? _messages[index + 1]
-                                    : null;
-                                return _MessageRow(
-                                  key: ValueKey(message.id),
-                                  message: message,
-                                  api: _api,
-                                  showDate: previous == null ||
-                                      !_sameDay(
-                                        previous.timestamp,
-                                        message.timestamp,
-                                      ),
-                                  beginsGroup: previous == null ||
-                                      previous.fromXiaoyou !=
-                                          message.fromXiaoyou ||
-                                      message.createdAt - previous.createdAt >
-                                          180,
-                                  showAvatar: message.fromXiaoyou &&
-                                      (next == null ||
-                                          !next.fromXiaoyou ||
-                                          next.createdAt - message.createdAt >
-                                              180),
-                                  animate:
-                                      index >= max(0, _messages.length - 12),
-                                  onRendered: _markEventRendered,
-                                  onFailedTap: _retryFailedMessage,
-                                );
-                              },
-                            ),
-                    ),
-                    if (_awaitingReply)
-                      const Positioned(
-                        left: 12,
-                        bottom: 10,
-                        child: _TypingIndicator(),
-                      ),
-                  ],
+          child: SafeArea(
+            child: Column(
+              children: [
+                _ConversationHeader(
+                  status: _status,
+                  connected: connected,
+                  onAvatarTap: _openProfile,
+                  onSearch: _openSearch,
+                  onSettings: _openSettings,
                 ),
-              ),
-              _Composer(
-                controller: _composer,
-                focusNode: _composerFocus,
-                sending: _sending,
-                connected: connected,
-                voiceMode: _voiceMode,
-                recording: _recording,
-                recordingCancelling: _recordingCancelling,
-                recordingDurationMs: _recordingDurationMs,
-                recordingLevel: _recordingLevel,
-                onSend: _send,
-                onVoiceModeChanged: _setVoiceMode,
-                onRecordStart: _startRecording,
-                onRecordEnd: (cancel) => _finishRecording(cancel: cancel),
-                onRecordCancelChanged: _setRecordingCancelling,
-                onComposerTap: _handleComposerFocus,
-              ),
-            ],
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 240),
+                  child: _status == '在线'
+                      ? const SizedBox.shrink(key: ValueKey('online'))
+                      : _ConnectionBanner(
+                          key: ValueKey(_status),
+                          status: _status,
+                          onRetry: () {
+                            final saved = _savedConnection;
+                            if (saved != null) {
+                              unawaited(_connectSaved(saved));
+                            }
+                          },
+                        ),
+                ),
+                Expanded(
+                  child: Stack(
+                    children: [
+                      Positioned.fill(
+                        child: _messages.isEmpty
+                            ? const _EmptyConversation()
+                            : ListView.builder(
+                                controller: _scrollController,
+                                keyboardDismissBehavior:
+                                    ScrollViewKeyboardDismissBehavior.onDrag,
+                                padding: EdgeInsets.fromLTRB(
+                                  12,
+                                  18,
+                                  12,
+                                  _awaitingReply ? 74 : 20,
+                                ),
+                                itemCount: _messages.length,
+                                itemBuilder: (context, index) {
+                                  final message = _messages[index];
+                                  final previous =
+                                      index > 0 ? _messages[index - 1] : null;
+                                  final next = index + 1 < _messages.length
+                                      ? _messages[index + 1]
+                                      : null;
+                                  return _MessageRow(
+                                    key: _messageKeys.putIfAbsent(
+                                      message.id,
+                                      GlobalKey.new,
+                                    ),
+                                    message: message,
+                                    api: _api,
+                                    highlighted:
+                                        _highlightedMessageId == message.id,
+                                    showDate: previous == null ||
+                                        !_sameDay(
+                                          previous.timestamp,
+                                          message.timestamp,
+                                        ),
+                                    beginsGroup: previous == null ||
+                                        previous.fromXiaoyou !=
+                                            message.fromXiaoyou ||
+                                        message.createdAt - previous.createdAt >
+                                            180,
+                                    showAvatar: message.fromXiaoyou &&
+                                        (next == null ||
+                                            !next.fromXiaoyou ||
+                                            next.createdAt - message.createdAt >
+                                                180),
+                                    animate:
+                                        index >= max(0, _messages.length - 12),
+                                    onRendered: _markEventRendered,
+                                    onFailedTap: _retryFailedMessage,
+                                    onReply: _replyToMessage,
+                                  );
+                                },
+                              ),
+                      ),
+                      if (_awaitingReply)
+                        const Positioned(
+                          left: 12,
+                          bottom: 10,
+                          child: _TypingIndicator(),
+                        ),
+                      if (_showJumpToBottom)
+                        Positioned(
+                          right: 14,
+                          bottom: 12,
+                          child: _JumpToBottomButton(
+                            count: _newMessageCount,
+                            onTap: _scrollToEnd,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                _Composer(
+                  controller: _composer,
+                  focusNode: _composerFocus,
+                  sending: _sending,
+                  connected: connected,
+                  voiceMode: _voiceMode,
+                  recording: _recording,
+                  recordingCancelling: _recordingCancelling,
+                  recordingDurationMs: _recordingDurationMs,
+                  recordingLevel: _recordingLevel,
+                  onSend: _send,
+                  onVoiceModeChanged: _setVoiceMode,
+                  onRecordStart: _startRecording,
+                  onRecordEnd: (cancel) => _finishRecording(cancel: cancel),
+                  onRecordCancelChanged: _setRecordingCancelling,
+                  onComposerTap: _handleComposerFocus,
+                  emojiPanelOpen: _emojiPanelOpen,
+                  accessoryPanelOpen: _accessoryPanelOpen,
+                  onEmoji: _toggleEmojiPanel,
+                  onAccessory: _toggleAccessoryPanel,
+                ),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  child: _emojiPanelOpen
+                      ? _EmojiPanel(onSelected: _insertEmoji)
+                      : _accessoryPanelOpen
+                          ? _AccessoryPanel(
+                              onGallery: () => _pickImage(
+                                source: ImageSource.gallery,
+                                sticker: false,
+                              ),
+                              onCamera: () => _pickImage(
+                                source: ImageSource.camera,
+                                sticker: false,
+                              ),
+                              onSticker: () => _pickImage(
+                                source: ImageSource.gallery,
+                                sticker: true,
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1453,12 +1893,14 @@ class _ConversationHeader extends StatelessWidget {
     required this.status,
     required this.connected,
     required this.onAvatarTap,
+    required this.onSearch,
     required this.onSettings,
   });
 
   final String status;
   final bool connected;
   final VoidCallback onAvatarTap;
+  final VoidCallback onSearch;
   final VoidCallback onSettings;
 
   @override
@@ -1529,6 +1971,11 @@ class _ConversationHeader extends StatelessWidget {
                 ],
               ),
             ),
+          ),
+          IconButton(
+            onPressed: onSearch,
+            tooltip: '搜索聊天记录',
+            icon: const Icon(Icons.search_rounded, color: _ink),
           ),
           IconButton(
             onPressed: onSettings,
@@ -1648,22 +2095,26 @@ class _MessageRow extends StatefulWidget {
     super.key,
     required this.message,
     required this.api,
+    required this.highlighted,
     required this.showDate,
     required this.beginsGroup,
     required this.showAvatar,
     required this.animate,
     required this.onRendered,
     required this.onFailedTap,
+    required this.onReply,
   });
 
   final ChatMessage message;
   final XiaoyouApi? api;
+  final bool highlighted;
   final bool showDate;
   final bool beginsGroup;
   final bool showAvatar;
   final bool animate;
   final ValueChanged<ChatMessage> onRendered;
   final ValueChanged<ChatMessage> onFailedTap;
+  final ValueChanged<ChatMessage> onReply;
 
   @override
   State<_MessageRow> createState() => _MessageRowState();
@@ -1733,7 +2184,50 @@ class _MessageRowState extends State<_MessageRow>
       );
   }
 
-  void _openImage(String url, Map<String, String>? headers) {
+  void _openMessageActions() {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => Container(
+        margin: const EdgeInsets.all(12),
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.reply_rounded, color: _rose),
+              title: const Text('回复这条消息'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                widget.onReply(widget.message);
+              },
+            ),
+            if (widget.message.text.trim().isNotEmpty)
+              ListTile(
+                leading: const Icon(Icons.copy_rounded, color: _rose),
+                title: const Text('复制文字'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _copyMessage();
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openImage(
+    String url,
+    Map<String, String>? headers,
+    String localPath,
+  ) {
     Navigator.of(context).push(
       PageRouteBuilder<void>(
         opaque: false,
@@ -1743,6 +2237,7 @@ class _MessageRowState extends State<_MessageRow>
           heroTag: 'image-${widget.message.id}',
           url: url,
           headers: headers,
+          localPath: localPath,
         ),
       ),
     );
@@ -1863,19 +2358,23 @@ class _MessageRowState extends State<_MessageRow>
                 ],
                 Flexible(
                   child: GestureDetector(
-                    onLongPress:
-                        message.kind == 'text' || message.kind == 'voice'
-                            ? _copyMessage
-                            : null,
-                    child: Container(
+                    onLongPress: _openMessageActions,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 220),
                       constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                      padding: message.kind == 'image'
-                          ? const EdgeInsets.all(4)
-                          : const EdgeInsets.fromLTRB(14, 10, 14, 9),
+                      padding:
+                          message.kind == 'image' || message.kind == 'sticker'
+                              ? const EdgeInsets.all(4)
+                              : const EdgeInsets.fromLTRB(14, 10, 14, 9),
                       decoration: BoxDecoration(
-                        color: fromXiaoyou
-                            ? Colors.white
-                            : const Color(0xffa85e85),
+                        color: widget.highlighted
+                            ? const Color(0xffffe0ee)
+                            : fromXiaoyou
+                                ? Colors.white
+                                : const Color(0xffa85e85),
+                        border: widget.highlighted
+                            ? Border.all(color: _rose, width: 1.5)
+                            : null,
                         borderRadius: BorderRadius.only(
                           topLeft: const Radius.circular(19),
                           topRight: const Radius.circular(19),
@@ -1894,7 +2393,8 @@ class _MessageRowState extends State<_MessageRow>
                           ),
                         ],
                       ),
-                      child: message.kind == 'image'
+                      child: message.kind == 'image' ||
+                              message.kind == 'sticker'
                           ? _buildImage(message)
                           : message.kind == 'voice'
                               ? _buildVoice(message)
@@ -1948,16 +2448,31 @@ class _MessageRowState extends State<_MessageRow>
         ? api.mediaUrl(message.mediaId)
         : message.remoteUrl;
     final headers = message.mediaId.isNotEmpty ? api?.mediaHeaders : null;
+    final localPath = message.localPath;
+    final hasLocal = localPath.isNotEmpty && File(localPath).existsSync();
+    final image = hasLocal
+        ? Image.file(
+            File(localPath),
+            width: message.kind == 'sticker' ? 180 : 258,
+            fit: BoxFit.cover,
+          )
+        : Image.network(
+            url,
+            headers: headers,
+            width: message.kind == 'sticker' ? 180 : 258,
+            fit: BoxFit.cover,
+          );
     return GestureDetector(
-      onTap: url.isEmpty ? null : () => _openImage(url, headers),
+      onTap: !hasLocal && url.isEmpty
+          ? null
+          : () => _openImage(url, headers, hasLocal ? localPath : ''),
       child: Hero(
         tag: 'image-${message.id}',
         child: ClipRRect(
           borderRadius: BorderRadius.circular(15),
-          child: Image.network(
-            url,
-            headers: headers,
-            width: 258,
+          child: Image(
+            image: image.image,
+            width: message.kind == 'sticker' ? 180 : 258,
             fit: BoxFit.cover,
             frameBuilder: (context, child, frame, synchronous) {
               if (synchronous || frame != null) {
@@ -2231,6 +2746,328 @@ class _TypingIndicatorState extends State<_TypingIndicator>
   }
 }
 
+class _JumpToBottomButton extends StatelessWidget {
+  const _JumpToBottomButton({required this.count, required this.onTap});
+
+  final int count;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      elevation: 5,
+      shadowColor: const Color(0x33572a40),
+      shape: const StadiumBorder(),
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const StadiumBorder(),
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: count > 0 ? 13 : 11,
+            vertical: 9,
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.keyboard_arrow_down_rounded,
+                  color: _rose, size: 22),
+              if (count > 0) ...[
+                const SizedBox(width: 4),
+                Text(
+                  '$count 条新消息',
+                  style: const TextStyle(
+                    color: _roseDark,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AccessoryPanel extends StatelessWidget {
+  const _AccessoryPanel({
+    required this.onGallery,
+    required this.onCamera,
+    required this.onSticker,
+  });
+
+  final VoidCallback onGallery;
+  final VoidCallback onCamera;
+  final VoidCallback onSticker;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 178,
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(22, 20, 22, 26),
+      decoration: const BoxDecoration(
+        color: Color(0xfffffafd),
+        border: Border(top: BorderSide(color: Color(0xffeee3e8))),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _AccessoryItem(
+            icon: Icons.photo_library_outlined,
+            label: '相册',
+            onTap: onGallery,
+          ),
+          const SizedBox(width: 24),
+          _AccessoryItem(
+            icon: Icons.camera_alt_outlined,
+            label: '拍摄',
+            onTap: onCamera,
+          ),
+          const SizedBox(width: 24),
+          _AccessoryItem(
+            icon: Icons.gif_box_outlined,
+            label: '表情包',
+            onTap: onSticker,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AccessoryItem extends StatelessWidget {
+  const _AccessoryItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: SizedBox(
+        width: 72,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 62,
+              height: 62,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xffeadde4)),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x10572a40),
+                    blurRadius: 12,
+                    offset: Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Icon(icon, color: _rose, size: 28),
+            ),
+            const SizedBox(height: 8),
+            Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmojiPanel extends StatelessWidget {
+  const _EmojiPanel({required this.onSelected});
+
+  static const _emojis = [
+    '😊',
+    '🥰',
+    '🥹',
+    '😘',
+    '🤗',
+    '😋',
+    '😏',
+    '😳',
+    '🤭',
+    '😂',
+    '🤣',
+    '😭',
+    '😤',
+    '😡',
+    '🥺',
+    '😴',
+    '👀',
+    '💕',
+    '❤️',
+    '💖',
+    '💘',
+    '👍',
+    '👏',
+    '🫶',
+    '🌹',
+    '🌟',
+    '✨',
+    '🎉',
+    '🎂',
+    '☕',
+    '🍜',
+    '💤',
+  ];
+
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 246,
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 18),
+      decoration: const BoxDecoration(
+        color: Color(0xfffffafd),
+        border: Border(top: BorderSide(color: Color(0xffeee3e8))),
+      ),
+      child: GridView.builder(
+        padding: EdgeInsets.zero,
+        itemCount: _emojis.length,
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 8,
+          mainAxisSpacing: 4,
+          crossAxisSpacing: 4,
+        ),
+        itemBuilder: (context, index) => InkWell(
+          onTap: () => onSelected(_emojis[index]),
+          borderRadius: BorderRadius.circular(12),
+          child: Center(
+            child: Text(_emojis[index], style: const TextStyle(fontSize: 27)),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MessageSearchSheet extends StatefulWidget {
+  const _MessageSearchSheet({required this.messages});
+
+  final List<ChatMessage> messages;
+
+  @override
+  State<_MessageSearchSheet> createState() => _MessageSearchSheetState();
+}
+
+class _MessageSearchSheetState extends State<_MessageSearchSheet> {
+  final _controller = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _query.trim().toLowerCase();
+    final results = widget.messages.reversed
+        .where((message) {
+          if (query.isEmpty) {
+            return message.text.trim().isNotEmpty;
+          }
+          return message.text.toLowerCase().contains(query);
+        })
+        .take(80)
+        .toList();
+    return Container(
+      height: MediaQuery.sizeOf(context).height * 0.72,
+      decoration: const BoxDecoration(
+        color: _canvas,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 10),
+          Container(
+            width: 42,
+            height: 4,
+            decoration: BoxDecoration(
+              color: const Color(0xffddcfd6),
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
+            child: TextField(
+              controller: _controller,
+              autofocus: true,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: InputDecoration(
+                hintText: '搜索你和小悠的聊天记录',
+                prefixIcon: const Icon(Icons.search_rounded),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: () {
+                          _controller.clear();
+                          setState(() => _query = '');
+                        },
+                        icon: const Icon(Icons.close_rounded),
+                      ),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(18),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: results.isEmpty
+                ? const Center(child: Text('没有找到相关消息'))
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
+                    itemCount: results.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 4),
+                    itemBuilder: (context, index) {
+                      final message = results[index];
+                      return ListTile(
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        tileColor: Colors.white,
+                        leading: message.fromXiaoyou
+                            ? const _Avatar(size: 38)
+                            : const CircleAvatar(
+                                backgroundColor: Color(0xffead7e1),
+                                child: Text('您',
+                                    style: TextStyle(color: _roseDark)),
+                              ),
+                        title: Text(
+                          message.text,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(_formatDateTime(message.timestamp)),
+                        onTap: () => Navigator.pop(context, message),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
@@ -2248,6 +3085,10 @@ class _Composer extends StatelessWidget {
     required this.onRecordEnd,
     required this.onRecordCancelChanged,
     required this.onComposerTap,
+    required this.emojiPanelOpen,
+    required this.accessoryPanelOpen,
+    required this.onEmoji,
+    required this.onAccessory,
   });
 
   final TextEditingController controller;
@@ -2265,6 +3106,10 @@ class _Composer extends StatelessWidget {
   final Future<void> Function(bool cancel) onRecordEnd;
   final ValueChanged<bool> onRecordCancelChanged;
   final VoidCallback onComposerTap;
+  final bool emojiPanelOpen;
+  final bool accessoryPanelOpen;
+  final VoidCallback onEmoji;
+  final VoidCallback onAccessory;
 
   @override
   Widget build(BuildContext context) {
@@ -2302,7 +3147,28 @@ class _Composer extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 4),
+          if (!voiceMode) ...[
+            SizedBox(
+              width: 40,
+              height: 48,
+              child: IconButton(
+                tooltip: '表情',
+                onPressed: connected && !sending ? onEmoji : null,
+                icon: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 160),
+                  child: Icon(
+                    emojiPanelOpen
+                        ? Icons.keyboard_alt_outlined
+                        : Icons.sentiment_satisfied_alt_rounded,
+                    key: ValueKey(emojiPanelOpen),
+                    color: emojiPanelOpen ? _roseDark : _rose,
+                    size: 24,
+                  ),
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(width: 2),
           Expanded(
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
@@ -2329,20 +3195,20 @@ class _Composer extends StatelessWidget {
                 ],
               ),
               child: voiceMode
-                  ? GestureDetector(
+                  ? Listener(
                       behavior: HitTestBehavior.opaque,
-                      onLongPressStart:
+                      onPointerDown:
                           connected && !sending ? (_) => onRecordStart() : null,
-                      onLongPressMoveUpdate: connected
-                          ? (details) => onRecordCancelChanged(
-                                details.localPosition.dy < -42,
+                      onPointerMove: connected
+                          ? (event) => onRecordCancelChanged(
+                                event.localPosition.dy < -42,
                               )
                           : null,
-                      onLongPressEnd: connected
+                      onPointerUp: connected
                           ? (_) => onRecordEnd(recordingCancelling)
                           : null,
-                      onLongPressCancel:
-                          connected ? () => onRecordEnd(true) : null,
+                      onPointerCancel:
+                          connected ? (_) => onRecordEnd(true) : null,
                       child: SizedBox(
                         height: 48,
                         child: AnimatedSwitcher(
@@ -2394,12 +3260,15 @@ class _Composer extends StatelessWidget {
               builder: (context, value, _) {
                 final enabled =
                     connected && !sending && value.text.trim().isNotEmpty;
+                final canOpen = connected && !sending && !enabled;
                 return AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
                   width: 48,
                   height: 48,
                   decoration: BoxDecoration(
-                    color: enabled ? _rose : const Color(0xffe9dfe4),
+                    color: enabled || accessoryPanelOpen
+                        ? _rose
+                        : const Color(0xffe9dfe4),
                     shape: BoxShape.circle,
                     boxShadow: enabled
                         ? const [
@@ -2412,7 +3281,8 @@ class _Composer extends StatelessWidget {
                         : null,
                   ),
                   child: IconButton(
-                    onPressed: enabled ? onSend : null,
+                    onPressed:
+                        enabled ? onSend : (canOpen ? onAccessory : null),
                     icon: AnimatedSwitcher(
                       duration: const Duration(milliseconds: 160),
                       child: sending
@@ -2425,13 +3295,23 @@ class _Composer extends StatelessWidget {
                                 color: Colors.white,
                               ),
                             )
-                          : Icon(
-                              Icons.arrow_upward_rounded,
-                              key: const ValueKey('send'),
-                              color: enabled
-                                  ? Colors.white
-                                  : const Color(0xffa99ba2),
-                            ),
+                          : enabled
+                              ? const Icon(
+                                  Icons.arrow_upward_rounded,
+                                  key: ValueKey('send'),
+                                  color: Colors.white,
+                                )
+                              : AnimatedRotation(
+                                  turns: accessoryPanelOpen ? 0.125 : 0,
+                                  duration: const Duration(milliseconds: 180),
+                                  child: Icon(
+                                    Icons.add_rounded,
+                                    key: const ValueKey('accessory'),
+                                    color: accessoryPanelOpen
+                                        ? Colors.white
+                                        : const Color(0xff8f7d86),
+                                  ),
+                                ),
                     ),
                   ),
                 );
@@ -2509,11 +3389,13 @@ class _ImageViewer extends StatelessWidget {
     required this.heroTag,
     required this.url,
     required this.headers,
+    required this.localPath,
   });
 
   final String heroTag;
   final String url;
   final Map<String, String>? headers;
+  final String localPath;
 
   @override
   Widget build(BuildContext context) {
@@ -2530,11 +3412,13 @@ class _ImageViewer extends StatelessWidget {
                 child: Center(
                   child: Hero(
                     tag: heroTag,
-                    child: Image.network(
-                      url,
-                      headers: headers,
-                      fit: BoxFit.contain,
-                    ),
+                    child: localPath.isNotEmpty
+                        ? Image.file(File(localPath), fit: BoxFit.contain)
+                        : Image.network(
+                            url,
+                            headers: headers,
+                            fit: BoxFit.contain,
+                          ),
                   ),
                 ),
               ),
@@ -2968,6 +3852,10 @@ String _formatDate(DateTime value) {
     return '${value.month}月${value.day}日';
   }
   return '${value.year}年${value.month}月${value.day}日';
+}
+
+String _formatDateTime(DateTime value) {
+  return '${_formatDate(value)} ${_formatTime(value)}';
 }
 
 String _friendlyNetworkError(Object error) {
