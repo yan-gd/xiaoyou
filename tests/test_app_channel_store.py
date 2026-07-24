@@ -1,5 +1,6 @@
 import importlib.util
 import sys
+import threading
 import types
 from enum import Enum
 from pathlib import Path
@@ -54,6 +55,13 @@ def _load_app_channel(monkeypatch, tmp_path):
             return super().get(key, default)
 
     class _ChatChannel:
+        futures = {}
+        sessions = {}
+        lock = threading.Lock()
+        input_batches = {}
+        input_batch_workers = set()
+        input_versions = {}
+
         def __init__(self):
             pass
 
@@ -141,6 +149,29 @@ def _load_app_channel(monkeypatch, tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_app_runtime_owns_work_queues_but_shares_input_version_clock(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+
+    assert module.AppRuntimeChannel.sessions is not module.ChatChannel.sessions
+    assert module.AppRuntimeChannel.futures is not module.ChatChannel.futures
+    assert (
+        module.AppRuntimeChannel.input_batches
+        is not module.ChatChannel.input_batches
+    )
+    assert (
+        module.AppRuntimeChannel.input_batch_workers
+        is not module.ChatChannel.input_batch_workers
+    )
+    assert (
+        module.AppRuntimeChannel.input_versions
+        is module.ChatChannel.input_versions
+    )
+    assert module.AppRuntimeChannel.lock is module.ChatChannel.lock
 
 
 def test_app_inbox_is_idempotent_persistent_and_receipt_driven(

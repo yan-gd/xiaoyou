@@ -939,6 +939,20 @@ class AppInboxStore:
 class AppRuntimeChannel(ChatChannel):
     """A ChatChannel whose send target is the durable App inbox."""
 
+    # ChatChannel keeps its worker queues as class attributes because the
+    # upstream runtime normally creates only one concrete channel. Xiaoyou
+    # runs WeChat and AppRuntimeChannel together, so sharing those queues lets
+    # either consumer thread pick up the other's context. A voice turn can
+    # then be handled by WeChatChannel and bypass App-only TTS entirely.
+    #
+    # Keep the input version clock and lock inherited/shared so a newer input
+    # from either transport can still invalidate an older reply, but give the
+    # App transport ownership of all work that must execute on ``self``.
+    futures = {}
+    sessions = {}
+    input_batches = {}
+    input_batch_workers = set()
+
     def __init__(self, store, canonical_session_id, voice_service=None):
         self.store = store
         self.canonical_session_id = canonical_session_id
