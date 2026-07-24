@@ -1627,7 +1627,7 @@ class AppChannel(Plugin):
         ).start()
         logger.info(
             "[AppChannel] inited bind=%s:%s database=%s session=%s voice=%s "
-            "asr=%s tts=%s",
+            "asr=%s tts=%s provider=%s tts_ready=%s",
             host,
             port,
             DATABASE_PATH,
@@ -1635,6 +1635,16 @@ class AppChannel(Plugin):
             self.runtime.voice_service.available,
             self.runtime.voice_service.asr_model,
             self.runtime.voice_service.tts_model,
+            getattr(
+                self.runtime.voice_service,
+                "tts_provider",
+                "unknown",
+            ),
+            getattr(
+                self.runtime.voice_service,
+                "tts_available",
+                False,
+            ),
         )
 
     def acknowledge(self, *, action_id, device_id, status, event_ids):

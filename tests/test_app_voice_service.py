@@ -1,5 +1,7 @@
+import base64
 import importlib.util
 import io
+import json
 import struct
 import sys
 import types
@@ -71,13 +73,16 @@ def test_streaming_wav_placeholder_length_uses_actual_downloaded_bytes(
     assert 1790 <= module._wav_duration_ms(bytes(payload)) <= 1810
 
 
-def test_app_voice_uses_qwen_asr_and_requested_longyan_cosyvoice(
+def test_app_voice_uses_qwen_asr_and_volcengine_xiaohe_tts(
     monkeypatch,
 ):
     module = _load_voice_service(monkeypatch)
     monkeypatch.setenv("OPEN_AI_API_KEY", "test-key")
+    monkeypatch.setenv("XIAOYOU_APP_TTS_API_KEY", "speech-test-key")
+    monkeypatch.delenv("XIAOYOU_APP_TTS_PROVIDER", raising=False)
     monkeypatch.delenv("XIAOYOU_APP_TTS_MODEL", raising=False)
     monkeypatch.delenv("XIAOYOU_APP_TTS_VOICE", raising=False)
+    monkeypatch.delenv("XIAOYOU_APP_TTS_ENDPOINT", raising=False)
     service = module.AppVoiceService()
 
     assert service.transcribe(
@@ -87,54 +92,155 @@ def test_app_voice_uses_qwen_asr_and_requested_longyan_cosyvoice(
         input_id="voice-1",
     ) == "我想你了"
     assert service.asr_model == "qwen3-asr-flash"
-    assert service.tts_model == "cosyvoice-v3-flash"
-    assert service.tts_voice == "longyan_v3"
+    assert service.tts_provider == "volcengine"
+    assert service.tts_model == "seed-tts-2.0"
+    assert service.tts_voice == "zh_female_xiaohe_uranus_bigtts"
+    assert service.asr_available is True
+    assert service.tts_available is True
 
     calls = {}
-    wav = _wav_payload(1250)
+    audio_parts = [b"ID3-xiaohe-", b"voice"]
 
     class _Response:
-        def __init__(self, *, payload=None, content=b"", mime="application/json"):
-            self._payload = payload or {}
-            self.content = content
-            self.headers = {"Content-Type": mime}
+        def __init__(self):
+            self.headers = {"Content-Type": "application/x-ndjson"}
 
         def raise_for_status(self):
             return None
 
-        def json(self):
-            return self._payload
+        def iter_lines(self):
+            return iter(
+                [
+                    json.dumps(
+                        {
+                            "code": 0,
+                            "sequence": 1,
+                            "data": base64.b64encode(
+                                audio_parts[0]
+                            ).decode("ascii"),
+                        }
+                    ).encode("utf-8"),
+                    json.dumps(
+                        {
+                            "code": 0,
+                            "sequence": -1,
+                            "data": base64.b64encode(
+                                audio_parts[1]
+                            ).decode("ascii"),
+                            "addition": {"duration": "1250"},
+                        }
+                    ).encode("utf-8"),
+                ]
+            )
 
-    def _post(url, headers, json, timeout):
+    def _post(url, headers, json, timeout, stream):
         calls["url"] = url
+        calls["headers"] = headers
         calls["payload"] = json
         calls["timeout"] = timeout
-        return _Response(
-            payload={
-                "output": {
-                    "audio": {"url": "https://example.invalid/voice.wav"}
-                }
-            }
-        )
+        calls["stream"] = stream
+        return _Response()
 
     monkeypatch.setattr(module.requests, "post", _post)
-    monkeypatch.setattr(
-        module.requests,
-        "get",
-        lambda *_args, **_kwargs: _Response(
-            content=wav,
-            mime="audio/wav",
-        ),
-    )
 
     voice = service.synthesize(
         "我也想你呀",
         session_id="yoyo",
         input_id="voice-1",
     )
-    assert calls["url"].endswith("/audio/tts/SpeechSynthesizer")
-    assert calls["payload"]["model"] == "cosyvoice-v3-flash"
-    assert calls["payload"]["input"]["voice"] == "longyan_v3"
-    assert calls["payload"]["input"]["format"] == "wav"
-    assert voice.mime_type == "audio/wav"
-    assert 1240 <= voice.duration_ms <= 1260
+    assert calls["url"] == (
+        "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+    )
+    assert calls["stream"] is True
+    assert calls["headers"]["X-Api-Key"] == "speech-test-key"
+    assert calls["headers"]["X-Api-Resource-Id"] == "seed-tts-2.0"
+    assert "Authorization" not in calls["headers"]
+    assert (
+        calls["payload"]["req_params"]["speaker"]
+        == "zh_female_xiaohe_uranus_bigtts"
+    )
+    assert calls["payload"]["req_params"]["audio_params"] == {
+        "format": "mp3",
+        "sample_rate": 24000,
+    }
+    assert voice.data == b"".join(audio_parts)
+    assert voice.mime_type == "audio/mpeg"
+    assert voice.duration_ms == 1250
+
+
+def test_volcengine_tts_supports_legacy_app_id_access_key_auth(
+    monkeypatch,
+):
+    module = _load_voice_service(monkeypatch)
+    monkeypatch.setenv("OPEN_AI_API_KEY", "asr-test-key")
+    monkeypatch.delenv("XIAOYOU_APP_TTS_API_KEY", raising=False)
+    monkeypatch.delenv("VOLCENGINE_TTS_API_KEY", raising=False)
+    monkeypatch.setenv("XIAOYOU_APP_TTS_APP_ID", "speech-app-id")
+    monkeypatch.setenv(
+        "XIAOYOU_APP_TTS_ACCESS_KEY",
+        "speech-access-key",
+    )
+    service = module.AppVoiceService()
+    calls = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            return iter(
+                [
+                    json.dumps(
+                        {
+                            "code": 0,
+                            "sequence": -1,
+                            "data": base64.b64encode(b"mp3").decode("ascii"),
+                            "addition": json.dumps({"duration": 420}),
+                        }
+                    ).encode("utf-8")
+                ]
+            )
+
+    def _post(_url, headers, json, **_kwargs):
+        calls["headers"] = headers
+        calls["payload"] = json
+        return _Response()
+
+    monkeypatch.setattr(module.requests, "post", _post)
+    voice = service.synthesize("好呀")
+
+    assert calls["headers"]["X-Api-App-Id"] == "speech-app-id"
+    assert (
+        calls["headers"]["X-Api-Access-Key"]
+        == "speech-access-key"
+    )
+    assert "X-Api-Key" not in calls["headers"]
+    assert calls["payload"]["user"]["uid"] == "speech-app-id"
+    assert voice.duration_ms == 420
+
+
+def test_missing_volcengine_tts_credentials_keeps_asr_available(
+    monkeypatch,
+):
+    module = _load_voice_service(monkeypatch)
+    monkeypatch.setenv("OPEN_AI_API_KEY", "asr-test-key")
+    for name in (
+        "XIAOYOU_APP_TTS_API_KEY",
+        "VOLCENGINE_TTS_API_KEY",
+        "XIAOYOU_APP_TTS_APP_ID",
+        "VOLCENGINE_TTS_APP_ID",
+        "XIAOYOU_APP_TTS_ACCESS_KEY",
+        "VOLCENGINE_TTS_ACCESS_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    service = module.AppVoiceService()
+
+    assert service.available is True
+    assert service.asr_available is True
+    assert service.tts_available is False
+    try:
+        service.synthesize("这次退回文字")
+    except module.AppVoiceError as exc:
+        assert str(exc) == "voice_not_configured"
+    else:
+        raise AssertionError("missing TTS credentials must not call provider")

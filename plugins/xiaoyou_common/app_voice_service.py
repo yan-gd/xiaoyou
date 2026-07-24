@@ -8,8 +8,10 @@ and only contexts explicitly marked by AppChannel receive synthesized audio.
 
 import base64
 import io
+import json
 import os
 import time
+import uuid
 import wave
 
 import requests
@@ -31,7 +33,7 @@ class SynthesizedVoice:
 
 
 class AppVoiceService:
-    """Qwen ASR/TTS adapter used exclusively by AppChannel."""
+    """Qwen ASR and provider-selectable TTS used only by AppChannel."""
 
     def __init__(self):
         self.enabled = _truthy(os.getenv("XIAOYOU_APP_VOICE_ENABLED", "true"))
@@ -45,23 +47,50 @@ class AppVoiceService:
             os.getenv("XIAOYOU_APP_ASR_MODEL", "qwen3-asr-flash").strip()
             or "qwen3-asr-flash"
         )
+        self.tts_provider = (
+            os.getenv("XIAOYOU_APP_TTS_PROVIDER", "volcengine").strip().lower()
+            or "volcengine"
+        )
         self.tts_model = (
-            os.getenv("XIAOYOU_APP_TTS_MODEL", "cosyvoice-v3-flash").strip()
-            or "cosyvoice-v3-flash"
+            os.getenv("XIAOYOU_APP_TTS_MODEL", "seed-tts-2.0").strip()
+            or "seed-tts-2.0"
         )
         self.tts_voice = (
-            os.getenv("XIAOYOU_APP_TTS_VOICE", "longyan_v3").strip()
-            or "longyan_v3"
+            os.getenv(
+                "XIAOYOU_APP_TTS_VOICE",
+                "zh_female_xiaohe_uranus_bigtts",
+            ).strip()
+            or "zh_female_xiaohe_uranus_bigtts"
         )
         self.compatible_base_url = (
             os.getenv("XIAOYOU_APP_ASR_BASE_URL")
             or os.getenv("OPEN_AI_API_BASE")
             or "https://dashscope.aliyuncs.com/compatible-mode/v1"
         ).rstrip("/")
+        default_tts_endpoint = (
+            "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/"
+            "SpeechSynthesizer"
+            if self.tts_provider in ("dashscope", "aliyun")
+            else "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+        )
         self.tts_endpoint = (
             os.getenv("XIAOYOU_APP_TTS_ENDPOINT")
-            or "https://dashscope.aliyuncs.com/api/v1/services/audio/tts/"
-            "SpeechSynthesizer"
+            or default_tts_endpoint
+        ).strip()
+        self.tts_api_key = (
+            os.getenv("XIAOYOU_APP_TTS_API_KEY")
+            or os.getenv("VOLCENGINE_TTS_API_KEY")
+            or ""
+        ).strip()
+        self.tts_app_id = (
+            os.getenv("XIAOYOU_APP_TTS_APP_ID")
+            or os.getenv("VOLCENGINE_TTS_APP_ID")
+            or ""
+        ).strip()
+        self.tts_access_key = (
+            os.getenv("XIAOYOU_APP_TTS_ACCESS_KEY")
+            or os.getenv("VOLCENGINE_TTS_ACCESS_KEY")
+            or ""
         ).strip()
         self.timeout = max(
             10,
@@ -70,7 +99,22 @@ class AppVoiceService:
 
     @property
     def available(self):
+        return self.asr_available
+
+    @property
+    def asr_available(self):
         return bool(self.enabled and self.api_key)
+
+    @property
+    def tts_available(self):
+        if not self.enabled:
+            return False
+        if self.tts_provider in ("dashscope", "aliyun"):
+            return bool(self.api_key)
+        return bool(
+            self.tts_api_key
+            or (self.tts_app_id and self.tts_access_key)
+        )
 
     def transcribe(
         self,
@@ -81,7 +125,7 @@ class AppVoiceService:
         trace_id="",
         input_id="",
     ):
-        if not self.available:
+        if not self.asr_available:
             raise AppVoiceError("voice_not_configured")
         audio_bytes = bytes(audio_bytes or b"")
         if not audio_bytes:
@@ -138,7 +182,7 @@ class AppVoiceService:
         trace_id="",
         input_id="",
     ):
-        if not self.available:
+        if not self.tts_available:
             raise AppVoiceError("voice_not_configured")
         text = str(text or "").strip()
         if not text:
@@ -146,39 +190,16 @@ class AppVoiceService:
 
         started = time.monotonic()
         try:
-            response = requests.post(
-                self.tts_endpoint,
-                headers={
-                    "Authorization": "Bearer " + self.api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.tts_model,
-                    "input": {
-                        "text": text,
-                        "voice": self.tts_voice,
-                        "format": "wav",
-                        "sample_rate": 24000,
-                    },
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            audio = ((payload.get("output") or {}).get("audio") or {})
-            audio_url = str(audio.get("url") or "").strip()
-            if not audio_url.startswith(("https://", "http://")):
-                raise AppVoiceError("speech_synthesis_missing_audio")
-
-            download = requests.get(audio_url, timeout=self.timeout)
-            download.raise_for_status()
-            audio_bytes = bytes(download.content or b"")
-            if not audio_bytes or len(audio_bytes) > 12 * 1024 * 1024:
-                raise AppVoiceError("speech_synthesis_invalid_audio")
-            mime_type = str(
-                download.headers.get("Content-Type") or "audio/wav"
-            ).split(";", 1)[0].strip()
-            duration_ms = _wav_duration_ms(audio_bytes)
+            if self.tts_provider in ("dashscope", "aliyun"):
+                audio_bytes, mime_type, duration_ms = (
+                    self._synthesize_dashscope(text)
+                )
+            elif self.tts_provider in ("volcengine", "volc"):
+                audio_bytes, mime_type, duration_ms = (
+                    self._synthesize_volcengine(text)
+                )
+            else:
+                raise AppVoiceError("unsupported_tts_provider")
         except AppVoiceError:
             raise
         except Exception as exc:
@@ -198,6 +219,7 @@ class AppVoiceService:
             input_id=input_id,
             session_id=session_id,
             attrs={
+                "provider": self.tts_provider,
                 "model": self.tts_model,
                 "voice": self.tts_voice,
                 "characters": len(text),
@@ -207,8 +229,10 @@ class AppVoiceService:
             },
         )
         logger.info(
-            "[AppVoice] TTS completed model=%s voice=%s characters=%s "
+            "[AppVoice] TTS completed provider=%s model=%s voice=%s "
+            "characters=%s "
             "duration_ms=%s elapsed=%.2fs",
+            self.tts_provider,
             self.tts_model,
             self.tts_voice,
             len(text),
@@ -216,6 +240,111 @@ class AppVoiceService:
             elapsed,
         )
         return SynthesizedVoice(audio_bytes, mime_type, duration_ms)
+
+    def _synthesize_volcengine(self, text):
+        headers = {
+            "Content-Type": "application/json",
+            "X-Api-Resource-Id": self.tts_model,
+            "X-Api-Request-Id": uuid.uuid4().hex,
+        }
+        if self.tts_api_key:
+            headers["X-Api-Key"] = self.tts_api_key
+        else:
+            headers["X-Api-App-Id"] = self.tts_app_id
+            headers["X-Api-Access-Key"] = self.tts_access_key
+
+        response = requests.post(
+            self.tts_endpoint,
+            headers=headers,
+            json={
+                "user": {"uid": self.tts_app_id or "xiaoyou-app"},
+                "req_params": {
+                    "text": text,
+                    "speaker": self.tts_voice,
+                    "audio_params": {
+                        "format": "mp3",
+                        "sample_rate": 24000,
+                    },
+                },
+            },
+            timeout=self.timeout,
+            stream=True,
+        )
+        response.raise_for_status()
+
+        chunks = []
+        duration_ms = 0
+        for raw_line in response.iter_lines():
+            raw_line = bytes(raw_line or b"").strip()
+            if not raw_line:
+                continue
+            if raw_line.startswith(b"data:"):
+                raw_line = raw_line[5:].strip()
+            try:
+                payload = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise AppVoiceError("speech_synthesis_invalid_response") from exc
+
+            code = payload.get("code")
+            if code not in (None, 0, 3000, 20000000):
+                logger.warning(
+                    "[AppVoice] Volcengine TTS rejected code=%s message=%s",
+                    str(code),
+                    str(payload.get("message") or "")[:160],
+                )
+                raise AppVoiceError("speech_synthesis_rejected")
+            encoded = str(payload.get("data") or "").strip()
+            if encoded:
+                try:
+                    chunks.append(base64.b64decode(encoded, validate=True))
+                except ValueError as exc:
+                    raise AppVoiceError(
+                        "speech_synthesis_invalid_audio"
+                    ) from exc
+            duration_ms = max(
+                duration_ms,
+                _volcengine_duration_ms(payload.get("addition")),
+            )
+
+        audio_bytes = b"".join(chunks)
+        if not audio_bytes or len(audio_bytes) > 12 * 1024 * 1024:
+            raise AppVoiceError("speech_synthesis_invalid_audio")
+        return audio_bytes, "audio/mpeg", duration_ms
+
+    def _synthesize_dashscope(self, text):
+        response = requests.post(
+            self.tts_endpoint,
+            headers={
+                "Authorization": "Bearer " + self.api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.tts_model,
+                "input": {
+                    "text": text,
+                    "voice": self.tts_voice,
+                    "format": "wav",
+                    "sample_rate": 24000,
+                },
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        audio = ((payload.get("output") or {}).get("audio") or {})
+        audio_url = str(audio.get("url") or "").strip()
+        if not audio_url.startswith(("https://", "http://")):
+            raise AppVoiceError("speech_synthesis_missing_audio")
+
+        download = requests.get(audio_url, timeout=self.timeout)
+        download.raise_for_status()
+        audio_bytes = bytes(download.content or b"")
+        if not audio_bytes or len(audio_bytes) > 12 * 1024 * 1024:
+            raise AppVoiceError("speech_synthesis_invalid_audio")
+        mime_type = str(
+            download.headers.get("Content-Type") or "audio/wav"
+        ).split(";", 1)[0].strip()
+        return audio_bytes, mime_type, _wav_duration_ms(audio_bytes)
 
 
 def _truthy(value):
@@ -238,6 +367,24 @@ def _safe_audio_mime(value):
     }:
         return value
     return "audio/mp4"
+
+
+def _volcengine_duration_ms(addition):
+    if isinstance(addition, str):
+        try:
+            addition = json.loads(addition)
+        except ValueError:
+            return 0
+    if not isinstance(addition, dict):
+        return 0
+    for key in ("duration", "duration_ms", "audio_duration"):
+        try:
+            value = int(float(addition.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return 0
 
 
 def _wav_duration_ms(data):

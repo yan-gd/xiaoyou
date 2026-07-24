@@ -87,13 +87,17 @@ Android 13 及以上首次开启通知时会通过原生权限接口请求系统
 XIAOYOU_APP_ENABLED=true
 XIAOYOU_APP_TOKEN=使用 openssl rand -hex 32 生成的随机值
 XIAOYOU_APP_VOICE_ENABLED=true
+XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 ```
 
 语音识别默认使用 `qwen3-asr-flash`，语音合成使用
-`cosyvoice-v3-flash` 和 `longyan_v3`。它们复用服务器已有的百炼
-`KEY`，密钥不会进入 APK。语音转写作为用户原话进入同一套记忆链路，
+火山引擎 `seed-tts-2.0` 和 `zh_female_xiaohe_uranus_bigtts`
+（小荷 2.0）。ASR 继续复用服务器已有的百炼 `KEY`，TTS 使用独立的
+`XIAOYOU_APP_TTS_API_KEY`；旧版火山账号也可以改填
+`XIAOYOU_APP_TTS_APP_ID` 和 `XIAOYOU_APP_TTS_ACCESS_KEY`。所有密钥
+均只留在服务器，不会进入 APK。语音转写作为用户原话进入同一套记忆链路，
 音频文件保存在 `data/app_channel/media/`。用户发送的图片与表情包也保存在该目录，单张限制 8 MiB。
-流式 WAV 的时长按实际音频字节计算，避免服务商的占位长度被误显示成数万秒。
+火山 V3 接口返回 MP3 与真实时长；合成失败会退回文字，不影响本轮回复。
 
 启动时需叠加仓库根目录的 `docker-compose.app.yml`。它只把容器端口映射到宿主机 `127.0.0.1:8787`，必须使用 Nginx/Caddy 提供公网 HTTPS，App 不应直接连接明文 HTTP 端口。
 

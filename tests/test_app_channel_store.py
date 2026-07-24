@@ -29,7 +29,9 @@ def _load_app_channel(monkeypatch, tmp_path):
     class _AppVoiceService:
         available = True
         asr_model = "qwen3-asr-flash"
-        tts_model = "cosyvoice-v3-flash"
+        tts_model = "seed-tts-2.0"
+        tts_provider = "volcengine"
+        tts_available = True
 
         def transcribe(self, *_args, **_kwargs):
             return "测试语音"
@@ -234,8 +236,14 @@ def test_app_channel_configuration_is_safe_by_default():
     ) in compose
     assert "XIAOYOU_APP_VOICE_ENABLED" in compose
     assert "XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608'" in compose
-    assert "XIAOYOU_APP_TTS_MODEL: 'cosyvoice-v3-flash'" in compose
-    assert "XIAOYOU_APP_TTS_VOICE: 'longyan_v3'" in compose
+    assert "XIAOYOU_APP_TTS_PROVIDER: 'volcengine'" in compose
+    assert "XIAOYOU_APP_TTS_MODEL: 'seed-tts-2.0'" in compose
+    assert (
+        "XIAOYOU_APP_TTS_VOICE: "
+        "'zh_female_xiaohe_uranus_bigtts'"
+    ) in compose
+    assert "XIAOYOU_APP_TTS_API_KEY:" in compose
+    assert "XIAOYOU_APP_TTS_ACCESS_KEY:" in compose
     assert "XIAOYOU_APP_ENABLED=false" in env_example
     assert '"AppChannel"' in plugins
 

@@ -27,9 +27,13 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_DEFAULT_PROACTIVE: '${XIAOYOU_APP_DEFAULT_PROACTIVE:-false}' # 无明确来源的主动消息默认仍走微信；开启后优先进入最近App设备收件箱。
       XIAOYOU_APP_VOICE_ENABLED: '${XIAOYOU_APP_VOICE_ENABLED:-true}' # 只启用App录音转写与语音回复；不改变微信语音开关。
       XIAOYOU_APP_ASR_MODEL: 'qwen3-asr-flash' # App短语音同步识别，结果作为用户原话进入现有对话链路。
-      XIAOYOU_APP_TTS_MODEL: 'cosyvoice-v3-flash' # App专属语音回复模型；与longyan_v3音色匹配。
-      XIAOYOU_APP_TTS_VOICE: 'longyan_v3' # 温暖温柔的女声，仅App语音输入触发。
-      XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别、合成或音频下载最多等待45秒。
+      XIAOYOU_APP_TTS_PROVIDER: 'volcengine' # App语音回复使用火山引擎；阿里云KEY仍只负责上面的语音识别。
+      XIAOYOU_APP_TTS_MODEL: 'seed-tts-2.0' # 火山大模型语音合成2.0资源ID。
+      XIAOYOU_APP_TTS_VOICE: 'zh_female_xiaohe_uranus_bigtts' # 小荷2.0女声，仅App语音输入触发。
+      XIAOYOU_APP_TTS_API_KEY: '${XIAOYOU_APP_TTS_API_KEY:-}' # 火山新控制台API Key；与旧版App ID鉴权二选一。
+      XIAOYOU_APP_TTS_APP_ID: '${XIAOYOU_APP_TTS_APP_ID:-}' # 火山旧版控制台App ID；新API Key鉴权可留空。
+      XIAOYOU_APP_TTS_ACCESS_KEY: '${XIAOYOU_APP_TTS_ACCESS_KEY:-}' # 火山旧版控制台Access Key；严禁提交仓库。
+      XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别或合成最多等待45秒。
       XIAOYOU_APP_VOICE_MAX_BYTES: '6291456' # 单条App录音最多6MiB；客户端同时限制60秒。
       XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608' # App上传图片或表情包最大8MiB；Nginx需同步允许8m。
       SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。
