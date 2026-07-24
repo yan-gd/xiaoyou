@@ -29,7 +29,7 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_ASR_MODEL: 'qwen3-asr-flash' # App短语音同步识别，结果作为用户原话进入现有对话链路。
       XIAOYOU_APP_TTS_PROVIDER: 'volcengine' # App语音回复使用火山引擎；阿里云KEY仍只负责上面的语音识别。
       XIAOYOU_APP_TTS_MODEL: 'seed-tts-2.0' # 火山大模型语音合成2.0资源ID。
-      XIAOYOU_APP_TTS_VOICE: 'ICL_uranus_zh_female_rouguhunshi_tob' # 柔骨魂师女声，仅用于App语音回复。
+      XIAOYOU_APP_TTS_VOICE: ${XIAOYOU_APP_TTS_VOICE:-} # 柔骨魂师女声，仅用于App语音回复。
       XIAOYOU_APP_TTS_LOUDNESS_RATE: '${XIAOYOU_APP_TTS_LOUDNESS_RATE:-100}' # 服务端合成音量；100代表2倍，避免客户端再次叠加增益。
       XIAOYOU_APP_TTS_API_KEY: '${XIAOYOU_APP_TTS_API_KEY:-}' # 火山新控制台API Key；与旧版App ID鉴权二选一。
       XIAOYOU_APP_TTS_APP_ID: '${XIAOYOU_APP_TTS_APP_ID:-}' # 火山旧版控制台App ID；新API Key鉴权可留空。
