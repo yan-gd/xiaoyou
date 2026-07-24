@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
+import 'dart:ui';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -8,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
 import 'chat_models.dart';
+import 'media_save_service.dart';
 import 'notification_service.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
@@ -77,6 +80,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String _highlightedMessageId = '';
   Future<void>? _recordingStartTask;
   Completer<void>? _notificationSettingsResume;
+  OverlayEntry? _cancelToastEntry;
 
   @override
   void initState() {
@@ -102,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         !notificationSettingsResume.isCompleted) {
       notificationSettingsResume.complete();
     }
+    _cancelToastEntry?.remove();
     _api?.close();
     unawaited(_voiceRecorder.dispose());
     _composer.dispose();
@@ -142,6 +147,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       notificationSettingsResume.complete();
     }
     _notificationSettingsResume = null;
+    unawaited(_syncNotificationPermissionFromSystem());
     unawaited(_notificationService.cancelAll());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
@@ -293,6 +299,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ..text = draft
           ..selection = TextSelection.collapsed(offset: draft.length);
       }
+      await _syncNotificationPermissionFromSystem();
       if (saved == null) {
         return;
       }
@@ -801,10 +808,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
     if (shouldCancel) {
       await _voiceRecorder.cancel();
-      _showSnack(
-        '已取消发送',
-        duration: const Duration(milliseconds: 900),
-      );
+      _showCancelledSendToast();
       return;
     }
     final recorded = await _voiceRecorder.stop();
@@ -1237,8 +1241,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     unawaited(_sessionStore.savePreferences(preferences));
   }
 
+  Future<void> _syncNotificationPermissionFromSystem() async {
+    try {
+      final systemEnabled = await _notificationService.notificationsEnabled();
+      if (!mounted) {
+        return;
+      }
+      if (systemEnabled &&
+          !_preferences.notificationsEnabled &&
+          !_preferences.notificationExplicitlyDisabled) {
+        _updatePreferences(
+          _preferences.copyWith(notificationsEnabled: true),
+        );
+      } else if (!systemEnabled && _preferences.notificationsEnabled) {
+        _updatePreferences(
+          _preferences.copyWith(notificationsEnabled: false),
+        );
+      }
+    } catch (_) {
+      // System permission synchronization is best effort.
+    }
+  }
+
   Future<bool> _setNotificationsEnabled(bool enabled) async {
     if (enabled) {
+      _updatePreferences(
+        _preferences.copyWith(notificationExplicitlyDisabled: false),
+      );
       var requestFailed = false;
       var allowed = false;
       try {
@@ -1274,7 +1303,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return false;
     }
     _updatePreferences(
-      _preferences.copyWith(notificationsEnabled: enabled),
+      _preferences.copyWith(
+        notificationsEnabled: enabled,
+        notificationExplicitlyDisabled: !enabled,
+      ),
     );
     return true;
   }
@@ -1376,7 +1408,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  void _openSettings() {
+  Future<void> _openSettings() async {
+    await _syncNotificationPermissionFromSystem();
+    if (!mounted) {
+      return;
+    }
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1482,6 +1518,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
   }
 
+  void _showCancelledSendToast() {
+    if (!mounted) {
+      return;
+    }
+    _cancelToastEntry?.remove();
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (context) => _CancelledSendToast(
+        onDismissed: () {
+          if (entry.mounted) {
+            entry.remove();
+          }
+          if (identical(_cancelToastEntry, entry)) {
+            _cancelToastEntry = null;
+          }
+        },
+      ),
+    );
+    _cancelToastEntry = entry;
+    Overlay.of(context, rootOverlay: true).insert(entry);
+  }
+
   @override
   Widget build(BuildContext context) {
     late final Widget screen;
@@ -1544,7 +1602,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   connected: connected,
                   onAvatarTap: _openProfile,
                   onSearch: _openSearch,
-                  onSettings: _openSettings,
+                  onSettings: () => unawaited(_openSettings()),
                 ),
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 240),
@@ -2628,6 +2686,7 @@ class _MessageRowState extends State<_MessageRow>
     String url,
     Map<String, String>? headers,
     String localPath,
+    String mimeType,
   ) {
     Navigator.of(context).push(
       PageRouteBuilder<void>(
@@ -2639,6 +2698,7 @@ class _MessageRowState extends State<_MessageRow>
           url: url,
           headers: headers,
           localPath: localPath,
+          mimeType: mimeType,
         ),
       ),
     );
@@ -2877,7 +2937,12 @@ class _MessageRowState extends State<_MessageRow>
     return GestureDetector(
       onTap: !hasLocal && url.isEmpty
           ? null
-          : () => _openImage(url, headers, hasLocal ? localPath : ''),
+          : () => _openImage(
+                url,
+                headers,
+                hasLocal ? localPath : '',
+                message.mimeType,
+              ),
       child: Hero(
         tag: 'image-${message.id}',
         child: ClipRRect(
@@ -4077,18 +4142,239 @@ class _RecordingComposer extends StatelessWidget {
   }
 }
 
-class _ImageViewer extends StatelessWidget {
+class _CancelledSendToast extends StatefulWidget {
+  const _CancelledSendToast({required this.onDismissed});
+
+  final VoidCallback onDismissed;
+
+  @override
+  State<_CancelledSendToast> createState() => _CancelledSendToastState();
+}
+
+class _CancelledSendToastState extends State<_CancelledSendToast>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 220),
+    reverseDuration: const Duration(milliseconds: 160),
+  );
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.forward();
+    _timer = Timer(const Duration(milliseconds: 760), _dismiss);
+  }
+
+  Future<void> _dismiss() async {
+    if (!mounted) {
+      return;
+    }
+    await _controller.reverse();
+    if (mounted) {
+      widget.onDismissed();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final curved = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutBack,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: MediaQuery.viewPaddingOf(context).bottom + 76,
+      child: IgnorePointer(
+        child: Center(
+          child: FadeTransition(
+            opacity: _controller,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, 0.24),
+                end: Offset.zero,
+              ).animate(curved),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.94, end: 1).animate(curved),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(22),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(12, 9, 16, 9),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [
+                            Color(0xeefef7fb),
+                            Color(0xe6f5e8f0),
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(color: const Color(0xc8ffffff)),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x305a3045),
+                            blurRadius: 22,
+                            offset: Offset(0, 8),
+                          ),
+                        ],
+                      ),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          _CancelledSendIcon(),
+                          SizedBox(width: 9),
+                          Text(
+                            '已取消发送',
+                            style: TextStyle(
+                              color: _roseDark,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CancelledSendIcon extends StatelessWidget {
+  const _CancelledSendIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 30,
+      height: 30,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: Color(0x268f476f),
+      ),
+      child: const Icon(
+        Icons.mic_off_rounded,
+        color: _rose,
+        size: 17,
+      ),
+    );
+  }
+}
+
+class _ImageViewer extends StatefulWidget {
   const _ImageViewer({
     required this.heroTag,
     required this.url,
     required this.headers,
     required this.localPath,
+    required this.mimeType,
   });
 
   final String heroTag;
   final String url;
   final Map<String, String>? headers;
   final String localPath;
+  final String mimeType;
+
+  @override
+  State<_ImageViewer> createState() => _ImageViewerState();
+}
+
+class _ImageViewerState extends State<_ImageViewer> {
+  static const _mediaSaveService = AppMediaSaveService();
+
+  bool _saving = false;
+
+  Future<Uint8List> _loadImageBytes() async {
+    if (widget.localPath.isNotEmpty) {
+      return File(widget.localPath).readAsBytes();
+    }
+    final client = HttpClient();
+    try {
+      final request = await client.getUrl(Uri.parse(widget.url));
+      widget.headers?.forEach(request.headers.set);
+      final response = await request.close();
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException(
+          'Image download failed with HTTP ${response.statusCode}.',
+          uri: Uri.parse(widget.url),
+        );
+      }
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response) {
+        bytes.add(chunk);
+      }
+      return bytes.takeBytes();
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<void> _saveImage() async {
+    if (_saving) {
+      return;
+    }
+    setState(() => _saving = true);
+    try {
+      final bytes = await _loadImageBytes();
+      final mimeType =
+          widget.mimeType.startsWith('image/') ? widget.mimeType : 'image/jpeg';
+      final extension = switch (mimeType) {
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        'image/gif' => 'gif',
+        _ => 'jpg',
+      };
+      await _mediaSaveService.saveImage(
+        bytes: bytes,
+        fileName: 'xiaoyou_${DateTime.now().millisecondsSinceEpoch}.$extension',
+        mimeType: mimeType,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('图片已保存到相册“小悠”'),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(milliseconds: 1400),
+            ),
+          );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            const SnackBar(
+              content: Text('图片保存失败，请检查相册权限后重试'),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 2),
+            ),
+          );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _saving = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -4104,12 +4390,15 @@ class _ImageViewer extends StatelessWidget {
                 maxScale: 4,
                 child: Center(
                   child: Hero(
-                    tag: heroTag,
-                    child: localPath.isNotEmpty
-                        ? Image.file(File(localPath), fit: BoxFit.contain)
+                    tag: widget.heroTag,
+                    child: widget.localPath.isNotEmpty
+                        ? Image.file(
+                            File(widget.localPath),
+                            fit: BoxFit.contain,
+                          )
                         : Image.network(
-                            url,
-                            headers: headers,
+                            widget.url,
+                            headers: widget.headers,
                             fit: BoxFit.contain,
                           ),
                   ),
@@ -4117,19 +4406,77 @@ class _ImageViewer extends StatelessWidget {
               ),
             ),
           ),
-          SafeArea(
-            child: Align(
-              alignment: Alignment.topLeft,
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
               child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: IconButton.filledTonal(
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(Icons.close_rounded),
+                padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    _ImageViewerButton(
+                      tooltip: '保存图片',
+                      onPressed: _saving ? null : _saveImage,
+                      child: _saving
+                          ? const SizedBox(
+                              width: 19,
+                              height: 19,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.download_rounded),
+                    ),
+                    const SizedBox(width: 10),
+                    _ImageViewerButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.pop(context),
+                      child: const Icon(Icons.close_rounded),
+                    ),
+                  ],
                 ),
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ImageViewerButton extends StatelessWidget {
+  const _ImageViewerButton({
+    required this.tooltip,
+    required this.onPressed,
+    required this.child,
+  });
+
+  final String tooltip;
+  final VoidCallback? onPressed;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipOval(
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Material(
+          color: const Color(0x990d0b0c),
+          shape: const CircleBorder(
+            side: BorderSide(color: Color(0x38ffffff)),
+          ),
+          child: IconButton(
+            tooltip: tooltip,
+            onPressed: onPressed,
+            color: Colors.white,
+            iconSize: 22,
+            visualDensity: VisualDensity.compact,
+            icon: child,
+          ),
+        ),
       ),
     );
   }

@@ -34,6 +34,8 @@
 	<string>用于拍照并发送给小悠</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于选择照片和表情包发送给小悠</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>用于将小悠分享的照片保存到你的相册</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

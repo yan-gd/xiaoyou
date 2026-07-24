@@ -27,6 +27,7 @@ class AppPreferences {
     this.notificationSound = true,
     this.notificationVibration = true,
     this.notificationPreview = true,
+    this.notificationExplicitlyDisabled = false,
     this.fontScale = 1,
     this.compactMessages = false,
     this.palette = 'rose',
@@ -37,6 +38,7 @@ class AppPreferences {
   final bool notificationSound;
   final bool notificationVibration;
   final bool notificationPreview;
+  final bool notificationExplicitlyDisabled;
   final double fontScale;
   final bool compactMessages;
   final String palette;
@@ -47,6 +49,7 @@ class AppPreferences {
     bool? notificationSound,
     bool? notificationVibration,
     bool? notificationPreview,
+    bool? notificationExplicitlyDisabled,
     double? fontScale,
     bool? compactMessages,
     String? palette,
@@ -58,6 +61,8 @@ class AppPreferences {
       notificationVibration:
           notificationVibration ?? this.notificationVibration,
       notificationPreview: notificationPreview ?? this.notificationPreview,
+      notificationExplicitlyDisabled:
+          notificationExplicitlyDisabled ?? this.notificationExplicitlyDisabled,
       fontScale: fontScale ?? this.fontScale,
       compactMessages: compactMessages ?? this.compactMessages,
       palette: palette ?? this.palette,
@@ -81,6 +86,8 @@ class SessionStore {
   static const _notificationSoundKey = 'xiaoyou.notification_sound';
   static const _notificationVibrationKey = 'xiaoyou.notification_vibration';
   static const _notificationPreviewKey = 'xiaoyou.notification_preview';
+  static const _notificationExplicitlyDisabledKey =
+      'xiaoyou.notification_explicitly_disabled';
   static const _fontScaleKey = 'xiaoyou.font_scale';
   static const _compactMessagesKey = 'xiaoyou.compact_messages';
   static const _paletteKey = 'xiaoyou.palette';
@@ -151,6 +158,9 @@ class SessionStore {
           await _preferences.getBool(_notificationVibrationKey) ?? true,
       notificationPreview:
           await _preferences.getBool(_notificationPreviewKey) ?? true,
+      notificationExplicitlyDisabled:
+          await _preferences.getBool(_notificationExplicitlyDisabledKey) ??
+              false,
       fontScale: fontScale,
       compactMessages: await _preferences.getBool(_compactMessagesKey) ?? false,
       palette:
@@ -176,6 +186,10 @@ class SessionStore {
       _notificationPreviewKey,
       preferences.notificationPreview,
     );
+    await _preferences.setBool(
+      _notificationExplicitlyDisabledKey,
+      preferences.notificationExplicitlyDisabled,
+    );
     await _preferences.setDouble(_fontScaleKey, preferences.fontScale);
     await _preferences.setBool(
       _compactMessagesKey,
@@ -198,6 +212,7 @@ class SessionStore {
     await _preferences.remove(_notificationSoundKey);
     await _preferences.remove(_notificationVibrationKey);
     await _preferences.remove(_notificationPreviewKey);
+    await _preferences.remove(_notificationExplicitlyDisabledKey);
     await _preferences.remove(_fontScaleKey);
     await _preferences.remove(_compactMessagesKey);
     await _preferences.remove(_paletteKey);
