@@ -70,6 +70,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _authenticating = false;
   bool _lockEnabled = false;
   bool _appInForeground = true;
+  bool _systemNotificationsAllowed = false;
   AppPreferences _preferences = const AppPreferences();
   String _status = '尚未连接';
   int _lastEventSequence = 0;
@@ -124,7 +125,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _appInForeground = false;
-      if (!_preferences.notificationsEnabled) {
+      if (Platform.isAndroid) {
+        _pollTimer?.cancel();
+        if (_preferences.notificationsEnabled) {
+          unawaited(_configureBackgroundNotifications(appInForeground: false));
+        }
+      } else if (!_preferences.notificationsEnabled) {
         _pollTimer?.cancel();
       } else {
         _startPolling();
@@ -148,7 +154,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     _notificationSettingsResume = null;
     unawaited(_syncNotificationPermissionFromSystem());
-    unawaited(_notificationService.cancelAll());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
       return;
@@ -441,6 +446,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await _flushAcknowledgements();
       _startPolling();
       await _poll();
+      if (_preferences.notificationsEnabled) {
+        await _configureBackgroundNotifications(
+          appInForeground: _appInForeground,
+        );
+      }
       _scrollToEnd(animated: false);
       HapticFeedback.selectionClick();
     } catch (error) {
@@ -547,8 +557,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  bool get _pollingAllowed =>
-      !_locked || (!_appInForeground && _preferences.notificationsEnabled);
+  bool get _pollingAllowed {
+    if (!_appInForeground && Platform.isAndroid) {
+      return false;
+    }
+    return !_locked || (!_appInForeground && _preferences.notificationsEnabled);
+  }
 
   Future<void> _notifyIncoming(List<ChatMessage> messages) async {
     for (final message in messages.where((item) => item.fromXiaoyou)) {
@@ -1239,6 +1253,42 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _updatePreferences(AppPreferences preferences) {
     setState(() => _preferences = preferences);
     unawaited(_sessionStore.savePreferences(preferences));
+    if (preferences.notificationsEnabled) {
+      unawaited(
+        _configureBackgroundNotifications(
+          appInForeground: _appInForeground,
+        ),
+      );
+    }
+  }
+
+  Future<bool> _configureBackgroundNotifications({
+    required bool appInForeground,
+  }) async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+    final api = _api;
+    if (api == null ||
+        !_preferences.notificationsEnabled ||
+        !_systemNotificationsAllowed) {
+      return api == null;
+    }
+    try {
+      await _notificationService.configureBackgroundDelivery(
+        baseUrl: api.baseUri.toString(),
+        token: api.token,
+        deviceId: api.deviceId,
+        lastEventSequence: _lastEventSequence,
+        appInForeground: appInForeground,
+        preview: _preferences.notificationPreview,
+        sound: _preferences.notificationSound,
+        vibration: _preferences.notificationVibration,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   Future<void> _syncNotificationPermissionFromSystem() async {
@@ -1247,16 +1297,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!mounted) {
         return;
       }
+      setState(() => _systemNotificationsAllowed = systemEnabled);
       if (systemEnabled &&
           !_preferences.notificationsEnabled &&
           !_preferences.notificationExplicitlyDisabled) {
         _updatePreferences(
           _preferences.copyWith(notificationsEnabled: true),
         );
-      } else if (!systemEnabled && _preferences.notificationsEnabled) {
-        _updatePreferences(
-          _preferences.copyWith(notificationsEnabled: false),
+      } else if (systemEnabled && _preferences.notificationsEnabled) {
+        unawaited(
+          _configureBackgroundNotifications(
+            appInForeground: _appInForeground,
+          ),
         );
+      } else if (!systemEnabled) {
+        unawaited(_notificationService.stopBackgroundDelivery());
       }
     } catch (_) {
       // System permission synchronization is best effort.
@@ -1265,13 +1320,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<bool> _setNotificationsEnabled(bool enabled) async {
     if (enabled) {
-      _updatePreferences(
-        _preferences.copyWith(notificationExplicitlyDisabled: false),
-      );
       var requestFailed = false;
       var allowed = false;
       try {
-        allowed = await _notificationService.requestPermission();
+        allowed = await _notificationService.notificationsEnabled();
+        if (!allowed) {
+          allowed = await _notificationService.requestPermission();
+        }
       } catch (_) {
         requestFailed = true;
       }
@@ -1283,7 +1338,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           return false;
         }
         try {
-          allowed = await _notificationService.requestPermission();
+          allowed = await _notificationService.notificationsEnabled();
         } catch (_) {
           allowed = false;
         }
@@ -1292,8 +1347,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _showSnack('系统通知仍未授权，请确认“小悠”的通知总开关已开启');
         return false;
       }
+      if (!mounted) {
+        return false;
+      }
+      setState(() => _systemNotificationsAllowed = true);
+      _updatePreferences(
+        _preferences.copyWith(
+          notificationsEnabled: true,
+          notificationExplicitlyDisabled: false,
+        ),
+      );
+      final backgroundReady = await _configureBackgroundNotifications(
+        appInForeground: _appInForeground,
+      );
+      if (!backgroundReady && mounted) {
+        _showSnack('系统权限已开启，但后台提醒服务启动失败，请重新打开 App 后再试');
+      }
+      return backgroundReady;
     } else {
       try {
+        await _notificationService.stopBackgroundDelivery();
         await _notificationService.cancelAll();
       } catch (_) {
         // Disabling notifications should still update local preferences.
@@ -1309,6 +1382,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
     );
     return true;
+  }
+
+  Future<bool> _sendTestNotification() async {
+    try {
+      final allowed = await _notificationService.notificationsEnabled();
+      if (!mounted) {
+        return false;
+      }
+      setState(() => _systemNotificationsAllowed = allowed);
+      if (!allowed) {
+        _showSnack('系统通知权限未开启，请先在系统设置中允许“小悠”发送通知');
+        return false;
+      }
+      await _notificationService.showMessage(
+        messageId: 'xiaoyou-test-${DateTime.now().millisecondsSinceEpoch}',
+        body: '测试成功啦，之后小悠会在这里提醒你 💗',
+        sound: _preferences.notificationSound,
+        vibration: _preferences.notificationVibration,
+      );
+      _showSnack('测试通知已发送，请查看通知栏');
+      return true;
+    } catch (_) {
+      if (mounted) {
+        _showSnack('测试通知发送失败，请检查“小悠的消息”通知分类是否开启');
+      }
+      return false;
+    }
+  }
+
+  Future<void> _openSystemNotificationSettings() async {
+    try {
+      await _notificationService.openNotificationSettings();
+    } catch (_) {
+      if (mounted) {
+        _showSnack('暂时无法打开系统通知设置');
+      }
+    }
   }
 
   Future<bool> _showNotificationPermissionNotice({
@@ -1390,6 +1500,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (confirmed != true) {
       return;
     }
+    try {
+      await _notificationService.stopBackgroundDelivery();
+    } catch (_) {
+      // Removing the saved connection must not be blocked by service cleanup.
+    }
     await _sessionStore.clear();
     _pollTimer?.cancel();
     _typingTimer?.cancel();
@@ -1423,8 +1538,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         status: _status,
         lockEnabled: _lockEnabled,
         preferences: _preferences,
+        systemNotificationsAllowed: _systemNotificationsAllowed,
         onLockChanged: _setAppLock,
         onNotificationsChanged: _setNotificationsEnabled,
+        onTestNotification: _sendTestNotification,
+        onOpenNotificationSettings: _openSystemNotificationSettings,
         onPreferencesChanged: _updatePreferences,
         onEditConnection: () {
           Navigator.pop(sheetContext);
@@ -1945,8 +2063,11 @@ class _SettingsSheet extends StatefulWidget {
     required this.status,
     required this.lockEnabled,
     required this.preferences,
+    required this.systemNotificationsAllowed,
     required this.onLockChanged,
     required this.onNotificationsChanged,
+    required this.onTestNotification,
+    required this.onOpenNotificationSettings,
     required this.onPreferencesChanged,
     required this.onEditConnection,
     required this.onLockNow,
@@ -1957,8 +2078,11 @@ class _SettingsSheet extends StatefulWidget {
   final String status;
   final bool lockEnabled;
   final AppPreferences preferences;
+  final bool systemNotificationsAllowed;
   final Future<bool> Function(bool) onLockChanged;
   final Future<bool> Function(bool) onNotificationsChanged;
+  final Future<bool> Function() onTestNotification;
+  final Future<void> Function() onOpenNotificationSettings;
   final ValueChanged<AppPreferences> onPreferencesChanged;
   final VoidCallback onEditConnection;
   final VoidCallback onLockNow;
@@ -1971,8 +2095,10 @@ class _SettingsSheet extends StatefulWidget {
 class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _lockEnabled = widget.lockEnabled;
   late AppPreferences _preferences = widget.preferences;
+  late bool _systemNotificationsAllowed = widget.systemNotificationsAllowed;
   bool _changingLock = false;
   bool _changingNotifications = false;
+  bool _testingNotifications = false;
 
   Future<void> _changeLock(bool value) async {
     setState(() => _changingLock = true);
@@ -2007,9 +2133,25 @@ class _SettingsSheetState extends State<_SettingsSheet> {
             _preferences = _preferences.copyWith(
               notificationsEnabled: value,
             );
+            if (value) {
+              _systemNotificationsAllowed = true;
+            }
           }
         });
       }
+    }
+  }
+
+  Future<void> _testNotification() async {
+    setState(() => _testingNotifications = true);
+    final sent = await widget.onTestNotification();
+    if (mounted) {
+      setState(() {
+        _testingNotifications = false;
+        if (sent) {
+          _systemNotificationsAllowed = true;
+        }
+      });
     }
   }
 
@@ -2084,8 +2226,14 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                   leading: const _SettingsIcon(
                     icon: Icons.notifications_active_outlined,
                   ),
-                  title: const Text('系统通知'),
-                  subtitle: const Text('App 在后台保持运行时提醒小悠的新消息'),
+                  title: const Text('后台消息提醒'),
+                  subtitle: Text(
+                    !_preferences.notificationsEnabled
+                        ? '仅暂停 App 提醒，不会关闭系统通知权限'
+                        : (_systemNotificationsAllowed
+                            ? '原生后台服务运行中，离开 App 后仍会提醒'
+                            : 'App 内已开启，但系统通知权限尚未生效'),
+                  ),
                   trailing: _changingNotifications
                       ? const SizedBox(
                           width: 22,
@@ -2096,6 +2244,38 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                           value: _preferences.notificationsEnabled,
                           onChanged: _changeNotifications,
                         ),
+                ),
+                ListTile(
+                  leading: _SettingsIcon(
+                    icon: _systemNotificationsAllowed
+                        ? Icons.verified_rounded
+                        : Icons.notification_important_outlined,
+                  ),
+                  title: Text(
+                    _systemNotificationsAllowed ? '系统权限已开启' : '系统权限未开启',
+                  ),
+                  subtitle: const Text('这里显示 Android 实际返回的授权状态'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: widget.onOpenNotificationSettings,
+                ),
+                ListTile(
+                  enabled: _preferences.notificationsEnabled,
+                  leading: const _SettingsIcon(
+                    icon: Icons.notifications_none_rounded,
+                  ),
+                  title: const Text('发送测试通知'),
+                  subtitle: const Text('立即验证通知分类、声音与振动'),
+                  trailing: _testingNotifications
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.chevron_right_rounded),
+                  onTap: _preferences.notificationsEnabled &&
+                          !_testingNotifications
+                      ? _testNotification
+                      : null,
                 ),
                 ListTile(
                   enabled: _preferences.notificationsEnabled,

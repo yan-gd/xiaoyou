@@ -69,6 +69,12 @@ class MainActivity : FlutterFragmentActivity() {
                     startActivity(intent)
                     result.success(null)
                 }
+                "configureBackgroundNotifications" ->
+                    configureBackgroundNotifications(call, result)
+                "stopBackgroundNotifications" -> {
+                    XiaoyouNotificationService.stop(this)
+                    result.success(true)
+                }
                 else -> result.notImplemented()
             }
         }
@@ -114,6 +120,35 @@ class MainActivity : FlutterFragmentActivity() {
         }
         pendingNotificationResult = result
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    private fun configureBackgroundNotifications(
+        call: MethodCall,
+        result: MethodChannel.Result,
+    ) {
+        val baseUrl = call.argument<String>("baseUrl").orEmpty().trim()
+        val token = call.argument<String>("token").orEmpty().trim()
+        val deviceId = call.argument<String>("deviceId").orEmpty().trim()
+        if (baseUrl.isEmpty() || token.isEmpty() || deviceId.isEmpty()) {
+            result.error(
+                "invalid_notification_configuration",
+                "Background notification connection is incomplete.",
+                null,
+            )
+            return
+        }
+        XiaoyouNotificationService.configure(
+            this,
+            baseUrl,
+            token,
+            deviceId,
+            call.argument<Number>("lastEventSequence")?.toLong() ?: 0L,
+            call.argument<Boolean>("appForeground") ?: true,
+            call.argument<Boolean>("preview") ?: true,
+            call.argument<Boolean>("sound") ?: true,
+            call.argument<Boolean>("vibration") ?: true,
+        )
+        result.success(true)
     }
 
     private fun saveImageToGallery(call: MethodCall, result: MethodChannel.Result) {

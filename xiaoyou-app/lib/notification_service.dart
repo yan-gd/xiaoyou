@@ -92,6 +92,43 @@ class AppNotificationService {
         .timeout(const Duration(seconds: 5));
   }
 
+  Future<void> configureBackgroundDelivery({
+    required String baseUrl,
+    required String token,
+    required String deviceId,
+    required int lastEventSequence,
+    required bool appInForeground,
+    required bool preview,
+    required bool sound,
+    required bool vibration,
+  }) async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await _systemChannel.invokeMethod<bool>(
+      'configureBackgroundNotifications',
+      {
+        'baseUrl': baseUrl,
+        'token': token,
+        'deviceId': deviceId,
+        'lastEventSequence': lastEventSequence,
+        'appForeground': appInForeground,
+        'preview': preview,
+        'sound': sound,
+        'vibration': vibration,
+      },
+    ).timeout(const Duration(seconds: 8));
+  }
+
+  Future<void> stopBackgroundDelivery() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await _systemChannel
+        .invokeMethod<bool>('stopBackgroundNotifications')
+        .timeout(const Duration(seconds: 5));
+  }
+
   Future<void> showMessage({
     required String messageId,
     required String body,
@@ -100,7 +137,7 @@ class AppNotificationService {
   }) async {
     await initialize();
     final notificationId = messageId.hashCode & 0x7fffffff;
-    final channelId = 'xiaoyou_messages_'
+    final channelId = 'xiaoyou_messages_v4_'
         '${sound ? 'sound' : 'silent'}_'
         '${vibration ? 'vibrate' : 'still'}';
     final details = NotificationDetails(
