@@ -47,28 +47,18 @@ class AppNotificationService {
   }
 
   Future<bool> requestPermission() async {
-    await initialize();
     if (Platform.isAndroid) {
-      final android = _plugin.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
-      if (android == null) {
+      final granted = await _systemChannel
+          .invokeMethod<bool>('requestNotificationPermission')
+          .timeout(const Duration(seconds: 20));
+      if (granted != true) {
         return false;
       }
-      final alreadyEnabled = await android
-          .areNotificationsEnabled()
-          .timeout(const Duration(seconds: 5));
-      if (alreadyEnabled == true) {
-        return true;
-      }
-      final requested = await android
-          .requestNotificationsPermission()
-          .timeout(const Duration(seconds: 20));
-      final enabled = await android
-          .areNotificationsEnabled()
-          .timeout(const Duration(seconds: 5));
-      return enabled ?? requested ?? false;
+      await initialize();
+      return true;
     }
     if (Platform.isIOS) {
+      await initialize();
       final ios = _plugin.resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin>();
       return await ios
@@ -81,6 +71,16 @@ class AppNotificationService {
           false;
     }
     return true;
+  }
+
+  Future<bool> notificationsEnabled() async {
+    if (Platform.isAndroid) {
+      return await _systemChannel
+              .invokeMethod<bool>('notificationsEnabled')
+              .timeout(const Duration(seconds: 5)) ??
+          false;
+    }
+    return false;
   }
 
   Future<void> openNotificationSettings() async {

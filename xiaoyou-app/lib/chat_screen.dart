@@ -76,6 +76,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   double _recordingLevel = 0;
   String _highlightedMessageId = '';
   Future<void>? _recordingStartTask;
+  Completer<void>? _notificationSettingsResume;
 
   @override
   void initState() {
@@ -96,6 +97,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _highlightTimer?.cancel();
     _recordingTimer?.cancel();
     _amplitudeSubscription?.cancel();
+    final notificationSettingsResume = _notificationSettingsResume;
+    if (notificationSettingsResume != null &&
+        !notificationSettingsResume.isCompleted) {
+      notificationSettingsResume.complete();
+    }
     _api?.close();
     unawaited(_voiceRecorder.dispose());
     _composer.dispose();
@@ -130,6 +136,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     _appInForeground = true;
+    final notificationSettingsResume = _notificationSettingsResume;
+    if (notificationSettingsResume != null &&
+        !notificationSettingsResume.isCompleted) {
+      notificationSettingsResume.complete();
+    }
+    _notificationSettingsResume = null;
     unawaited(_notificationService.cancelAll());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
@@ -233,6 +245,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _accessoryPanelOpen = false;
     });
     _scrollToEnd();
+    HapticFeedback.selectionClick();
+  }
+
+  void _collapseEmojiPanel() {
+    if (!_emojiPanelOpen) {
+      return;
+    }
+    _composerFocus.unfocus();
+    setState(() => _emojiPanelOpen = false);
     HapticFeedback.selectionClick();
   }
 
@@ -780,7 +801,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
     if (shouldCancel) {
       await _voiceRecorder.cancel();
-      _showSnack('已取消发送');
+      _showSnack(
+        '已取消发送',
+        duration: const Duration(milliseconds: 900),
+      );
       return;
     }
     final recorded = await _voiceRecorder.stop();
@@ -1214,34 +1238,52 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<bool> _setNotificationsEnabled(bool enabled) async {
-    try {
-      if (enabled) {
-        final allowed = await _notificationService.requestPermission();
-        if (!allowed) {
-          unawaited(_showNotificationPermissionNotice());
+    if (enabled) {
+      var requestFailed = false;
+      var allowed = false;
+      try {
+        allowed = await _notificationService.requestPermission();
+      } catch (_) {
+        requestFailed = true;
+      }
+      if (!allowed) {
+        final grantedInSettings = await _showNotificationPermissionNotice(
+          initializationFailed: requestFailed,
+        );
+        if (!grantedInSettings) {
           return false;
         }
-      } else {
-        await _notificationService.cancelAll();
+        try {
+          allowed = await _notificationService.requestPermission();
+        } catch (_) {
+          allowed = false;
+        }
       }
-      if (!mounted) {
+      if (!allowed) {
+        _showSnack('系统通知仍未授权，请确认“小悠”的通知总开关已开启');
         return false;
       }
-      _updatePreferences(
-        _preferences.copyWith(notificationsEnabled: enabled),
-      );
-      return true;
-    } catch (_) {
-      unawaited(_showNotificationPermissionNotice(initializationFailed: true));
+    } else {
+      try {
+        await _notificationService.cancelAll();
+      } catch (_) {
+        // Disabling notifications should still update local preferences.
+      }
+    }
+    if (!mounted) {
       return false;
     }
+    _updatePreferences(
+      _preferences.copyWith(notificationsEnabled: enabled),
+    );
+    return true;
   }
 
-  Future<void> _showNotificationPermissionNotice({
+  Future<bool> _showNotificationPermissionNotice({
     bool initializationFailed = false,
   }) async {
     if (!mounted) {
-      return;
+      return false;
     }
     final openSettings = await showDialog<bool>(
       context: context,
@@ -1265,12 +1307,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
     );
     if (openSettings != true) {
-      return;
+      return false;
     }
+    final resumed = Completer<void>();
+    _notificationSettingsResume = resumed;
     try {
       await _notificationService.openNotificationSettings();
+      await resumed.future.timeout(const Duration(minutes: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      return await _notificationService.notificationsEnabled();
     } catch (_) {
-      _showSnack('无法自动打开系统设置，请在手机设置中找到“小悠”并开启通知');
+      if (mounted) {
+        _showSnack('无法确认通知权限，请返回 App 后再试一次');
+      }
+      return false;
+    } finally {
+      if (identical(_notificationSettingsResume, resumed)) {
+        _notificationSettingsResume = null;
+      }
     }
   }
 
@@ -1409,7 +1463,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _showSnack(String message) {
+  void _showSnack(
+    String message, {
+    Duration duration = const Duration(milliseconds: 2400),
+  }) {
     if (!mounted) {
       return;
     }
@@ -1418,6 +1475,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ..showSnackBar(
         SnackBar(
           content: Text(message),
+          duration: duration,
           behavior: SnackBarBehavior.floating,
           margin: const EdgeInsets.fromLTRB(20, 0, 20, 18),
         ),
@@ -1606,7 +1664,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
                   child: _emojiPanelOpen
-                      ? _EmojiPanel(onSelected: _insertEmoji)
+                      ? _EmojiPanel(
+                          onSelected: _insertEmoji,
+                          onCollapse: _collapseEmojiPanel,
+                        )
                       : _accessoryPanelOpen
                           ? _AccessoryPanel(
                               onGallery: () => _pickImage(
@@ -2238,7 +2299,7 @@ class _ConversationHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 10, 10, 11),
+      padding: const EdgeInsets.fromLTRB(14, 6, 8, 7),
       decoration: const BoxDecoration(
         color: Color(0xf7fffafd),
         border: Border(bottom: BorderSide(color: Color(0xffeee3e8))),
@@ -2252,7 +2313,7 @@ class _ConversationHeader extends StatelessWidget {
               children: [
                 const Hero(
                   tag: 'xiaoyou-avatar',
-                  child: _Avatar(size: 47),
+                  child: _Avatar(size: 42),
                 ),
                 Positioned(
                   right: -1,
@@ -2262,7 +2323,7 @@ class _ConversationHeader extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: GestureDetector(
               onTap: onAvatarTap,
@@ -2277,13 +2338,13 @@ class _ConversationHeader extends StatelessWidget {
                         style: TextStyle(
                           color: _ink,
                           fontWeight: FontWeight.w700,
-                          fontSize: 18,
+                          fontSize: 17,
                         ),
                       ),
                       SizedBox(width: 6),
                       Icon(
                         Icons.favorite_rounded,
-                        size: 13,
+                        size: 12,
                         color: Color(0xffc36d98),
                       ),
                     ],
@@ -2296,7 +2357,7 @@ class _ConversationHeader extends StatelessWidget {
                       key: ValueKey(status),
                       style: TextStyle(
                         color: connected ? const Color(0xff5e8d77) : _muted,
-                        fontSize: 12,
+                        fontSize: 11.5,
                       ),
                     ),
                   ),
@@ -2307,11 +2368,13 @@ class _ConversationHeader extends StatelessWidget {
           IconButton(
             onPressed: onSearch,
             tooltip: '搜索聊天记录',
+            visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.search_rounded, color: _ink),
           ),
           IconButton(
             onPressed: onSettings,
             tooltip: '小悠与设置',
+            visualDensity: VisualDensity.compact,
             icon: const Icon(Icons.more_horiz_rounded, color: _ink),
           ),
         ],
@@ -3240,7 +3303,10 @@ class _AccessoryItem extends StatelessWidget {
 }
 
 class _EmojiPanel extends StatelessWidget {
-  const _EmojiPanel({required this.onSelected});
+  const _EmojiPanel({
+    required this.onSelected,
+    required this.onCollapse,
+  });
 
   static const _emojis = [
     '😊',
@@ -3352,6 +3418,7 @@ class _EmojiPanel extends StatelessWidget {
   ];
 
   final ValueChanged<String> onSelected;
+  final VoidCallback onCollapse;
 
   @override
   Widget build(BuildContext context) {
@@ -3367,17 +3434,37 @@ class _EmojiPanel extends StatelessWidget {
         children: [
           SizedBox(
             height: 39,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: _quickStickers.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 7),
-              itemBuilder: (context, index) => ActionChip(
-                label: Text(_quickStickers[index]),
-                onPressed: () => onSelected(_quickStickers[index]),
-                visualDensity: VisualDensity.compact,
-                backgroundColor: Colors.white,
-                side: const BorderSide(color: Color(0xffeadde4)),
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: _quickStickers.length,
+                    separatorBuilder: (_, __) => const SizedBox(width: 7),
+                    itemBuilder: (context, index) => ActionChip(
+                      label: Text(_quickStickers[index]),
+                      onPressed: () => onSelected(_quickStickers[index]),
+                      visualDensity: VisualDensity.compact,
+                      backgroundColor: Colors.white,
+                      side: const BorderSide(color: Color(0xffeadde4)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 7),
+                SizedBox(
+                  width: 38,
+                  height: 38,
+                  child: IconButton.filledTonal(
+                    tooltip: '收起表情面板',
+                    onPressed: onCollapse,
+                    style: IconButton.styleFrom(
+                      backgroundColor: const Color(0xfff1e5eb),
+                      foregroundColor: _roseDark,
+                    ),
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                  ),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 7),
@@ -3720,7 +3807,7 @@ class _Composer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 7),
       decoration: const BoxDecoration(
         color: Color(0xfafffbfd),
         border: Border(top: BorderSide(color: Color(0xffeee3e8))),
@@ -3729,8 +3816,8 @@ class _Composer extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           SizedBox(
-            width: 44,
-            height: 48,
+            width: 40,
+            height: 44,
             child: IconButton(
               tooltip: voiceMode ? '切换到键盘' : '发送语音',
               onPressed: connected && !sending && !recording
@@ -3748,15 +3835,15 @@ class _Composer extends StatelessWidget {
                       : Icons.mic_none_rounded,
                   key: ValueKey(voiceMode),
                   color: connected ? _rose : const Color(0xffb7aab0),
-                  size: 25,
+                  size: 24,
                 ),
               ),
             ),
           ),
           if (!voiceMode) ...[
             SizedBox(
-              width: 40,
-              height: 48,
+              width: 38,
+              height: 44,
               child: IconButton(
                 tooltip: '表情',
                 onPressed: connected && !sending ? onEmoji : null,
@@ -3778,14 +3865,14 @@ class _Composer extends StatelessWidget {
           Expanded(
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 180),
-              constraints: const BoxConstraints(minHeight: 48),
+              constraints: const BoxConstraints(minHeight: 44),
               decoration: BoxDecoration(
                 color: recording
                     ? (recordingCancelling
                         ? const Color(0xffffe8ec)
                         : const Color(0xfffff1f7))
                     : Colors.white,
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(22),
                 border: Border.all(
                   color: recording
                       ? (recordingCancelling ? Colors.redAccent : _rose)
@@ -3816,7 +3903,7 @@ class _Composer extends StatelessWidget {
                       onPointerCancel:
                           connected ? (_) => onRecordEnd(true) : null,
                       child: SizedBox(
-                        height: 48,
+                        height: 44,
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 150),
                           child: recording
@@ -3853,7 +3940,7 @@ class _Composer extends StatelessWidget {
                         hintText: connected ? '和小悠说点什么…' : '正在连接小悠…',
                         hintStyle: const TextStyle(color: Color(0xffb4a7ad)),
                         contentPadding:
-                            const EdgeInsets.fromLTRB(16, 12, 12, 11),
+                            const EdgeInsets.fromLTRB(15, 10, 11, 9),
                         border: InputBorder.none,
                       ),
                     ),
@@ -3869,8 +3956,8 @@ class _Composer extends StatelessWidget {
                 final canOpen = connected && !sending && !enabled;
                 return AnimatedContainer(
                   duration: const Duration(milliseconds: 180),
-                  width: 48,
-                  height: 48,
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
                     color: enabled || accessoryPanelOpen
                         ? _rose
