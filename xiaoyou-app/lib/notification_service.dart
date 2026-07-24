@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
 
 class AppNotificationService {
   AppNotificationService._();
@@ -9,12 +10,19 @@ class AppNotificationService {
 
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
-  bool _initialized = false;
+  static const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
 
-  Future<void> initialize() async {
+  bool _initialized = false;
+  Future<void>? _initialization;
+
+  Future<void> initialize() {
     if (_initialized) {
-      return;
+      return Future.value();
     }
+    return _initialization ??= _initialize();
+  }
+
+  Future<void> _initialize() async {
     const settings = InitializationSettings(
       android: AndroidInitializationSettings('ic_stat_xiaoyou'),
       iOS: DarwinInitializationSettings(
@@ -23,8 +31,19 @@ class AppNotificationService {
         requestSoundPermission: false,
       ),
     );
-    await _plugin.initialize(settings);
-    _initialized = true;
+    try {
+      final initialized = await _plugin
+          .initialize(settings)
+          .timeout(const Duration(seconds: 8));
+      if (initialized == false) {
+        throw StateError('Local notification initialization was rejected.');
+      }
+      _initialized = true;
+    } finally {
+      if (!_initialized) {
+        _initialization = null;
+      }
+    }
   }
 
   Future<bool> requestPermission() async {
@@ -32,19 +51,45 @@ class AppNotificationService {
     if (Platform.isAndroid) {
       final android = _plugin.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
-      return await android?.requestNotificationsPermission() ?? true;
+      if (android == null) {
+        return false;
+      }
+      final alreadyEnabled = await android
+          .areNotificationsEnabled()
+          .timeout(const Duration(seconds: 5));
+      if (alreadyEnabled == true) {
+        return true;
+      }
+      final requested = await android
+          .requestNotificationsPermission()
+          .timeout(const Duration(seconds: 20));
+      final enabled = await android
+          .areNotificationsEnabled()
+          .timeout(const Duration(seconds: 5));
+      return enabled ?? requested ?? false;
     }
     if (Platform.isIOS) {
       final ios = _plugin.resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin>();
-      return await ios?.requestPermissions(
-            alert: true,
-            badge: true,
-            sound: true,
-          ) ??
+      return await ios
+              ?.requestPermissions(
+                alert: true,
+                badge: true,
+                sound: true,
+              )
+              .timeout(const Duration(seconds: 20)) ??
           false;
     }
     return true;
+  }
+
+  Future<void> openNotificationSettings() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await _systemChannel
+        .invokeMethod<void>('openNotificationSettings')
+        .timeout(const Duration(seconds: 5));
   }
 
   Future<void> showMessage({
@@ -87,7 +132,13 @@ class AppNotificationService {
   }
 
   Future<void> cancelAll() async {
-    await initialize();
-    await _plugin.cancelAll();
+    if (!_initialized) {
+      return;
+    }
+    try {
+      await _plugin.cancelAll();
+    } catch (_) {
+      // Notification cleanup is best effort and must not affect chat startup.
+    }
   }
 }

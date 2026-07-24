@@ -18,7 +18,7 @@ const _roseDark = Color(0xff572940);
 const _ink = Color(0xff30252b);
 const _muted = Color(0xff87777f);
 const _canvas = Color(0xfffff9fb);
-const _avatarAsset = '../assets/xiaoyou-avatar.png';
+const _avatarAsset = 'assets/xiaoyou-avatar.png';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -84,7 +84,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composerFocus.addListener(_handleComposerFocus);
     _composer.addListener(_handleDraftChanged);
     _scrollController.addListener(_handleScroll);
-    unawaited(_notificationService.initialize());
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreSession());
   }
 
@@ -533,12 +532,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             : '🎙 ${message.text.trim()}',
         _ => message.text,
       };
-      await _notificationService.showMessage(
-        messageId: message.id,
-        body: _preferences.notificationPreview ? body : '小悠发来了一条新消息',
-        sound: _preferences.notificationSound,
-        vibration: _preferences.notificationVibration,
-      );
+      try {
+        await _notificationService.showMessage(
+          messageId: message.id,
+          body: _preferences.notificationPreview ? body : '小悠发来了一条新消息',
+          sound: _preferences.notificationSound,
+          vibration: _preferences.notificationVibration,
+        );
+      } catch (_) {
+        // A notification failure must never interrupt message synchronization.
+      }
     }
   }
 
@@ -1211,25 +1214,64 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<bool> _setNotificationsEnabled(bool enabled) async {
-    if (enabled) {
-      final allowed = await _notificationService.requestPermission();
-      if (!allowed) {
-        _showNotice(
-          '通知权限未开启',
-          '请在系统设置中允许小悠发送通知，然后再打开这个开关。',
-        );
+    try {
+      if (enabled) {
+        final allowed = await _notificationService.requestPermission();
+        if (!allowed) {
+          unawaited(_showNotificationPermissionNotice());
+          return false;
+        }
+      } else {
+        await _notificationService.cancelAll();
+      }
+      if (!mounted) {
         return false;
       }
-    } else {
-      await _notificationService.cancelAll();
-    }
-    if (!mounted) {
+      _updatePreferences(
+        _preferences.copyWith(notificationsEnabled: enabled),
+      );
+      return true;
+    } catch (_) {
+      unawaited(_showNotificationPermissionNotice(initializationFailed: true));
       return false;
     }
-    _updatePreferences(
-      _preferences.copyWith(notificationsEnabled: enabled),
+  }
+
+  Future<void> _showNotificationPermissionNotice({
+    bool initializationFailed = false,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+    final openSettings = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(initializationFailed ? '通知暂时无法开启' : '通知权限未开启'),
+        content: Text(
+          initializationFailed
+              ? '系统没有完成通知授权。你可以打开系统通知设置，确认“小悠”的通知权限后再试一次。'
+              : '请允许“小悠”发送通知。若刚才没有出现授权弹窗，可以直接前往系统通知设置开启。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('稍后'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('打开系统设置'),
+          ),
+        ],
+      ),
     );
-    return true;
+    if (openSettings != true) {
+      return;
+    }
+    try {
+      await _notificationService.openNotificationSettings();
+    } catch (_) {
+      _showSnack('无法自动打开系统设置，请在手机设置中找到“小悠”并开启通知');
+    }
   }
 
   void _lockNow() {
@@ -1833,16 +1875,23 @@ class _SettingsSheetState extends State<_SettingsSheet> {
 
   Future<void> _changeNotifications(bool value) async {
     setState(() => _changingNotifications = true);
-    final changed = await widget.onNotificationsChanged(value);
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _changingNotifications = false;
-      if (changed) {
-        _preferences = _preferences.copyWith(notificationsEnabled: value);
+    var changed = false;
+    try {
+      changed = await widget.onNotificationsChanged(value);
+    } catch (_) {
+      changed = false;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _changingNotifications = false;
+          if (changed) {
+            _preferences = _preferences.copyWith(
+              notificationsEnabled: value,
+            );
+          }
+        });
       }
-    });
+    }
   }
 
   @override
