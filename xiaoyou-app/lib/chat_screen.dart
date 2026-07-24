@@ -8,6 +8,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
 import 'chat_models.dart';
+import 'notification_service.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
@@ -17,7 +18,7 @@ const _roseDark = Color(0xff572940);
 const _ink = Color(0xff30252b);
 const _muted = Color(0xff87777f);
 const _canvas = Color(0xfffff9fb);
-const _avatarAsset = 'assets/xiaoyou-avatar.jpg';
+const _avatarAsset = '../assets/xiaoyou-avatar.png';
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
@@ -38,6 +39,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _sessionStore = SessionStore();
   final _localAuth = LocalAuthentication();
   final _voiceRecorder = VoiceRecorderController();
+  final _notificationService = AppNotificationService.instance;
   final _imagePicker = ImagePicker();
   final _messageKeys = <String, GlobalKey>{};
 
@@ -64,6 +66,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _locked = false;
   bool _authenticating = false;
   bool _lockEnabled = false;
+  bool _appInForeground = true;
+  AppPreferences _preferences = const AppPreferences();
   String _status = '尚未连接';
   int _lastEventSequence = 0;
   int _clientSequence = 0;
@@ -80,6 +84,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composerFocus.addListener(_handleComposerFocus);
     _composer.addListener(_handleDraftChanged);
     _scrollController.addListener(_handleScroll);
+    unawaited(_notificationService.initialize());
     WidgetsBinding.instance.addPostFrameCallback((_) => _restoreSession());
   }
 
@@ -108,7 +113,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
-      _pollTimer?.cancel();
+      _appInForeground = false;
+      if (!_preferences.notificationsEnabled) {
+        _pollTimer?.cancel();
+      } else {
+        _startPolling();
+      }
       if (_recording) {
         unawaited(_finishRecording(cancel: true));
       }
@@ -120,6 +130,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (state != AppLifecycleState.resumed) {
       return;
     }
+    _appInForeground = true;
+    unawaited(_notificationService.cancelAll());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
       return;
@@ -245,11 +257,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     try {
       final saved = await _sessionStore.loadConnection();
       final draft = await _sessionStore.readDraft();
+      final preferences = await _sessionStore.loadPreferences();
       if (!mounted) {
         return;
       }
       setState(() {
         _savedConnection = saved;
+        _preferences = preferences;
         _lockEnabled = saved?.appLockEnabled ?? false;
         _locked = saved?.appLockEnabled ?? false;
         _booting = false;
@@ -419,18 +433,22 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   void _startPolling() {
     _pollTimer?.cancel();
-    if (_api == null || _locked) {
+    if (_api == null || !_pollingAllowed) {
       return;
     }
     _pollTimer = Timer.periodic(
-      const Duration(seconds: 2),
+      Duration(seconds: _appInForeground ? 2 : 15),
       (_) => _poll(),
     );
   }
 
   Future<void> _poll() async {
     final api = _api;
-    if (api == null || _locked || _connecting || _polling || _sending) {
+    if (api == null ||
+        !_pollingAllowed ||
+        _connecting ||
+        _polling ||
+        _sending) {
       return;
     }
     _polling = true;
@@ -477,6 +495,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (receivedAssistantReply) {
             _typingTimer?.cancel();
           }
+          if (!_appInForeground && _preferences.notificationsEnabled) {
+            unawaited(_notifyIncoming(additions));
+          }
           if (shouldFollow) {
             _scrollToEnd();
           }
@@ -496,6 +517,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     } finally {
       _polling = false;
+    }
+  }
+
+  bool get _pollingAllowed =>
+      !_locked || (!_appInForeground && _preferences.notificationsEnabled);
+
+  Future<void> _notifyIncoming(List<ChatMessage> messages) async {
+    for (final message in messages.where((item) => item.fromXiaoyou)) {
+      final body = switch (message.kind) {
+        'image' => '小悠发来了一张图片',
+        'sticker' => '小悠发来了一个表情包',
+        'voice' => message.text.trim().isEmpty
+            ? '小悠发来了一条语音'
+            : '🎙 ${message.text.trim()}',
+        _ => message.text,
+      };
+      await _notificationService.showMessage(
+        messageId: message.id,
+        body: _preferences.notificationPreview ? body : '小悠发来了一条新消息',
+        sound: _preferences.notificationSound,
+        vibration: _preferences.notificationVibration,
+      );
     }
   }
 
@@ -1162,6 +1205,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     return true;
   }
 
+  void _updatePreferences(AppPreferences preferences) {
+    setState(() => _preferences = preferences);
+    unawaited(_sessionStore.savePreferences(preferences));
+  }
+
+  Future<bool> _setNotificationsEnabled(bool enabled) async {
+    if (enabled) {
+      final allowed = await _notificationService.requestPermission();
+      if (!allowed) {
+        _showNotice(
+          '通知权限未开启',
+          '请在系统设置中允许小悠发送通知，然后再打开这个开关。',
+        );
+        return false;
+      }
+    } else {
+      await _notificationService.cancelAll();
+    }
+    if (!mounted) {
+      return false;
+    }
+    _updatePreferences(
+      _preferences.copyWith(notificationsEnabled: enabled),
+    );
+    return true;
+  }
+
   void _lockNow() {
     if (!_lockEnabled) {
       return;
@@ -1220,7 +1290,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         connection: _savedConnection,
         status: _status,
         lockEnabled: _lockEnabled,
+        preferences: _preferences,
         onLockChanged: _setAppLock,
+        onNotificationsChanged: _setNotificationsEnabled,
+        onPreferencesChanged: _updatePreferences,
         onEditConnection: () {
           Navigator.pop(sheetContext);
           unawaited(_openConnectionSheet());
@@ -1311,27 +1384,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    late final Widget screen;
     if (_booting) {
-      return const _StartupScreen();
-    }
-    if (_locked) {
-      return _LockScreen(
+      screen = const _StartupScreen();
+    } else if (_locked) {
+      screen = _LockScreen(
         authenticating: _authenticating,
         onUnlock: _unlock,
         onReconnect: _openConnectionSheet,
       );
-    }
-    if (_savedConnection == null && _api == null) {
-      return _WelcomeScreen(
+    } else if (_savedConnection == null && _api == null) {
+      screen = _WelcomeScreen(
         connecting: _connecting,
         onConnect: _openConnectionSheet,
       );
+    } else {
+      screen = _buildConversation();
     }
-    return _buildConversation();
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(
+        textScaler: TextScaler.linear(_preferences.fontScale),
+      ),
+      child: screen,
+    );
   }
 
   Widget _buildConversation() {
     final connected = _api != null;
+    final palette = _appearancePalette(_preferences.palette);
     final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -1349,11 +1429,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           );
         },
         child: DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topCenter,
               end: Alignment.bottomCenter,
-              colors: [Color(0xfffffbfd), Color(0xfff9f3f6)],
+              colors: palette.background,
             ),
           ),
           child: SafeArea(
@@ -1412,6 +1492,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                     ),
                                     message: message,
                                     api: _api,
+                                    userBubbleColor: palette.userBubble,
+                                    bubbleRadius: _preferences.bubbleRadius,
+                                    compact: _preferences.compactMessages,
                                     highlighted:
                                         _highlightedMessageId == message.id,
                                     showDate: previous == null ||
@@ -1700,7 +1783,10 @@ class _SettingsSheet extends StatefulWidget {
     required this.connection,
     required this.status,
     required this.lockEnabled,
+    required this.preferences,
     required this.onLockChanged,
+    required this.onNotificationsChanged,
+    required this.onPreferencesChanged,
     required this.onEditConnection,
     required this.onLockNow,
     required this.onForget,
@@ -1709,7 +1795,10 @@ class _SettingsSheet extends StatefulWidget {
   final SavedConnection? connection;
   final String status;
   final bool lockEnabled;
+  final AppPreferences preferences;
   final Future<bool> Function(bool) onLockChanged;
+  final Future<bool> Function(bool) onNotificationsChanged;
+  final ValueChanged<AppPreferences> onPreferencesChanged;
   final VoidCallback onEditConnection;
   final VoidCallback onLockNow;
   final VoidCallback onForget;
@@ -1720,7 +1809,9 @@ class _SettingsSheet extends StatefulWidget {
 
 class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _lockEnabled = widget.lockEnabled;
+  late AppPreferences _preferences = widget.preferences;
   bool _changingLock = false;
+  bool _changingNotifications = false;
 
   Future<void> _changeLock(bool value) async {
     setState(() => _changingLock = true);
@@ -1733,6 +1824,25 @@ class _SettingsSheetState extends State<_SettingsSheet> {
         }
       });
     }
+  }
+
+  void _updatePreferences(AppPreferences preferences) {
+    setState(() => _preferences = preferences);
+    widget.onPreferencesChanged(preferences);
+  }
+
+  Future<void> _changeNotifications(bool value) async {
+    setState(() => _changingNotifications = true);
+    final changed = await widget.onNotificationsChanged(value);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _changingNotifications = false;
+      if (changed) {
+        _preferences = _preferences.copyWith(notificationsEnabled: value);
+      }
+    });
   }
 
   @override
@@ -1797,6 +1907,179 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: widget.onLockNow,
                   ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _SettingsCard(
+              children: [
+                ListTile(
+                  leading: const _SettingsIcon(
+                    icon: Icons.notifications_active_outlined,
+                  ),
+                  title: const Text('系统通知'),
+                  subtitle: const Text('App 在后台保持运行时提醒小悠的新消息'),
+                  trailing: _changingNotifications
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Switch.adaptive(
+                          value: _preferences.notificationsEnabled,
+                          onChanged: _changeNotifications,
+                        ),
+                ),
+                ListTile(
+                  enabled: _preferences.notificationsEnabled,
+                  leading: const _SettingsIcon(
+                    icon: Icons.volume_up_outlined,
+                  ),
+                  title: const Text('通知声音'),
+                  trailing: Switch.adaptive(
+                    value: _preferences.notificationSound,
+                    onChanged: _preferences.notificationsEnabled
+                        ? (value) => _updatePreferences(
+                              _preferences.copyWith(
+                                notificationSound: value,
+                              ),
+                            )
+                        : null,
+                  ),
+                ),
+                ListTile(
+                  enabled: _preferences.notificationsEnabled,
+                  leading: const _SettingsIcon(
+                    icon: Icons.visibility_outlined,
+                  ),
+                  title: const Text('显示消息内容'),
+                  subtitle: const Text('关闭后，锁屏通知不展示聊天正文'),
+                  trailing: Switch.adaptive(
+                    value: _preferences.notificationPreview,
+                    onChanged: _preferences.notificationsEnabled
+                        ? (value) => _updatePreferences(
+                              _preferences.copyWith(
+                                notificationPreview: value,
+                              ),
+                            )
+                        : null,
+                  ),
+                ),
+                ListTile(
+                  enabled: _preferences.notificationsEnabled,
+                  leading: const _SettingsIcon(
+                    icon: Icons.vibration_rounded,
+                  ),
+                  title: const Text('通知振动'),
+                  trailing: Switch.adaptive(
+                    value: _preferences.notificationVibration,
+                    onChanged: _preferences.notificationsEnabled
+                        ? (value) => _updatePreferences(
+                              _preferences.copyWith(
+                                notificationVibration: value,
+                              ),
+                            )
+                        : null,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            _SettingsCard(
+              children: [
+                const ListTile(
+                  leading: _SettingsIcon(
+                    icon: Icons.palette_outlined,
+                  ),
+                  title: Text('界面 DIY'),
+                  subtitle: Text('更改只保存在这台手机，不影响小悠的人格与记忆'),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '聊天配色',
+                        style: TextStyle(
+                          color: _muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (final item in const [
+                            ('rose', '樱粉', Color(0xffa85e85)),
+                            ('lilac', '雾紫', Color(0xff826aa8)),
+                            ('peach', '奶杏', Color(0xffb77661)),
+                          ])
+                            ChoiceChip(
+                              avatar: CircleAvatar(
+                                radius: 7,
+                                backgroundColor: item.$3,
+                              ),
+                              label: Text(item.$2),
+                              selected: _preferences.palette == item.$1,
+                              onSelected: (_) => _updatePreferences(
+                                _preferences.copyWith(palette: item.$1),
+                              ),
+                              showCheckmark: false,
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 15),
+                      Text(
+                        '字体大小 ${(_preferences.fontScale * 100).round()}%',
+                        style: const TextStyle(
+                          color: _muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Slider(
+                        value: _preferences.fontScale,
+                        min: 0.9,
+                        max: 1.2,
+                        divisions: 6,
+                        label: '${(_preferences.fontScale * 100).round()}%',
+                        onChanged: (value) => _updatePreferences(
+                          _preferences.copyWith(fontScale: value),
+                        ),
+                      ),
+                      Text(
+                        '气泡圆角 ${_preferences.bubbleRadius.round()}',
+                        style: const TextStyle(
+                          color: _muted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Slider(
+                        value: _preferences.bubbleRadius,
+                        min: 10,
+                        max: 24,
+                        divisions: 7,
+                        onChanged: (value) => _updatePreferences(
+                          _preferences.copyWith(bubbleRadius: value),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                SwitchListTile.adaptive(
+                  value: _preferences.compactMessages,
+                  title: const Text('紧凑消息间距'),
+                  subtitle: const Text('同一屏显示更多聊天内容'),
+                  secondary: const Icon(
+                    Icons.density_small_rounded,
+                    color: _rose,
+                  ),
+                  onChanged: (value) => _updatePreferences(
+                    _preferences.copyWith(compactMessages: value),
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 14),
@@ -2095,6 +2378,9 @@ class _MessageRow extends StatefulWidget {
     super.key,
     required this.message,
     required this.api,
+    required this.userBubbleColor,
+    required this.bubbleRadius,
+    required this.compact,
     required this.highlighted,
     required this.showDate,
     required this.beginsGroup,
@@ -2107,6 +2393,9 @@ class _MessageRow extends StatefulWidget {
 
   final ChatMessage message;
   final XiaoyouApi? api;
+  final Color userBubbleColor;
+  final double bubbleRadius;
+  final bool compact;
   final bool highlighted;
   final bool showDate;
   final bool beginsGroup;
@@ -2341,7 +2630,11 @@ class _MessageRowState extends State<_MessageRow>
         child: Column(
           children: [
             if (widget.showDate) _DateDivider(date: message.timestamp),
-            SizedBox(height: widget.beginsGroup ? 7 : 2),
+            SizedBox(
+              height: widget.beginsGroup
+                  ? (widget.compact ? 4 : 7)
+                  : (widget.compact ? 0 : 2),
+            ),
             Row(
               mainAxisAlignment:
                   fromXiaoyou ? MainAxisAlignment.start : MainAxisAlignment.end,
@@ -2365,24 +2658,31 @@ class _MessageRowState extends State<_MessageRow>
                       padding:
                           message.kind == 'image' || message.kind == 'sticker'
                               ? const EdgeInsets.all(4)
-                              : const EdgeInsets.fromLTRB(14, 10, 14, 9),
+                              : EdgeInsets.fromLTRB(
+                                  14,
+                                  widget.compact ? 7 : 10,
+                                  14,
+                                  widget.compact ? 7 : 9,
+                                ),
                       decoration: BoxDecoration(
                         color: widget.highlighted
                             ? const Color(0xffffe0ee)
                             : fromXiaoyou
                                 ? Colors.white
-                                : const Color(0xffa85e85),
+                                : widget.userBubbleColor,
                         border: widget.highlighted
                             ? Border.all(color: _rose, width: 1.5)
                             : null,
                         borderRadius: BorderRadius.only(
-                          topLeft: const Radius.circular(19),
-                          topRight: const Radius.circular(19),
+                          topLeft: Radius.circular(widget.bubbleRadius),
+                          topRight: Radius.circular(widget.bubbleRadius),
                           bottomLeft: Radius.circular(
-                            fromXiaoyou && widget.showAvatar ? 6 : 19,
+                            fromXiaoyou && widget.showAvatar
+                                ? 6
+                                : widget.bubbleRadius,
                           ),
                           bottomRight: Radius.circular(
-                            !fromXiaoyou ? 6 : 19,
+                            !fromXiaoyou ? 6 : widget.bubbleRadius,
                           ),
                         ),
                         boxShadow: const [
@@ -2504,10 +2804,15 @@ class _MessageRowState extends State<_MessageRow>
   Widget _buildVoice(ChatMessage message) {
     _reportRendered();
     final fromXiaoyou = message.fromXiaoyou;
-    final milliseconds = _voiceDuration.inMilliseconds > 0
+    final reportedMilliseconds = _voiceDuration.inMilliseconds > 0
         ? _voiceDuration.inMilliseconds
         : message.durationMs;
-    final seconds = max(1, (milliseconds / 1000).round());
+    final milliseconds = reportedMilliseconds > 0 &&
+            reportedMilliseconds <= const Duration(minutes: 10).inMilliseconds
+        ? reportedMilliseconds
+        : 0;
+    final seconds =
+        milliseconds > 0 ? max(1, (milliseconds / 1000).round()) : 0;
     final canPlay = message.localPath.isNotEmpty ||
         (message.mediaId.isNotEmpty && widget.api != null);
     final bubbleWidth = (150.0 + min(seconds, 30) * 3.2).clamp(150.0, 246.0);
@@ -2570,7 +2875,7 @@ class _MessageRowState extends State<_MessageRow>
                 ),
                 const SizedBox(width: 9),
                 Text(
-                  '$seconds″',
+                  seconds > 0 ? '$seconds″' : '语音',
                   style: TextStyle(
                     color: (fromXiaoyou ? _ink : Colors.white)
                         .withValues(alpha: 0.72),
@@ -2921,6 +3226,80 @@ class _EmojiPanel extends StatelessWidget {
     '☕',
     '🍜',
     '💤',
+    '😌',
+    '🥳',
+    '🫠',
+    '🫣',
+    '🫡',
+    '🤯',
+    '😱',
+    '😈',
+    '😇',
+    '🤓',
+    '🤔',
+    '😶',
+    '😑',
+    '😔',
+    '😢',
+    '😫',
+    '💋',
+    '💞',
+    '💓',
+    '💗',
+    '💝',
+    '💟',
+    '❣️',
+    '🩷',
+    '🤝',
+    '👌',
+    '🤞',
+    '✌️',
+    '🫰',
+    '💪',
+    '🙏',
+    '🤟',
+    '🌸',
+    '🌻',
+    '🌙',
+    '☀️',
+    '🌧️',
+    '🌈',
+    '🎀',
+    '🎁',
+    '🧁',
+    '🍰',
+    '🍓',
+    '🍒',
+    '🍭',
+    '🥛',
+    '🍻',
+    '🐱',
+    '🐶',
+    '🐰',
+    '🧸',
+    '👻',
+    '💩',
+    '🔥',
+    '💯',
+    '✅',
+    '❓',
+    '❗',
+    '💬',
+    '📷',
+    '🎧',
+    '🎮',
+    '🏠',
+  ];
+
+  static const _quickStickers = [
+    '🥰🥰 想你啦',
+    '🥹 抱抱~',
+    '😘 亲一下',
+    '😤 哼！',
+    '😂 笑死',
+    '🫡 偷看',
+    '💕 爱你',
+    '💤 晚安',
   ];
 
   final ValueChanged<String> onSelected;
@@ -2935,25 +3314,54 @@ class _EmojiPanel extends StatelessWidget {
         color: Color(0xfffffafd),
         border: Border(top: BorderSide(color: Color(0xffeee3e8))),
       ),
-      child: GridView.builder(
-        padding: EdgeInsets.zero,
-        itemCount: _emojis.length,
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 8,
-          mainAxisSpacing: 4,
-          crossAxisSpacing: 4,
-        ),
-        itemBuilder: (context, index) => InkWell(
-          onTap: () => onSelected(_emojis[index]),
-          borderRadius: BorderRadius.circular(12),
-          child: Center(
-            child: Text(_emojis[index], style: const TextStyle(fontSize: 27)),
+      child: Column(
+        children: [
+          SizedBox(
+            height: 39,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _quickStickers.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 7),
+              itemBuilder: (context, index) => ActionChip(
+                label: Text(_quickStickers[index]),
+                onPressed: () => onSelected(_quickStickers[index]),
+                visualDensity: VisualDensity.compact,
+                backgroundColor: Colors.white,
+                side: const BorderSide(color: Color(0xffeadde4)),
+              ),
+            ),
           ),
-        ),
+          const SizedBox(height: 7),
+          Expanded(
+            child: GridView.builder(
+              padding: EdgeInsets.zero,
+              itemCount: _emojis.length,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 8,
+                mainAxisSpacing: 4,
+                crossAxisSpacing: 4,
+              ),
+              itemBuilder: (context, index) => InkWell(
+                onTap: () => onSelected(_emojis[index]),
+                borderRadius: BorderRadius.circular(12),
+                child: Center(
+                  child: Text(
+                    _emojis[index],
+                    style: const TextStyle(fontSize: 27),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 }
+
+enum _SearchPeriod { all, today, sevenDays, thirtyDays, customDay }
+
+enum _SearchKind { all, text, image, voice, sticker }
 
 class _MessageSearchSheet extends StatefulWidget {
   const _MessageSearchSheet({required this.messages});
@@ -2967,6 +3375,28 @@ class _MessageSearchSheet extends StatefulWidget {
 class _MessageSearchSheetState extends State<_MessageSearchSheet> {
   final _controller = TextEditingController();
   String _query = '';
+  _SearchPeriod _period = _SearchPeriod.all;
+  _SearchKind _kind = _SearchKind.all;
+  DateTime? _selectedDay;
+
+  Future<void> _selectDay() async {
+    final now = DateTime.now();
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _selectedDay ?? now,
+      firstDate: DateTime(2020),
+      lastDate: now,
+      helpText: '选择聊天日期',
+      cancelText: '取消',
+      confirmText: '确定',
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _selectedDay = selected;
+        _period = _SearchPeriod.customDay;
+      });
+    }
+  }
 
   @override
   void dispose() {
@@ -2979,90 +3409,217 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
     final query = _query.trim().toLowerCase();
     final results = widget.messages.reversed
         .where((message) {
-          if (query.isEmpty) {
-            return message.text.trim().isNotEmpty;
-          }
-          return message.text.toLowerCase().contains(query);
+          final textMatches = query.isEmpty ||
+              message.text.toLowerCase().contains(query) ||
+              _searchKindLabel(message.kind).contains(query);
+          return textMatches &&
+              _matchesSearchPeriod(
+                message.timestamp,
+                _period,
+                selectedDay: _selectedDay,
+              ) &&
+              (_kind == _SearchKind.all || message.kind == _kind.name);
         })
         .take(80)
         .toList();
-    return Container(
-      height: MediaQuery.sizeOf(context).height * 0.72,
-      decoration: const BoxDecoration(
-        color: _canvas,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      child: Column(
-        children: [
-          const SizedBox(height: 10),
-          Container(
-            width: 42,
-            height: 4,
-            decoration: BoxDecoration(
-              color: const Color(0xffddcfd6),
-              borderRadius: BorderRadius.circular(99),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
-            child: TextField(
-              controller: _controller,
-              autofocus: true,
-              onChanged: (value) => setState(() => _query = value),
-              decoration: InputDecoration(
-                hintText: '搜索你和小悠的聊天记录',
-                prefixIcon: const Icon(Icons.search_rounded),
-                suffixIcon: _query.isEmpty
-                    ? null
-                    : IconButton(
-                        onPressed: () {
-                          _controller.clear();
-                          setState(() => _query = '');
-                        },
-                        icon: const Icon(Icons.close_rounded),
-                      ),
-                filled: true,
-                fillColor: Colors.white,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(18),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: results.isEmpty
-                ? const Center(child: Text('没有找到相关消息'))
-                : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
-                    itemCount: results.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 4),
-                    itemBuilder: (context, index) {
-                      final message = results[index];
-                      return ListTile(
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        tileColor: Colors.white,
-                        leading: message.fromXiaoyou
-                            ? const _Avatar(size: 38)
-                            : const CircleAvatar(
-                                backgroundColor: Color(0xffead7e1),
-                                child: Text('您',
-                                    style: TextStyle(color: _roseDark)),
-                              ),
-                        title: Text(
-                          message.text,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(_formatDateTime(message.timestamp)),
-                        onTap: () => Navigator.pop(context, message),
-                      );
-                    },
+    final media = MediaQuery.of(context);
+    final availableHeight = max(
+      0.0,
+      media.size.height - media.viewInsets.bottom - media.padding.top - 12,
+    );
+    final sheetHeight = min(media.size.height * 0.82, availableHeight);
+    return AnimatedPadding(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+      child: Align(
+        alignment: Alignment.bottomCenter,
+        child: SizedBox(
+          height: sheetHeight,
+          child: Material(
+            color: _canvas,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+            clipBehavior: Clip.antiAlias,
+            child: Column(
+              children: [
+                const SizedBox(height: 10),
+                Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: const Color(0xffddcfd6),
+                    borderRadius: BorderRadius.circular(99),
                   ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+                  child: TextField(
+                    controller: _controller,
+                    autofocus: true,
+                    onChanged: (value) => setState(() => _query = value),
+                    decoration: InputDecoration(
+                      hintText: '搜索你和小悠的聊天记录',
+                      prefixIcon: const Icon(Icons.search_rounded),
+                      suffixIcon: _query.isEmpty
+                          ? null
+                          : IconButton(
+                              onPressed: () {
+                                _controller.clear();
+                                setState(() => _query = '');
+                              },
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(18),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                _SearchFilterRow(
+                  children: [
+                    _SearchFilterChip(
+                      label: '全部时间',
+                      selected: _period == _SearchPeriod.all,
+                      onTap: () => setState(() => _period = _SearchPeriod.all),
+                    ),
+                    _SearchFilterChip(
+                      label: '今天',
+                      selected: _period == _SearchPeriod.today,
+                      onTap: () =>
+                          setState(() => _period = _SearchPeriod.today),
+                    ),
+                    _SearchFilterChip(
+                      label: '近 7 天',
+                      selected: _period == _SearchPeriod.sevenDays,
+                      onTap: () =>
+                          setState(() => _period = _SearchPeriod.sevenDays),
+                    ),
+                    _SearchFilterChip(
+                      label: '近 30 天',
+                      selected: _period == _SearchPeriod.thirtyDays,
+                      onTap: () =>
+                          setState(() => _period = _SearchPeriod.thirtyDays),
+                    ),
+                    _SearchFilterChip(
+                      label: _selectedDay == null
+                          ? '选择日期'
+                          : '${_selectedDay!.month}月${_selectedDay!.day}日',
+                      selected: _period == _SearchPeriod.customDay,
+                      onTap: _selectDay,
+                    ),
+                  ],
+                ),
+                _SearchFilterRow(
+                  children: [
+                    for (final entry in const [
+                      (_SearchKind.all, '全部类型'),
+                      (_SearchKind.text, '文字'),
+                      (_SearchKind.image, '图片'),
+                      (_SearchKind.voice, '语音'),
+                      (_SearchKind.sticker, '表情包'),
+                    ])
+                      _SearchFilterChip(
+                        label: entry.$2,
+                        selected: _kind == entry.$1,
+                        onTap: () => setState(() => _kind = entry.$1),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Expanded(
+                  child: results.isEmpty
+                      ? const Center(child: Text('没有找到相关消息'))
+                      : ListView.separated(
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+                          itemCount: results.length,
+                          separatorBuilder: (_, __) =>
+                              const SizedBox(height: 4),
+                          itemBuilder: (context, index) {
+                            final message = results[index];
+                            return ListTile(
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(16),
+                              ),
+                              tileColor: Colors.white,
+                              leading: message.fromXiaoyou
+                                  ? const _Avatar(size: 38)
+                                  : const CircleAvatar(
+                                      backgroundColor: Color(0xffead7e1),
+                                      child: Text(
+                                        '您',
+                                        style: TextStyle(color: _roseDark),
+                                      ),
+                                    ),
+                              title: Text(
+                                _searchMessageSummary(message),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                '${_searchKindLabel(message.kind)} · '
+                                '${_formatDateTime(message.timestamp)}',
+                              ),
+                              onTap: () => Navigator.pop(context, message),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SearchFilterRow extends StatelessWidget {
+  const _SearchFilterRow({required this.children});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 40,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 3),
+        itemCount: children.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 7),
+        itemBuilder: (_, index) => children[index],
+      ),
+    );
+  }
+}
+
+class _SearchFilterChip extends StatelessWidget {
+  const _SearchFilterChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      visualDensity: VisualDensity.compact,
+      showCheckmark: false,
+      selectedColor: const Color(0xffead1df),
+      side: BorderSide(
+        color: selected ? _rose : const Color(0xffeadfe4),
       ),
     );
   }
@@ -3687,25 +4244,28 @@ class _ProfileSheet extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Stack(
-              alignment: Alignment.bottomCenter,
-              clipBehavior: Clip.none,
-              children: [
-                SizedBox(
-                  height: 230,
-                  width: double.infinity,
-                  child: Image.asset(_avatarAsset, fit: BoxFit.cover),
+            Container(
+              height: 250,
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xffffedf5),
+                    Color(0xfff3e4ef),
+                    Color(0xfffff8f5),
+                  ],
                 ),
-                const Positioned(
-                  bottom: -44,
-                  child: Hero(
-                    tag: 'xiaoyou-avatar',
-                    child: _Avatar(size: 92),
-                  ),
+              ),
+              child: const Center(
+                child: Hero(
+                  tag: 'xiaoyou-avatar',
+                  child: _Avatar(size: 190),
                 ),
-              ],
+              ),
             ),
-            const SizedBox(height: 58),
+            const SizedBox(height: 24),
             const Text(
               '小悠',
               style: TextStyle(
@@ -3813,12 +4373,39 @@ class _Avatar extends StatelessWidget {
         ],
         image: const DecorationImage(
           image: AssetImage(_avatarAsset),
-          fit: BoxFit.cover,
-          alignment: Alignment(0, -0.36),
+          fit: BoxFit.contain,
+          alignment: Alignment.center,
         ),
       ),
     );
   }
+}
+
+class _AppearancePalette {
+  const _AppearancePalette({
+    required this.background,
+    required this.userBubble,
+  });
+
+  final List<Color> background;
+  final Color userBubble;
+}
+
+_AppearancePalette _appearancePalette(String key) {
+  return switch (key) {
+    'lilac' => const _AppearancePalette(
+        background: [Color(0xfffffbff), Color(0xfff0edf9)],
+        userBubble: Color(0xff826aa8),
+      ),
+    'peach' => const _AppearancePalette(
+        background: [Color(0xfffffbf7), Color(0xfff8eee6)],
+        userBubble: Color(0xffb77661),
+      ),
+    _ => const _AppearancePalette(
+        background: [Color(0xfffffbfd), Color(0xfff9f3f6)],
+        userBubble: Color(0xffa85e85),
+      ),
+  };
 }
 
 String _newId(String prefix) {
@@ -3856,6 +4443,50 @@ String _formatDate(DateTime value) {
 
 String _formatDateTime(DateTime value) {
   return '${_formatDate(value)} ${_formatTime(value)}';
+}
+
+bool _matchesSearchPeriod(
+  DateTime timestamp,
+  _SearchPeriod period, {
+  DateTime? selectedDay,
+}) {
+  if (period == _SearchPeriod.all) {
+    return true;
+  }
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final messageDay = DateTime(timestamp.year, timestamp.month, timestamp.day);
+  final days = today.difference(messageDay).inDays;
+  return switch (period) {
+    _SearchPeriod.today => days == 0,
+    _SearchPeriod.sevenDays => days >= 0 && days < 7,
+    _SearchPeriod.thirtyDays => days >= 0 && days < 30,
+    _SearchPeriod.customDay =>
+      selectedDay != null && _sameDay(timestamp, selectedDay),
+    _SearchPeriod.all => true,
+  };
+}
+
+String _searchKindLabel(String kind) {
+  return switch (kind) {
+    'image' => '图片',
+    'sticker' => '表情包',
+    'voice' => '语音',
+    _ => '文字',
+  };
+}
+
+String _searchMessageSummary(ChatMessage message) {
+  final text = message.text.trim();
+  if (text.isNotEmpty && !text.startsWith('[')) {
+    return text;
+  }
+  return switch (message.kind) {
+    'image' => '[图片]',
+    'sticker' => '[表情包]',
+    'voice' => text.isEmpty ? '[语音]' : text,
+    _ => text,
+  };
 }
 
 String _friendlyNetworkError(Object error) {

@@ -244,8 +244,21 @@ def _wav_duration_ms(data):
     try:
         with wave.open(io.BytesIO(data), "rb") as source:
             rate = source.getframerate()
-            frames = source.getnframes()
-        if rate > 0:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            declared_frames = source.getnframes()
+            raw_frames = source.readframes(declared_frames)
+        bytes_per_frame = channels * sample_width
+        actual_frames = (
+            len(raw_frames) // bytes_per_frame
+            if bytes_per_frame > 0
+            else 0
+        )
+        # Streaming WAV responses may use 0x7fffffff as a placeholder data
+        # length. Trust the bytes that were actually downloaded instead of
+        # turning that sentinel into a 12-hour voice message.
+        frames = min(declared_frames, actual_frames) if actual_frames else 0
+        if rate > 0 and frames > 0:
             return int(frames * 1000 / rate)
     except (EOFError, wave.Error):
         pass

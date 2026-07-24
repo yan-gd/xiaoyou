@@ -1,5 +1,6 @@
 import importlib.util
 import io
+import struct
 import sys
 import types
 import wave
@@ -57,6 +58,17 @@ def _wav_payload(duration_ms=1000, sample_rate=24000):
         output.setframerate(sample_rate)
         output.writeframes(b"\x00\x00" * int(sample_rate * duration_ms / 1000))
     return buffer.getvalue()
+
+
+def test_streaming_wav_placeholder_length_uses_actual_downloaded_bytes(
+    monkeypatch,
+):
+    module = _load_voice_service(monkeypatch)
+    payload = bytearray(_wav_payload(1800))
+    struct.pack_into("<I", payload, 4, 0x7FFFFFFF)
+    struct.pack_into("<I", payload, 40, 0x7FFFFFFF)
+
+    assert 1790 <= module._wav_duration_ms(bytes(payload)) <= 1810
 
 
 def test_app_voice_uses_qwen_asr_and_requested_longyan_cosyvoice(

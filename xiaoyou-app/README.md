@@ -11,6 +11,9 @@
 - 相册、拍摄、表情包发送，用户图片会进入小悠现有的视觉理解链路
 - 按下立即录音、上滑取消、语音转写、历史语音播放
 - 聊天记录搜索、定位高亮、长按回复/复制、新消息计数与未发送草稿恢复
+- 搜索支持今天、近 7/30 天、指定日期以及文字、图片、语音、表情包类型筛选
+- 可选系统通知、通知声音/振动/正文预览，以及字体、消息密度、配色和气泡圆角 DIY
+- 使用仓库 `assets/xiaoyou-avatar.png` 作为统一头像，个人页完整展示人脸
 - App 语音输入会收到小悠的 App 专属语音回复；微信通道不受影响
 - HTTPS Bearer 鉴权与设备注册
 - 首次连接后自动保存服务地址、设备名和令牌
@@ -55,6 +58,11 @@ flutter build apk --release
 
 Android 端使用 `flutter_secure_storage` 保存连接令牌，使用 `local_auth` 调用系统生物识别或设备锁。iOS 端已声明 Face ID 用途和 Keychain 权限，但仍需在 macOS/Xcode 环境完成正式签名构建。
 
+系统通知使用 `flutter_local_notifications`。当前客户端在后台进程仍存活时每 15 秒拉取
+AppChannel 并展示通知（前台仍为 2 秒）；Android/iOS 在省电策略下暂停或彻底结束 App 后，无法保证即时
+送达。若需要被系统杀死后仍实时通知，需要额外配置 FCM/APNs 推送凭据和服务端推送。
+这个限制不会丢消息，未读内容仍保存在 `data/app_channel/app.db`，下次打开 App 会补齐。
+
 ## 服务端要求
 
 服务器 `.env`：
@@ -69,6 +77,7 @@ XIAOYOU_APP_VOICE_ENABLED=true
 `cosyvoice-v3-flash` 和 `longyan_v3`。它们复用服务器已有的百炼
 `KEY`，密钥不会进入 APK。语音转写作为用户原话进入同一套记忆链路，
 音频文件保存在 `data/app_channel/media/`。用户发送的图片与表情包也保存在该目录，单张限制 8 MiB。
+流式 WAV 的时长按实际音频字节计算，避免服务商的占位长度被误显示成数万秒。
 
 启动时需叠加仓库根目录的 `docker-compose.app.yml`。它只把容器端口映射到宿主机 `127.0.0.1:8787`，必须使用 Nginx/Caddy 提供公网 HTTPS，App 不应直接连接明文 HTTP 端口。
 
