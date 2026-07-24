@@ -24,6 +24,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         IMAGE_URL = 3
         VOICE = 4
 
+    class _Event(Enum):
+        ON_SEND_REPLY = 1
+
     class _AppVoiceError(RuntimeError):
         pass
 
@@ -36,6 +39,34 @@ def _load_app_channel(monkeypatch, tmp_path):
 
         def transcribe(self, *_args, **_kwargs):
             return "测试语音"
+
+        def synthesize(self, *_args, **_kwargs):
+            return types.SimpleNamespace(
+                data=b"mp3-test-payload",
+                mime_type="audio/mpeg",
+                duration_ms=1200,
+            )
+
+    class _AppVoiceReplyDecision:
+        def __init__(
+            self,
+            medium="text",
+            confidence=0.9,
+            reason="test",
+            model_ok=True,
+        ):
+            self.medium = medium
+            self.confidence = confidence
+            self.reason = reason
+            self.model_ok = model_ok
+
+        @property
+        def use_voice(self):
+            return self.medium == "voice"
+
+    class _AppVoiceReplyDecisionService:
+        def decide(self, **_kwargs):
+            return _AppVoiceReplyDecision()
 
     class _Context(dict):
         def __init__(self, context_type, content):
@@ -70,6 +101,7 @@ def _load_app_channel(monkeypatch, tmp_path):
             self.handlers = {}
 
     plugins_module = types.ModuleType("plugins")
+    plugins_module.Event = _Event
     plugins_module.Plugin = _Plugin
     plugins_module.register = lambda **_kwargs: (lambda value: value)
 
@@ -85,6 +117,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "plugins.xiaoyou_common": types.ModuleType("plugins.xiaoyou_common"),
         "plugins.xiaoyou_common.app_transport": types.ModuleType(
             "plugins.xiaoyou_common.app_transport"
+        ),
+        "plugins.xiaoyou_common.app_voice_reply_decision": types.ModuleType(
+            "plugins.xiaoyou_common.app_voice_reply_decision"
         ),
         "plugins.xiaoyou_common.app_voice_service": types.ModuleType(
             "plugins.xiaoyou_common.app_voice_service"
@@ -119,6 +154,12 @@ def _load_app_channel(monkeypatch, tmp_path):
     app_voice = modules["plugins.xiaoyou_common.app_voice_service"]
     app_voice.AppVoiceError = _AppVoiceError
     app_voice.AppVoiceService = _AppVoiceService
+    app_voice_decision = modules[
+        "plugins.xiaoyou_common.app_voice_reply_decision"
+    ]
+    app_voice_decision.AppVoiceReplyDecisionService = (
+        _AppVoiceReplyDecisionService
+    )
     modules[
         "plugins.xiaoyou_common.conversation_coordinator"
     ].note_user_activity = lambda *args, **kwargs: None
@@ -172,6 +213,204 @@ def test_app_runtime_owns_work_queues_but_shares_input_version_clock(
         is module.ChatChannel.input_versions
     )
     assert module.AppRuntimeChannel.lock is module.ChatChannel.lock
+
+
+def test_app_text_reply_uses_model_selected_voice_medium(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-text-voice", "yoyo", platform="android")
+    decision_calls = []
+    synthesis_calls = []
+
+    class _DecisionService:
+        def decide(self, **kwargs):
+            decision_calls.append(kwargs)
+            return types.SimpleNamespace(
+                medium="voice",
+                confidence=0.96,
+                reason="YoYo wants to hear Xiaoyou",
+                model_ok=True,
+                use_voice=True,
+            )
+
+    class _VoiceService:
+        tts_available = True
+
+        def synthesize(self, text, **kwargs):
+            synthesis_calls.append((text, kwargs))
+            return types.SimpleNamespace(
+                data=b"model-selected-mp3",
+                mime_type="audio/mpeg",
+                duration_ms=1450,
+            )
+
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.voice_service = _VoiceService()
+    runtime.voice_reply_decision = _DecisionService()
+    context = module.Context(module.ContextType.TEXT, "用声音和我说嘛")
+    context.kwargs = {
+        "session_id": "yoyo",
+        "receiver": "app:phone-text-voice",
+        "xiaoyou_app_device_id": "phone-text-voice",
+        "xiaoyou_input_id": "text-voice-1",
+        "xiaoyou_input_kind": "text",
+        "xiaoyou_input_messages": ["用声音和我说嘛"],
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="好呀，那我就亲口告诉你～",
+    )
+
+    assert runtime.send(reply, context)
+    events = store.events_after("phone-text-voice")
+    assert len(events) == 1
+    assert events[0]["kind"] == "voice"
+    assert events[0]["text"] == "好呀，那我就亲口告诉你～"
+    assert events[0]["duration_ms"] == 1450
+    assert decision_calls[0]["input_kind"] == "text"
+    assert decision_calls[0]["user_text"] == "用声音和我说嘛"
+    assert synthesis_calls[0][0] == "好呀，那我就亲口告诉你～"
+    assert context.kwargs["xiaoyou_app_voice_requested_by"] == "model"
+
+
+def test_app_text_reply_stays_text_when_model_selects_text(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-text", "yoyo", platform="android")
+
+    class _DecisionService:
+        def decide(self, **_kwargs):
+            return types.SimpleNamespace(
+                medium="text",
+                confidence=0.88,
+                reason="text is the natural medium",
+                model_ok=True,
+                use_voice=False,
+            )
+
+    class _VoiceService:
+        tts_available = True
+
+        def synthesize(self, *_args, **_kwargs):
+            raise AssertionError("text decision must not synthesize audio")
+
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.voice_service = _VoiceService()
+    runtime.voice_reply_decision = _DecisionService()
+    context = module.Context(module.ContextType.TEXT, "今天吃什么")
+    context.kwargs = {
+        "session_id": "yoyo",
+        "receiver": "app:phone-text",
+        "xiaoyou_app_device_id": "phone-text",
+        "xiaoyou_input_id": "text-1",
+        "xiaoyou_input_kind": "text",
+        "short_memory_current_user_text": "今天吃什么",
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="想吃点热乎的～",
+    )
+
+    assert runtime.send(reply, context)
+    events = store.events_after("phone-text")
+    assert len(events) == 1
+    assert events[0]["kind"] == "text"
+    assert events[0]["text"] == "想吃点热乎的～"
+    assert context.kwargs["xiaoyou_app_voice_decision"]["medium"] == "text"
+
+
+def test_app_voice_input_keeps_voice_reply_without_medium_model(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-voice", "yoyo", platform="android")
+
+    class _DecisionService:
+        def decide(self, **_kwargs):
+            raise AssertionError("voice input must not need a medium model")
+
+    class _VoiceService:
+        tts_available = True
+
+        def synthesize(self, *_args, **_kwargs):
+            return types.SimpleNamespace(
+                data=b"voice-input-mp3",
+                mime_type="audio/mpeg",
+                duration_ms=900,
+            )
+
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.voice_service = _VoiceService()
+    runtime.voice_reply_decision = _DecisionService()
+    context = module.Context(module.ContextType.TEXT, "我回来啦")
+    context.kwargs = {
+        "session_id": "yoyo",
+        "receiver": "app:phone-voice",
+        "xiaoyou_app_device_id": "phone-voice",
+        "xiaoyou_input_id": "voice-1",
+        "xiaoyou_input_kind": "voice",
+        "xiaoyou_app_voice_reply": True,
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="终于回来啦～",
+    )
+
+    assert runtime.send(reply, context)
+    events = store.events_after("phone-voice")
+    assert len(events) == 1
+    assert events[0]["kind"] == "voice"
+    assert context.kwargs["xiaoyou_app_voice_requested_by"] == "voice_input"
+
+
+def test_app_plugin_decides_medium_before_split_reply_phase(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    calls = []
+
+    class _Runtime:
+        def _should_use_voice_reply(self, *, content, context, kwargs):
+            calls.append((content, context, kwargs))
+            kwargs["xiaoyou_app_voice_requested_by"] = "model"
+            context.kwargs = kwargs
+            return True
+
+    plugin = object.__new__(module.AppChannel)
+    plugin.enabled = True
+    plugin.runtime = _Runtime()
+    context = module.Context(module.ContextType.TEXT, "想听你说")
+    context.kwargs = {
+        "xiaoyou_transport": "app",
+        "xiaoyou_input_kind": "text",
+        "xiaoyou_input_id": "pre-send-1",
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="那我说给你听～",
+    )
+
+    plugin.on_send_reply({"context": context, "reply": reply})
+
+    assert len(calls) == 1
+    assert context.kwargs["xiaoyou_app_voice_medium_decided"] is True
+    assert context.kwargs["xiaoyou_app_voice_reply"] is True
+    assert context.kwargs["xiaoyou_app_voice_requested_by"] == "model"
 
 
 def test_app_inbox_is_idempotent_persistent_and_receipt_driven(
@@ -275,6 +514,13 @@ def test_app_channel_configuration_is_safe_by_default():
     ) in compose
     assert "XIAOYOU_APP_TTS_API_KEY:" in compose
     assert "XIAOYOU_APP_TTS_ACCESS_KEY:" in compose
+    assert (
+        "XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED: 'true'"
+    ) in compose
+    assert "XIAOYOU_APP_VOICE_ROUTE_MODEL: 'qwen3.7-plus'" in compose
+    assert (
+        "XIAOYOU_APP_VOICE_ROUTE_ENABLE_THINKING: 'false'"
+    ) in compose
     assert "XIAOYOU_APP_ENABLED=false" in env_example
     assert '"AppChannel"' in plugins
 

@@ -18,7 +18,8 @@
   不透明版本以符合 App Store 图标规范
 - 更紧凑的顶部联系人栏和底部输入栏；表情面板可独立收起，不会强制弹出键盘
 - 取消语音发送时显示短时玻璃动画提示；图片预览提供安全区工具栏、缩放查看和保存到系统相册
-- App 语音输入会收到小悠的 App 专属语音回复；微信通道不受影响
+- App 语音输入固定收到语音回复；App 文字输入由模型结合当前语义与近期
+  对话自主选择文字或语音，微信通道不受影响
 - HTTPS Bearer 鉴权与设备注册
 - 首次连接后自动保存服务地址、设备名和令牌
 - 令牌保存在系统安全存储中，不写入聊天记录或普通偏好设置
@@ -87,6 +88,7 @@ Android 13 及以上首次开启通知时会通过原生权限接口请求系统
 XIAOYOU_APP_ENABLED=true
 XIAOYOU_APP_TOKEN=使用 openssl rand -hex 32 生成的随机值
 XIAOYOU_APP_VOICE_ENABLED=true
+XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED=true
 XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 ```
 
@@ -98,6 +100,10 @@ XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 均只留在服务器，不会进入 APK。语音转写作为用户原话进入同一套记忆链路，
 音频文件保存在 `data/app_channel/media/`。用户发送的图片与表情包也保存在该目录，单张限制 8 MiB。
 火山 V3 接口返回 MP3 与真实时长；合成失败会退回文字，不影响本轮回复。
+App 文字回合默认使用 `qwen3.7-plus` 对“用户原话、近期对话、已生成回复”
+做一次语义媒介判断，不使用关键词或正则触发。该判断会增加一次轻量模型
+调用及少量等待；只决定发送文字还是语音，不会重写回复内容。语音输入继续
+直接回语音，不重复调用媒介模型。
 
 启动时需叠加仓库根目录的 `docker-compose.app.yml`。它只把容器端口映射到宿主机 `127.0.0.1:8787`，必须使用 Nginx/Caddy 提供公网 HTTPS，App 不应直接连接明文 HTTP 端口。
 

@@ -34,6 +34,11 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_TTS_APP_ID: '${XIAOYOU_APP_TTS_APP_ID:-}' # 火山旧版控制台App ID；新API Key鉴权可留空。
       XIAOYOU_APP_TTS_ACCESS_KEY: '${XIAOYOU_APP_TTS_ACCESS_KEY:-}' # 火山旧版控制台Access Key；严禁提交仓库。
       XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别或合成最多等待45秒。
+      XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED: 'true' # App文字回合由模型结合语境决定本轮发送文字还是语音；不使用关键词路由。
+      XIAOYOU_APP_VOICE_ROUTE_MODEL: 'qwen3.7-plus' # 只做回复媒介判断，不改写小悠已经生成的内容。
+      XIAOYOU_APP_VOICE_ROUTE_ENABLE_THINKING: 'false' # 媒介二选一关闭思考，减少文字聊天新增延迟。
+      XIAOYOU_APP_VOICE_ROUTE_TIMEOUT: '20' # 媒介模型失败或超时后安全退回文字回复。
+      XIAOYOU_APP_VOICE_ROUTE_CONTEXT_MAX_CHARS: '2600' # 判断可读取的近期真实对话上限。
       XIAOYOU_APP_VOICE_MAX_BYTES: '6291456' # 单条App录音最多6MiB；客户端同时限制60秒。
       XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608' # App上传图片或表情包最大8MiB；Nginx需同步允许8m。
       SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。

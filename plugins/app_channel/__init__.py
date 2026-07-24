@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """Authenticated HTTP/SSE channel for the Xiaoyou mobile App.
 
-This plugin deliberately reuses ChatChannel's existing queue and plugin events.
-It does not create a second chat model, memory database, or turn scheduler.
+This plugin deliberately reuses ChatChannel's queueing behavior and plugin
+events while owning its transport-specific work queue. It does not create a
+second chat model, memory database, or turn scheduler.
 """
 
 import hmac
@@ -23,7 +24,10 @@ from bridge.context import Context, ContextType
 from bridge.reply import ReplyType
 from channel.chat_channel import ChatChannel
 from common.log import logger
-from plugins import Plugin
+from plugins import Event, Plugin
+from plugins.xiaoyou_common.app_voice_reply_decision import (
+    AppVoiceReplyDecisionService,
+)
 from plugins.xiaoyou_common.app_voice_service import (
     AppVoiceError,
     AppVoiceService,
@@ -953,10 +957,19 @@ class AppRuntimeChannel(ChatChannel):
     input_batches = {}
     input_batch_workers = set()
 
-    def __init__(self, store, canonical_session_id, voice_service=None):
+    def __init__(
+        self,
+        store,
+        canonical_session_id,
+        voice_service=None,
+        voice_reply_decision=None,
+    ):
         self.store = store
         self.canonical_session_id = canonical_session_id
         self.voice_service = voice_service or AppVoiceService()
+        self.voice_reply_decision = (
+            voice_reply_decision or AppVoiceReplyDecisionService()
+        )
         super().__init__()
 
     def submit_text(
@@ -1242,7 +1255,12 @@ class AppRuntimeChannel(ChatChannel):
         voice_text = ""
         voice_duration_ms = 0
         if reply_type == getattr(ReplyType.TEXT, "name", "TEXT"):
-            if kwargs.get("xiaoyou_app_voice_reply"):
+            use_voice = self._should_use_voice_reply(
+                content=content,
+                context=context,
+                kwargs=kwargs,
+            )
+            if use_voice:
                 try:
                     voice = self.voice_service.synthesize(
                         content,
@@ -1259,9 +1277,13 @@ class AppRuntimeChannel(ChatChannel):
                     voice_text = content
                 except AppVoiceError:
                     logger.warning(
-                        "[AppChannel] App-only voice reply fell back to text "
-                        "action_id=%s",
+                        "[AppChannel] App voice reply fell back to text "
+                        "action_id=%s requested_by=%s",
                         action_id,
+                        str(
+                            kwargs.get("xiaoyou_app_voice_requested_by")
+                            or "unknown"
+                        ),
                     )
                     parts = [content]
             else:
@@ -1303,6 +1325,64 @@ class AppRuntimeChannel(ChatChannel):
             kwargs["xiaoyou_delivery_deferred"] = True
             context.kwargs = kwargs
         return queued
+
+    def _should_use_voice_reply(self, *, content, context, kwargs):
+        if kwargs.get("xiaoyou_app_voice_medium_decided"):
+            return bool(kwargs.get("xiaoyou_app_voice_reply"))
+        if kwargs.get("xiaoyou_app_voice_reply"):
+            kwargs.setdefault(
+                "xiaoyou_app_voice_requested_by",
+                "voice_input",
+            )
+            context.kwargs = kwargs
+            return True
+        if str(kwargs.get("xiaoyou_input_kind") or "").strip().lower() != "text":
+            return False
+        if not getattr(self.voice_service, "tts_available", False):
+            return False
+
+        input_messages = kwargs.get("xiaoyou_input_messages") or []
+        if not isinstance(input_messages, list):
+            input_messages = []
+        user_text = "\n".join(
+            str(item or "").strip()
+            for item in input_messages
+            if str(item or "").strip()
+        )
+        if not user_text:
+            user_text = str(
+                kwargs.get("long_memory_user_text")
+                or kwargs.get("short_memory_current_user_text")
+                or ""
+            ).strip()
+        try:
+            decision = self.voice_reply_decision.decide(
+                input_kind="text",
+                user_text=user_text,
+                assistant_text=content,
+                session_id=str(
+                    kwargs.get("session_id") or self.canonical_session_id
+                ),
+                trace_id=str(kwargs.get("xiaoyou_trace_id") or ""),
+                input_id=str(kwargs.get("xiaoyou_input_id") or ""),
+            )
+        except Exception:
+            logger.exception(
+                "[AppChannel] voice medium decision failed input_id=%s",
+                str(kwargs.get("xiaoyou_input_id") or "-"),
+            )
+            return False
+
+        kwargs["xiaoyou_app_voice_decision"] = {
+            "medium": decision.medium,
+            "confidence": decision.confidence,
+            "reason": decision.reason,
+            "model_ok": decision.model_ok,
+        }
+        if decision.use_voice:
+            kwargs["xiaoyou_app_voice_requested_by"] = "model"
+        context.kwargs = kwargs
+        return bool(decision.use_voice)
 
 
 class AppRequestHandler(BaseHTTPRequestHandler):
@@ -1584,13 +1664,14 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.2-app-media",
+    version="1.3-semantic-voice",
     author="yoyo",
     desire_priority=10001,
 )
 class AppChannel(Plugin):
     def __init__(self):
         super().__init__()
+        self.handlers[Event.ON_SEND_REPLY] = self.on_send_reply
         self.enabled = _truthy(os.getenv("XIAOYOU_APP_ENABLED", "false"))
         self.canonical_session_id = (
             os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
@@ -1614,6 +1695,9 @@ class AppChannel(Plugin):
             self.store = existing.store
             self.runtime = existing.runtime
             self.runtime.voice_service = AppVoiceService()
+            self.runtime.voice_reply_decision = (
+                AppVoiceReplyDecisionService()
+            )
             self.httpd = existing.httpd
             AppRequestHandler.plugin = self
             register_app_service(self)
@@ -1628,6 +1712,7 @@ class AppChannel(Plugin):
             self.store,
             self.canonical_session_id,
             voice_service=AppVoiceService(),
+            voice_reply_decision=AppVoiceReplyDecisionService(),
         )
         host = os.getenv("XIAOYOU_APP_HOST", "0.0.0.0").strip() or "0.0.0.0"
         port = int(os.getenv("XIAOYOU_APP_PORT", "8787"))
@@ -1641,7 +1726,8 @@ class AppChannel(Plugin):
         ).start()
         logger.info(
             "[AppChannel] inited bind=%s:%s database=%s session=%s voice=%s "
-            "asr=%s tts=%s provider=%s tts_ready=%s",
+            "asr=%s tts=%s provider=%s tts_ready=%s "
+            "text_voice_decision=%s voice_route=%s",
             host,
             port,
             DATABASE_PATH,
@@ -1659,7 +1745,48 @@ class AppChannel(Plugin):
                 "tts_available",
                 False,
             ),
+            getattr(
+                self.runtime.voice_reply_decision,
+                "enabled",
+                False,
+            ),
+            getattr(
+                self.runtime.voice_reply_decision,
+                "model",
+                "unknown",
+            ),
         )
+
+    def on_send_reply(self, e_context):
+        if not self.enabled or self.runtime is None:
+            return
+        reply = e_context["reply"]
+        context = e_context["context"]
+        if not reply or getattr(reply, "type", None) != ReplyType.TEXT:
+            return
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if str(kwargs.get("xiaoyou_transport") or "") != "app":
+            return
+        if kwargs.get("xiaoyou_app_voice_medium_decided"):
+            return
+
+        try:
+            use_voice = self.runtime._should_use_voice_reply(
+                content=str(getattr(reply, "content", "") or "").strip(),
+                context=context,
+                kwargs=kwargs,
+            )
+        except Exception:
+            logger.exception(
+                "[AppChannel] pre-send voice medium decision failed input_id=%s",
+                str(kwargs.get("xiaoyou_input_id") or "-"),
+            )
+            use_voice = False
+
+        kwargs = getattr(context, "kwargs", {}) or kwargs
+        kwargs["xiaoyou_app_voice_medium_decided"] = True
+        kwargs["xiaoyou_app_voice_reply"] = bool(use_voice)
+        context.kwargs = kwargs
 
     def acknowledge(self, *, action_id, device_id, status, event_ids):
         receipt = self.store.acknowledge(
