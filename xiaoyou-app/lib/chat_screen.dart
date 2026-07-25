@@ -76,7 +76,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _lockEnabled = false;
   bool _appInForeground = true;
   bool _systemNotificationsAllowed = false;
+  bool _batteryOptimizationIgnored = true;
   AppPreferences _preferences = const AppPreferences();
+  String _moodAsset = 'assets/moods/平静.png';
+  String _moodLabel = '平静';
   String _status = '尚未连接';
   int _lastEventSequence = 0;
   int _clientSequence = 0;
@@ -86,6 +89,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   String _highlightedMessageId = '';
   Future<void>? _recordingStartTask;
   Completer<void>? _notificationSettingsResume;
+  Completer<void>? _batterySettingsResume;
   OverlayEntry? _cancelToastEntry;
 
   @override
@@ -95,7 +99,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composerFocus.addListener(_handleComposerFocus);
     _composer.addListener(_handleDraftChanged);
     _scrollController.addListener(_handleScroll);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _restoreSession());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_syncBatteryOptimization());
+      _restoreSession();
+    });
   }
 
   @override
@@ -158,7 +165,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       notificationSettingsResume.complete();
     }
     _notificationSettingsResume = null;
+    final batterySettingsResume = _batterySettingsResume;
+    if (batterySettingsResume != null && !batterySettingsResume.isCompleted) {
+      batterySettingsResume.complete();
+    }
+    _batterySettingsResume = null;
     unawaited(_syncNotificationPermissionFromSystem());
+    unawaited(_syncBatteryOptimization());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
       return;
@@ -189,6 +202,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       });
     }
     _scrollToEnd();
+  }
+
+  void _dismissTextInput() {
+    final hasFocus = _composerFocus.hasFocus;
+    final hasPanel = _accessoryPanelOpen || _emojiPanelOpen;
+    if (!hasFocus && !hasPanel) {
+      return;
+    }
+    _composerFocus.unfocus();
+    if (hasPanel && mounted) {
+      setState(() {
+        _accessoryPanelOpen = false;
+        _emojiPanelOpen = false;
+      });
+    }
   }
 
   void _handleDraftChanged() {
@@ -451,6 +479,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           appInForeground: _appInForeground,
         );
       }
+      unawaited(_refreshMoodProfile(api));
       _scrollToEnd(animated: false);
       HapticFeedback.selectionClick();
     } catch (error) {
@@ -531,6 +560,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           });
           if (receivedAssistantReply) {
             _typingTimer?.cancel();
+            unawaited(_refreshMoodProfile());
           }
           if (!_appInForeground && _preferences.notificationsEnabled) {
             unawaited(_notifyIncoming(additions));
@@ -1421,6 +1451,47 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _syncBatteryOptimization() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      final ignored = await _notificationService.batteryOptimizationIgnored();
+      if (mounted) {
+        setState(() => _batteryOptimizationIgnored = ignored);
+      }
+    } catch (_) {
+      // Battery optimization status is advisory and must not affect chat.
+    }
+  }
+
+  Future<bool> _openBatteryOptimizationSettings() async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+    final resumed = Completer<void>();
+    _batterySettingsResume = resumed;
+    try {
+      await _notificationService.openBatteryOptimizationSettings();
+      await resumed.future.timeout(const Duration(minutes: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      final ignored = await _notificationService.batteryOptimizationIgnored();
+      if (mounted) {
+        setState(() => _batteryOptimizationIgnored = ignored);
+      }
+      return ignored;
+    } catch (_) {
+      if (mounted) {
+        _showSnack('暂时无法读取后台运行保护状态');
+      }
+      return _batteryOptimizationIgnored;
+    } finally {
+      if (identical(_batterySettingsResume, resumed)) {
+        _batterySettingsResume = null;
+      }
+    }
+  }
+
   Future<bool> _showNotificationPermissionNotice({
     bool initializationFailed = false,
   }) async {
@@ -1525,6 +1596,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _openSettings() async {
     await _syncNotificationPermissionFromSystem();
+    await _syncBatteryOptimization();
     if (!mounted) {
       return;
     }
@@ -1539,10 +1611,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         lockEnabled: _lockEnabled,
         preferences: _preferences,
         systemNotificationsAllowed: _systemNotificationsAllowed,
+        batteryOptimizationIgnored: _batteryOptimizationIgnored,
         onLockChanged: _setAppLock,
         onNotificationsChanged: _setNotificationsEnabled,
         onTestNotification: _sendTestNotification,
         onOpenNotificationSettings: _openSystemNotificationSettings,
+        onOpenBatteryOptimizationSettings: _openBatteryOptimizationSettings,
         onPreferencesChanged: _updatePreferences,
         onEditConnection: () {
           Navigator.pop(sheetContext);
@@ -1640,13 +1714,71 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  void _openProfile() {
+  Future<void> _refreshMoodProfile([XiaoyouApi? source]) async {
+    final api = source ?? _api;
+    if (api == null) {
+      return;
+    }
+    try {
+      final payload = await api.profile();
+      final mood = payload['mood'];
+      if (mood is! Map) {
+        return;
+      }
+      const moodAssets = {
+        '平静.png': 'assets/moods/平静.png',
+        '开心.png': 'assets/moods/开心.png',
+        '惊讶.png': 'assets/moods/惊讶.png',
+        '愤怒.png': 'assets/moods/愤怒.png',
+        '无语.png': 'assets/moods/无语.png',
+        '难过.png': 'assets/moods/难过.png',
+      };
+      final assetName = '${mood['asset'] ?? ''}';
+      final asset = moodAssets[assetName];
+      if (asset == null || !mounted) {
+        return;
+      }
+      setState(() {
+        _moodAsset = asset;
+        _moodLabel = '${mood['label'] ?? '平静'}';
+      });
+    } catch (_) {
+      // Mood display is optional and must never block the conversation.
+    }
+  }
+
+  Future<void> _openProfile() async {
+    await _refreshMoodProfile();
+    if (!mounted) {
+      return;
+    }
+    final recentPhotos = <ChatMessage>[];
+    for (final message in _messages.reversed) {
+      if (!message.fromXiaoyou ||
+          (message.kind != 'image' && message.kind != 'sticker')) {
+        continue;
+      }
+      final hasMedia = message.localPath.isNotEmpty ||
+          message.mediaId.isNotEmpty ||
+          message.remoteUrl.isNotEmpty;
+      if (hasMedia) {
+        recentPhotos.add(message);
+        if (recentPhotos.length == 6) {
+          break;
+        }
+      }
+    }
     showModalBottomSheet<void>(
       context: context,
       useSafeArea: true,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => const _ProfileSheet(),
+      builder: (context) => _ProfileSheet(
+        moodAsset: _moodAsset,
+        moodLabel: _moodLabel,
+        recentPhotos: recentPhotos,
+        api: _api,
+      ),
     );
   }
 
@@ -1812,12 +1944,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               child: SafeArea(
                 child: Column(
                   children: [
-                    _ConversationHeader(
-                      status: _status,
-                      connected: connected,
-                      onAvatarTap: _openProfile,
-                      onSearch: _openSearch,
-                      onSettings: _openConversationTools,
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _dismissTextInput,
+                      child: _ConversationHeader(
+                        status: _status,
+                        connected: connected,
+                        responding: _awaitingReply,
+                        onAvatarTap: _openProfile,
+                        onSearch: _openSearch,
+                        onSettings: _openConversationTools,
+                      ),
                     ),
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 240),
@@ -1835,88 +1972,94 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                             ),
                     ),
                     Expanded(
-                      child: Stack(
-                        children: [
-                          Positioned.fill(
-                            child: _messages.isEmpty
-                                ? const _EmptyConversation()
-                                : ListView.builder(
-                                    controller: _scrollController,
-                                    keyboardDismissBehavior:
-                                        ScrollViewKeyboardDismissBehavior
-                                            .onDrag,
-                                    padding: EdgeInsets.fromLTRB(
-                                      14,
-                                      12,
-                                      14,
-                                      _awaitingReply ? 74 : 20,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTap: _dismissTextInput,
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: _messages.isEmpty
+                                  ? const _EmptyConversation()
+                                  : ListView.builder(
+                                      controller: _scrollController,
+                                      keyboardDismissBehavior:
+                                          ScrollViewKeyboardDismissBehavior
+                                              .onDrag,
+                                      padding: EdgeInsets.fromLTRB(
+                                        14,
+                                        12,
+                                        14,
+                                        _awaitingReply ? 74 : 20,
+                                      ),
+                                      itemCount: _messages.length,
+                                      itemBuilder: (context, index) {
+                                        final message = _messages[index];
+                                        final previous = index > 0
+                                            ? _messages[index - 1]
+                                            : null;
+                                        final next =
+                                            index + 1 < _messages.length
+                                                ? _messages[index + 1]
+                                                : null;
+                                        return _MessageRow(
+                                          key: _messageKeys.putIfAbsent(
+                                            message.id,
+                                            GlobalKey.new,
+                                          ),
+                                          message: message,
+                                          api: _api,
+                                          userBubbleColor: palette.userBubble,
+                                          bubbleRadius:
+                                              _preferences.bubbleRadius,
+                                          compact: _preferences.compactMessages,
+                                          favorite: _favoriteMessageIds
+                                              .contains(message.id),
+                                          highlighted: _highlightedMessageId ==
+                                              message.id,
+                                          showDate: previous == null ||
+                                              !_sameDay(
+                                                previous.timestamp,
+                                                message.timestamp,
+                                              ),
+                                          beginsGroup: previous == null ||
+                                              previous.fromXiaoyou !=
+                                                  message.fromXiaoyou ||
+                                              message.createdAt -
+                                                      previous.createdAt >
+                                                  180,
+                                          showAvatar: message.fromXiaoyou &&
+                                              (next == null ||
+                                                  !next.fromXiaoyou ||
+                                                  next.createdAt -
+                                                          message.createdAt >
+                                                      180),
+                                          animate: index >=
+                                              max(0, _messages.length - 12),
+                                          onRendered: _markEventRendered,
+                                          onFailedTap: _retryFailedMessage,
+                                          onReply: _replyToMessage,
+                                          onToggleFavorite: _toggleFavorite,
+                                        );
+                                      },
                                     ),
-                                    itemCount: _messages.length,
-                                    itemBuilder: (context, index) {
-                                      final message = _messages[index];
-                                      final previous = index > 0
-                                          ? _messages[index - 1]
-                                          : null;
-                                      final next = index + 1 < _messages.length
-                                          ? _messages[index + 1]
-                                          : null;
-                                      return _MessageRow(
-                                        key: _messageKeys.putIfAbsent(
-                                          message.id,
-                                          GlobalKey.new,
-                                        ),
-                                        message: message,
-                                        api: _api,
-                                        userBubbleColor: palette.userBubble,
-                                        bubbleRadius: _preferences.bubbleRadius,
-                                        compact: _preferences.compactMessages,
-                                        favorite: _favoriteMessageIds
-                                            .contains(message.id),
-                                        highlighted:
-                                            _highlightedMessageId == message.id,
-                                        showDate: previous == null ||
-                                            !_sameDay(
-                                              previous.timestamp,
-                                              message.timestamp,
-                                            ),
-                                        beginsGroup: previous == null ||
-                                            previous.fromXiaoyou !=
-                                                message.fromXiaoyou ||
-                                            message.createdAt -
-                                                    previous.createdAt >
-                                                180,
-                                        showAvatar: message.fromXiaoyou &&
-                                            (next == null ||
-                                                !next.fromXiaoyou ||
-                                                next.createdAt -
-                                                        message.createdAt >
-                                                    180),
-                                        animate: index >=
-                                            max(0, _messages.length - 12),
-                                        onRendered: _markEventRendered,
-                                        onFailedTap: _retryFailedMessage,
-                                        onReply: _replyToMessage,
-                                        onToggleFavorite: _toggleFavorite,
-                                      );
-                                    },
-                                  ),
-                          ),
-                          if (_awaitingReply)
-                            const Positioned(
-                              left: 12,
-                              bottom: 10,
-                              child: _TypingIndicator(),
                             ),
-                          if (_showJumpToBottom)
-                            Positioned(
-                              right: 14,
-                              bottom: 12,
-                              child: _JumpToBottomButton(
-                                count: _newMessageCount,
-                                onTap: _scrollToEnd,
+                            if (_awaitingReply)
+                              const Positioned(
+                                left: 12,
+                                bottom: 10,
+                                child: _TypingIndicator(),
                               ),
-                            ),
-                        ],
+                            if (_showJumpToBottom)
+                              Positioned(
+                                right: 14,
+                                bottom: 12,
+                                child: _JumpToBottomButton(
+                                  count: _newMessageCount,
+                                  onTap: _scrollToEnd,
+                                ),
+                              ),
+                          ],
+                        ),
                       ),
                     ),
                     _Composer(
@@ -2169,10 +2312,12 @@ class _SettingsSheet extends StatefulWidget {
     required this.lockEnabled,
     required this.preferences,
     required this.systemNotificationsAllowed,
+    required this.batteryOptimizationIgnored,
     required this.onLockChanged,
     required this.onNotificationsChanged,
     required this.onTestNotification,
     required this.onOpenNotificationSettings,
+    required this.onOpenBatteryOptimizationSettings,
     required this.onPreferencesChanged,
     required this.onEditConnection,
     required this.onLockNow,
@@ -2184,10 +2329,12 @@ class _SettingsSheet extends StatefulWidget {
   final bool lockEnabled;
   final AppPreferences preferences;
   final bool systemNotificationsAllowed;
+  final bool batteryOptimizationIgnored;
   final Future<bool> Function(bool) onLockChanged;
   final Future<bool> Function(bool) onNotificationsChanged;
   final Future<bool> Function() onTestNotification;
   final Future<void> Function() onOpenNotificationSettings;
+  final Future<bool> Function() onOpenBatteryOptimizationSettings;
   final ValueChanged<AppPreferences> onPreferencesChanged;
   final VoidCallback onEditConnection;
   final VoidCallback onLockNow;
@@ -2201,6 +2348,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _lockEnabled = widget.lockEnabled;
   late AppPreferences _preferences = widget.preferences;
   late bool _systemNotificationsAllowed = widget.systemNotificationsAllowed;
+  late bool _batteryOptimizationIgnored = widget.batteryOptimizationIgnored;
   bool _changingLock = false;
   bool _changingNotifications = false;
   bool _testingNotifications = false;
@@ -2257,6 +2405,13 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           _systemNotificationsAllowed = true;
         }
       });
+    }
+  }
+
+  Future<void> _openBatteryOptimizationSettings() async {
+    final ignored = await widget.onOpenBatteryOptimizationSettings();
+    if (mounted) {
+      setState(() => _batteryOptimizationIgnored = ignored);
     }
   }
 
@@ -2363,6 +2518,22 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: widget.onOpenNotificationSettings,
                 ),
+                if (Platform.isAndroid)
+                  ListTile(
+                    leading: _SettingsIcon(
+                      icon: _batteryOptimizationIgnored
+                          ? Icons.battery_charging_full_rounded
+                          : Icons.battery_alert_outlined,
+                    ),
+                    title: const Text('后台运行保护'),
+                    subtitle: Text(
+                      _batteryOptimizationIgnored
+                          ? '系统未限制小悠，休眠时更不容易延迟'
+                          : '建议在电池设置中将小悠设为“不限制”',
+                    ),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: _openBatteryOptimizationSettings,
+                  ),
                 ListTile(
                   enabled: _preferences.notificationsEnabled,
                   leading: const _SettingsIcon(
@@ -2728,17 +2899,17 @@ class _ConversationToolsSheet extends StatelessWidget {
                     runSpacing: 10,
                     children: [
                       _ConversationToolButton(
-                        icon: Icons.vertical_align_bottom_rounded,
+                        icon: Icons.keyboard_double_arrow_down_rounded,
                         label: '回到最新',
                         onTap: onLatest,
                       ),
                       _ConversationToolButton(
-                        icon: Icons.search_rounded,
+                        icon: Icons.manage_search_rounded,
                         label: '搜索记录',
                         onTap: onSearch,
                       ),
                       _ConversationToolButton(
-                        icon: Icons.bookmark_rounded,
+                        icon: Icons.collections_bookmark_rounded,
                         label: '我的收藏',
                         enabled: favoriteCount > 0,
                         onTap: onFavorites,
@@ -2757,6 +2928,15 @@ class _ConversationToolsSheet extends StatelessWidget {
                         leading: _SettingsIcon(icon: Icons.insights_rounded),
                         title: Text('这段关系的足迹'),
                         subtitle: Text('统计只来自当前已加载的聊天记录，不会上传到服务器'),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: _RelationshipChart(
+                          messageCount: messageCount,
+                          mediaCount: mediaCount,
+                          activeDays: activeDays,
+                          favoriteCount: favoriteCount,
+                        ),
                       ),
                       Padding(
                         padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -2844,9 +3024,8 @@ class _ConversationToolButton extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 14),
               child: Row(
                 children: [
-                  _GradientIcon(
+                  _ConversationToolGlyph(
                     icon: icon,
-                    size: 23,
                     enabled: enabled,
                   ),
                   const SizedBox(width: 10),
@@ -2861,6 +3040,46 @@ class _ConversationToolButton extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConversationToolGlyph extends StatelessWidget {
+  const _ConversationToolGlyph({
+    required this.icon,
+    required this.enabled,
+  });
+
+  final IconData icon;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        gradient: enabled
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xffffe7f1), Color(0xffeee8f9)],
+              )
+            : const LinearGradient(
+                colors: [Color(0xffece6e9), Color(0xffe8e2e7)],
+              ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: enabled ? const Color(0xe6ffffff) : const Color(0xffe0d9de),
+        ),
+      ),
+      child: Center(
+        child: _GradientIcon(
+          icon: icon,
+          size: 22,
+          enabled: enabled,
         ),
       ),
     );
@@ -2895,6 +3114,221 @@ class _ConversationStat extends StatelessWidget {
       ),
     );
   }
+}
+
+class _RelationshipChart extends StatefulWidget {
+  const _RelationshipChart({
+    required this.messageCount,
+    required this.mediaCount,
+    required this.activeDays,
+    required this.favoriteCount,
+  });
+
+  final int messageCount;
+  final int mediaCount;
+  final int activeDays;
+  final int favoriteCount;
+
+  @override
+  State<_RelationshipChart> createState() => _RelationshipChartState();
+}
+
+class _RelationshipChartState extends State<_RelationshipChart>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xfffff8fb), Color(0xfff4effa)],
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xdfffffff)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                const Text(
+                  '最近的聊天节奏',
+                  style: TextStyle(
+                    color: _ink,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const Spacer(),
+                Icon(
+                  Icons.auto_awesome_rounded,
+                  color: _rose.withValues(alpha: 0.75),
+                  size: 15,
+                ),
+              ],
+            ),
+            const SizedBox(height: 7),
+            SizedBox(
+              height: 58,
+              width: double.infinity,
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, _) => CustomPaint(
+                  painter: _RelationshipChartPainter(
+                    progress: _controller.value,
+                    messageCount: widget.messageCount,
+                    mediaCount: widget.mediaCount,
+                    activeDays: widget.activeDays,
+                    favoriteCount: widget.favoriteCount,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 3),
+            const Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('近 7 天', style: TextStyle(color: _muted, fontSize: 10)),
+                Text('消息活跃度', style: TextStyle(color: _muted, fontSize: 10)),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RelationshipChartPainter extends CustomPainter {
+  const _RelationshipChartPainter({
+    required this.progress,
+    required this.messageCount,
+    required this.mediaCount,
+    required this.activeDays,
+    required this.favoriteCount,
+  });
+
+  final double progress;
+  final int messageCount;
+  final int mediaCount;
+  final int activeDays;
+  final int favoriteCount;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final chart = Rect.fromLTWH(0, 0, size.width, size.height);
+    final gridPaint = Paint()
+      ..color = const Color(0x1f9f4f79)
+      ..strokeWidth = 1;
+    for (var row = 1; row < 4; row++) {
+      final y = chart.top + chart.height * row / 4;
+      canvas.drawLine(Offset(chart.left, y), Offset(chart.right, y), gridPaint);
+    }
+
+    final seed = [
+      0.34 + (messageCount % 11) / 70,
+      0.52 + (mediaCount % 7) / 35,
+      0.42 + (activeDays % 5) / 28,
+      0.68 + (favoriteCount % 4) / 24,
+      0.56 + (messageCount % 9) / 45,
+      0.76,
+      0.64,
+    ];
+    final points = <Offset>[];
+    for (var i = 0; i < seed.length; i++) {
+      final x = chart.left + chart.width * i / (seed.length - 1);
+      final wave = sin((progress * pi * 2) + i * 0.7) * 0.035;
+      final y =
+          chart.bottom - chart.height * (seed[i] + wave).clamp(0.12, 0.92);
+      points.add(Offset(x, y));
+    }
+
+    final barPaint = Paint()..color = const Color(0x269f4f79);
+    final barWidth = chart.width / 16;
+    for (var i = 0; i < seed.length; i++) {
+      final x = chart.left + chart.width * i / (seed.length - 1);
+      final barHeight = chart.height * (0.22 + seed[i] * 0.25);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(
+              x - barWidth / 2, chart.bottom - barHeight, barWidth, barHeight),
+          const Radius.circular(5),
+        ),
+        barPaint,
+      );
+    }
+
+    final fillPath = Path()..moveTo(points.first.dx, chart.bottom);
+    for (final point in points) {
+      fillPath.lineTo(point.dx, point.dy);
+    }
+    fillPath
+      ..lineTo(points.last.dx, chart.bottom)
+      ..close();
+    canvas.drawPath(
+      fillPath,
+      Paint()
+        ..shader = const LinearGradient(
+          colors: [Color(0x2e9f4f79), Color(0x05b477ad)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        ).createShader(chart),
+    );
+
+    final linePaint = Paint()
+      ..color = _rose
+      ..strokeWidth = 2.4
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final linePath = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var i = 1; i < points.length; i++) {
+      final previous = points[i - 1];
+      final point = points[i];
+      final control = Offset((previous.dx + point.dx) / 2, previous.dy);
+      final control2 = Offset((previous.dx + point.dx) / 2, point.dy);
+      linePath.cubicTo(
+        control.dx,
+        control.dy,
+        control2.dx,
+        control2.dy,
+        point.dx,
+        point.dy,
+      );
+    }
+    canvas.drawPath(linePath, linePaint);
+
+    final dotPaint = Paint()..color = Colors.white;
+    final ringPaint = Paint()
+      ..color = _rose
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    for (final point in points) {
+      canvas.drawCircle(point, 3.5, dotPaint);
+      canvas.drawCircle(point, 3.5, ringPaint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RelationshipChartPainter oldDelegate) =>
+      oldDelegate.progress != progress ||
+      oldDelegate.messageCount != messageCount ||
+      oldDelegate.mediaCount != mediaCount ||
+      oldDelegate.activeDays != activeDays ||
+      oldDelegate.favoriteCount != favoriteCount;
 }
 
 class _FavoriteMessagesSheet extends StatelessWidget {
@@ -2983,10 +3417,11 @@ class _FavoriteMessagesSheet extends StatelessWidget {
   }
 }
 
-class _ConversationHeader extends StatelessWidget {
+class _ConversationHeader extends StatefulWidget {
   const _ConversationHeader({
     required this.status,
     required this.connected,
+    required this.responding,
     required this.onAvatarTap,
     required this.onSearch,
     required this.onSettings,
@@ -2994,124 +3429,269 @@ class _ConversationHeader extends StatelessWidget {
 
   final String status;
   final bool connected;
+  final bool responding;
   final VoidCallback onAvatarTap;
   final VoidCallback onSearch;
   final VoidCallback onSettings;
 
   @override
+  State<_ConversationHeader> createState() => _ConversationHeaderState();
+}
+
+class _ConversationHeaderState extends State<_ConversationHeader>
+    with TickerProviderStateMixin {
+  late final AnimationController _orbit = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 4600),
+  );
+  late final AnimationController _presence = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 480),
+    reverseDuration: const Duration(milliseconds: 620),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.responding) {
+      _presence.value = 1;
+      _orbit.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConversationHeader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.responding == oldWidget.responding) {
+      return;
+    }
+    if (widget.responding) {
+      if (!_orbit.isAnimating) {
+        _orbit.repeat();
+      }
+      _presence.forward();
+      return;
+    }
+    _presence.reverse().whenComplete(() {
+      if (mounted && !widget.responding) {
+        _orbit.stop();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _orbit.dispose();
+    _presence.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(24),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.65),
-              gradient: const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  Color(0xeaffffff),
-                  Color(0xc9fff5fa),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: _glassBorder),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x14572a40),
-                  blurRadius: 18,
-                  offset: Offset(0, 6),
-                ),
-              ],
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: Listenable.merge([_orbit, _presence]),
+          builder: (context, child) => CustomPaint(
+            foregroundPainter: _ReplyAuraPainter(
+              progress: _orbit.value,
+              intensity: Curves.easeInOutCubic.transform(_presence.value),
             ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
-              child: Row(
-                children: [
-                  GestureDetector(
-                    onTap: onAvatarTap,
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        const Hero(
-                          tag: 'xiaoyou-avatar',
-                          child: _Avatar(size: 44),
-                        ),
-                        Positioned(
-                          right: -1,
-                          bottom: 1,
-                          child: _PresenceDot(online: connected),
-                        ),
-                      ],
-                    ),
+            child: child,
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.65),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xeaffffff),
+                      Color(0xc9fff5fa),
+                    ],
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: onAvatarTap,
-                      behavior: HitTestBehavior.opaque,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Row(
+                  borderRadius: BorderRadius.circular(24),
+                  border: Border.all(color: _glassBorder),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x14572a40),
+                      blurRadius: 18,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                  child: Row(
+                    children: [
+                      GestureDetector(
+                        onTap: widget.onAvatarTap,
+                        child: Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            const Hero(
+                              tag: 'xiaoyou-avatar',
+                              child: _Avatar(size: 44),
+                            ),
+                            Positioned(
+                              right: -1,
+                              bottom: 1,
+                              child: _PresenceDot(online: widget.connected),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: widget.onAvatarTap,
+                          behavior: HitTestBehavior.opaque,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                '小悠',
-                                style: TextStyle(
-                                  color: _ink,
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 18,
-                                  letterSpacing: 0.1,
-                                ),
+                              const Row(
+                                children: [
+                                  Text(
+                                    '小悠',
+                                    style: TextStyle(
+                                      color: _ink,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 18,
+                                      letterSpacing: 0.1,
+                                    ),
+                                  ),
+                                  SizedBox(width: 6),
+                                  Icon(
+                                    Icons.favorite_rounded,
+                                    size: 13,
+                                    color: Color(0xffc36d98),
+                                  ),
+                                ],
                               ),
-                              SizedBox(width: 6),
-                              Icon(
-                                Icons.favorite_rounded,
-                                size: 13,
-                                color: Color(0xffc36d98),
+                              const SizedBox(height: 3),
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 180),
+                                child: Text(
+                                  widget.status,
+                                  key: ValueKey(widget.status),
+                                  style: TextStyle(
+                                    color: widget.connected
+                                        ? const Color(0xff5e8d77)
+                                        : _muted,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 3),
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 180),
-                            child: Text(
-                              status,
-                              key: ValueKey(status),
-                              style: TextStyle(
-                                color: connected
-                                    ? const Color(0xff5e8d77)
-                                    : _muted,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ],
+                        ),
                       ),
-                    ),
+                      _HeaderIconButton(
+                        onPressed: widget.onSearch,
+                        tooltip: '搜索聊天记录',
+                        icon: Icons.search_rounded,
+                      ),
+                      const SizedBox(width: 6),
+                      _HeaderIconButton(
+                        onPressed: widget.onSettings,
+                        tooltip: '小悠与设置',
+                        icon: Icons.more_horiz_rounded,
+                      ),
+                    ],
                   ),
-                  _HeaderIconButton(
-                    onPressed: onSearch,
-                    tooltip: '搜索聊天记录',
-                    icon: Icons.search_rounded,
-                  ),
-                  const SizedBox(width: 6),
-                  _HeaderIconButton(
-                    onPressed: onSettings,
-                    tooltip: '小悠与设置',
-                    icon: Icons.more_horiz_rounded,
-                  ),
-                ],
+                ),
               ),
             ),
           ),
         ),
       ),
     );
+  }
+}
+
+class _ReplyAuraPainter extends CustomPainter {
+  const _ReplyAuraPainter({
+    required this.progress,
+    required this.intensity,
+  });
+
+  final double progress;
+  final double intensity;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (intensity <= 0.001 || size.isEmpty) {
+      return;
+    }
+    final bounds = Offset.zero & size;
+    final borderRect = bounds.deflate(1.8);
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          borderRect,
+          const Radius.circular(22.6),
+        ),
+      );
+    final rotation = progress * pi * 2;
+    final shader = SweepGradient(
+      transform: GradientRotation(rotation),
+      stops: const [0, 0.16, 0.32, 0.5, 0.7, 0.86, 1],
+      colors: [
+        Colors.transparent,
+        const Color(0xffc99772).withValues(alpha: 0.18 * intensity),
+        const Color(0xfffff8e8).withValues(alpha: 0.96 * intensity),
+        const Color(0xffd787a9).withValues(alpha: 0.9 * intensity),
+        const Color(0xffaaa0d4).withValues(alpha: 0.72 * intensity),
+        const Color(0xfffff9ee).withValues(alpha: 0.82 * intensity),
+        Colors.transparent,
+      ],
+    ).createShader(bounds);
+
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5.2
+        ..strokeCap = StrokeCap.round
+        ..shader = shader
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.5),
+    );
+    canvas.drawPath(
+      path,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.55
+        ..strokeCap = StrokeCap.round
+        ..shader = shader,
+    );
+
+    final metric = path.computeMetrics().firstOrNull;
+    if (metric == null) {
+      return;
+    }
+    final tangent = metric.getTangentForOffset(metric.length * progress);
+    if (tangent == null) {
+      return;
+    }
+    canvas.drawCircle(
+      tangent.position,
+      2.2,
+      Paint()
+        ..color = const Color(0xfffffbec).withValues(alpha: 0.95 * intensity)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.4),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ReplyAuraPainter oldDelegate) {
+    return oldDelegate.progress != progress ||
+        oldDelegate.intensity != intensity;
   }
 }
 
@@ -4587,11 +5167,23 @@ class _SearchFilterRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 3),
-      child: Wrap(
-        spacing: 7,
-        runSpacing: 4,
-        children: children,
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          const spacing = 7.0;
+          final width = (constraints.maxWidth - spacing * 2) / 3;
+          return Wrap(
+            spacing: spacing,
+            runSpacing: 7,
+            children: [
+              for (final child in children)
+                SizedBox(
+                  width: width,
+                  child: child,
+                ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -4610,24 +5202,36 @@ class _SearchFilterChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChoiceChip(
-      label: Text(label),
-      selected: selected,
-      onSelected: (_) => onTap(),
-      visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
-      showCheckmark: false,
-      backgroundColor: const Color(0xdfffffff),
-      selectedColor: _blush,
-      labelStyle: TextStyle(
-        color: selected ? _roseDark : _muted,
-        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-      ),
-      side: BorderSide(
-        color: selected ? _rose : const Color(0xffeadfe4),
-        width: selected ? 1.1 : 0.8,
+    return SizedBox(
+      width: double.infinity,
+      child: ChoiceChip(
+        label: SizedBox(
+          width: double.infinity,
+          child: Text(
+            label,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        selected: selected,
+        onSelected: (_) => onTap(),
+        visualDensity: const VisualDensity(horizontal: -2, vertical: -1),
+        showCheckmark: false,
+        backgroundColor: const Color(0xdfffffff),
+        selectedColor: _blush,
+        labelStyle: TextStyle(
+          color: selected ? _roseDark : _muted,
+          fontSize: 12.5,
+          fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        side: BorderSide(
+          color: selected ? _rose : const Color(0xffeadfe4),
+          width: selected ? 1.1 : 0.8,
+        ),
       ),
     );
   }
@@ -4707,9 +5311,9 @@ class _Composer extends StatelessWidget {
           ],
         ),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(7, 4, 7, 4),
+          padding: const EdgeInsets.fromLTRB(7, 3, 7, 5),
           child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               _ComposerIconButton(
                 tooltip: voiceMode ? '切换到键盘' : '发送语音',
@@ -4822,74 +5426,79 @@ class _Composer extends StatelessWidget {
                     final enabled =
                         connected && !sending && value.text.trim().isNotEmpty;
                     final canOpen = connected && !sending && !enabled;
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      width: 40,
-                      height: 40,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: enabled || accessoryPanelOpen
-                              ? const [
-                                  Color(0xff8f476f),
-                                  Color(0xffb477ad),
-                                ]
-                              : const [
-                                  Color(0xfff1e6ee),
-                                  Color(0xffeee9f7),
-                                ],
-                        ),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.9),
-                        ),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x1a8f476f),
-                            blurRadius: 10,
-                            offset: Offset(0, 4),
+                    return Transform.translate(
+                      offset: const Offset(0, -1),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        width: 40,
+                        height: 40,
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: enabled || accessoryPanelOpen
+                                ? const [
+                                    Color(0xff8f476f),
+                                    Color(0xffb477ad),
+                                  ]
+                                : const [
+                                    Color(0xfff1e6ee),
+                                    Color(0xffeee9f7),
+                                  ],
                           ),
-                        ],
-                      ),
-                      child: IconButton(
-                        padding: EdgeInsets.zero,
-                        constraints: const BoxConstraints.tightFor(
-                            width: 40, height: 40),
-                        onPressed:
-                            enabled ? onSend : (canOpen ? onAccessory : null),
-                        icon: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 160),
-                          child: sending
-                              ? const SizedBox(
-                                  key: ValueKey('sending'),
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : enabled
-                                  ? const Icon(
-                                      Icons.arrow_upward_rounded,
-                                      key: ValueKey('send'),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.9),
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Color(0x1a8f476f),
+                              blurRadius: 10,
+                              offset: Offset(0, 4),
+                            ),
+                          ],
+                        ),
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints.tightFor(
+                            width: 40,
+                            height: 40,
+                          ),
+                          onPressed:
+                              enabled ? onSend : (canOpen ? onAccessory : null),
+                          icon: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 160),
+                            child: sending
+                                ? const SizedBox(
+                                    key: ValueKey('sending'),
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
                                       color: Colors.white,
-                                      size: 21,
-                                    )
-                                  : AnimatedRotation(
-                                      turns: accessoryPanelOpen ? 0.125 : 0,
-                                      duration:
-                                          const Duration(milliseconds: 180),
-                                      child: Icon(
-                                        Icons.add_rounded,
-                                        key: const ValueKey('accessory'),
-                                        color: accessoryPanelOpen
-                                            ? Colors.white
-                                            : const Color(0xff8f7d86),
-                                        size: 21,
-                                      ),
                                     ),
+                                  )
+                                : enabled
+                                    ? const Icon(
+                                        Icons.arrow_upward_rounded,
+                                        key: ValueKey('send'),
+                                        color: Colors.white,
+                                        size: 21,
+                                      )
+                                    : AnimatedRotation(
+                                        turns: accessoryPanelOpen ? 0.125 : 0,
+                                        duration:
+                                            const Duration(milliseconds: 180),
+                                        child: Icon(
+                                          Icons.add_rounded,
+                                          key: const ValueKey('accessory'),
+                                          color: accessoryPanelOpen
+                                              ? Colors.white
+                                              : const Color(0xff8f7d86),
+                                          size: 21,
+                                        ),
+                                      ),
+                          ),
                         ),
                       ),
                     );
@@ -4939,14 +5548,17 @@ class _ComposerIconButton extends StatelessWidget {
           child: InkWell(
             onTap: enabled ? onPressed : null,
             customBorder: const CircleBorder(),
-            child: SizedBox(
-              width: 36,
-              height: 40,
-              child: Center(
-                child: _GradientIcon(
-                  icon: icon,
-                  size: 20,
-                  enabled: enabled,
+            child: Transform.translate(
+              offset: const Offset(0, -1),
+              child: SizedBox(
+                width: 36,
+                height: 40,
+                child: Center(
+                  child: _GradientIcon(
+                    icon: icon,
+                    size: 20,
+                    enabled: enabled,
+                  ),
                 ),
               ),
             ),
@@ -5626,55 +6238,163 @@ class _LockScreen extends StatelessWidget {
 }
 
 class _ProfileSheet extends StatelessWidget {
-  const _ProfileSheet();
+  const _ProfileSheet({
+    required this.moodAsset,
+    required this.moodLabel,
+    required this.recentPhotos,
+    required this.api,
+  });
+
+  final String moodAsset;
+  final String moodLabel;
+  final List<ChatMessage> recentPhotos;
+  final XiaoyouApi? api;
+
+  List<ImageProvider<Object>> _recentImages() {
+    final images = <ImageProvider<Object>>[];
+    for (final message in recentPhotos) {
+      if (message.localPath.isNotEmpty &&
+          File(message.localPath).existsSync()) {
+        images.add(FileImage(File(message.localPath)));
+        continue;
+      }
+      if (message.mediaId.isNotEmpty && api != null) {
+        images.add(
+          NetworkImage(
+            api!.mediaUrl(message.mediaId),
+            headers: api!.mediaHeaders,
+          ),
+        );
+        continue;
+      }
+      if (message.remoteUrl.isNotEmpty) {
+        images.add(NetworkImage(message.remoteUrl));
+      }
+    }
+    return images;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final recentImages = _recentImages();
+    const moodAssets = [
+      'assets/moods/平静.png',
+      'assets/moods/开心.png',
+      'assets/moods/惊讶.png',
+      'assets/moods/愤怒.png',
+      'assets/moods/无语.png',
+      'assets/moods/难过.png',
+    ];
     return Material(
       color: _canvas,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
       clipBehavior: Clip.antiAlias,
       child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 14, 20, 34),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              height: 250,
-              width: double.infinity,
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xffffedf5),
-                    Color(0xfff3e4ef),
-                    Color(0xfffff8f5),
-                  ],
-                ),
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: const Color(0xffddcfd6),
+                borderRadius: BorderRadius.circular(99),
               ),
-              child: const Center(
-                child: Hero(
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                const Hero(
                   tag: 'xiaoyou-avatar',
-                  child: _Avatar(size: 190),
+                  child: _Avatar(size: 54),
                 ),
+                const SizedBox(width: 12),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '小悠',
+                        style: TextStyle(
+                          color: _ink,
+                          fontSize: 23,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        'YoYo 的女朋友 · 长期相伴中',
+                        style: TextStyle(color: _muted, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xffffeef6),
+                    borderRadius: BorderRadius.circular(18),
+                  ),
+                  child: const Padding(
+                    padding: EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 7,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.favorite_rounded,
+                          color: Color(0xffc36d98),
+                          size: 14,
+                        ),
+                        SizedBox(width: 5),
+                        Text(
+                          '相伴中',
+                          style: TextStyle(
+                            color: _roseDark,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 22),
+            _ProfilePanel(
+              title: '小悠现在的心情',
+              subtitle: '根据你们最近的相处状态自然变化',
+              icon: Icons.auto_awesome_rounded,
+              child: Column(
+                children: [
+                  _MoodCarousel(
+                    assets: moodAssets,
+                    currentAsset: moodAsset,
+                    moodLabel: moodLabel,
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 24),
-            const Text(
-              '小悠',
-              style: TextStyle(
-                color: _ink,
-                fontSize: 26,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 7),
-            const Text(
-              'YoYo 的女朋友 · 长期相伴中',
-              style: TextStyle(color: _muted),
+            const SizedBox(height: 14),
+            _ProfilePanel(
+              title: '最近的小悠',
+              subtitle: recentImages.isEmpty ? '她还没有在这里分享图片' : '最近分享的 6 张日常',
+              icon: Icons.photo_library_outlined,
+              child: recentImages.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 22),
+                      child: Text(
+                        '等她下一次把日常递到你面前吧～',
+                        style: TextStyle(color: _muted),
+                      ),
+                    )
+                  : _LeafPhotoDeck(images: recentImages),
             ),
             const Padding(
-              padding: EdgeInsets.fromLTRB(30, 22, 30, 32),
+              padding: EdgeInsets.fromLTRB(12, 20, 12, 0),
               child: Text(
                 '微信与 App 只是不同的见面方式。她的记忆、关系状态和已经发生过的日常，仍然属于同一个小悠。',
                 textAlign: TextAlign.center,
@@ -5683,6 +6403,965 @@ class _ProfileSheet extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _MoodCarousel extends StatefulWidget {
+  const _MoodCarousel({
+    required this.assets,
+    required this.currentAsset,
+    required this.moodLabel,
+  });
+
+  final List<String> assets;
+  final String currentAsset;
+  final String moodLabel;
+
+  @override
+  State<_MoodCarousel> createState() => _MoodCarouselState();
+}
+
+class _MoodCarouselState extends State<_MoodCarousel> {
+  static const _carouselAnchor = 6000;
+  late final PageController _controller;
+  late double _page;
+
+  int get _currentMoodIndex {
+    final index = widget.assets.indexOf(widget.currentAsset);
+    return index < 0 ? 0 : index;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final initialPage = _carouselAnchor + _currentMoodIndex;
+    _page = initialPage.toDouble();
+    _controller = PageController(
+      initialPage: initialPage,
+      viewportFraction: 0.72,
+    )..addListener(_handleScroll);
+  }
+
+  void _handleScroll() {
+    if (!_controller.hasClients) {
+      return;
+    }
+    final page = _controller.page;
+    if (page != null && mounted) {
+      setState(() => _page = page);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _MoodCarousel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.currentAsset != widget.currentAsset &&
+        _controller.hasClients) {
+      final currentPage = _controller.page?.round() ?? _carouselAnchor;
+      final cycleStart =
+          currentPage - _positiveModulo(currentPage, widget.assets.length);
+      var destination = cycleStart + _currentMoodIndex;
+      if (destination - currentPage > widget.assets.length / 2) {
+        destination -= widget.assets.length;
+      } else if (currentPage - destination > widget.assets.length / 2) {
+        destination += widget.assets.length;
+      }
+      _controller.animateToPage(
+        destination,
+        duration: const Duration(milliseconds: 680),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller
+      ..removeListener(_handleScroll)
+      ..dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleIndex = _positiveModulo(
+      _page.round(),
+      widget.assets.length,
+    );
+    return Column(
+      children: [
+        SizedBox(
+          height: 284,
+          child: PageView.builder(
+            controller: _controller,
+            physics: const BouncingScrollPhysics(),
+            itemBuilder: (context, index) {
+              final assetIndex = _positiveModulo(index, widget.assets.length);
+              final distance = (_page - index).abs().clamp(0.0, 1.0);
+              final scale = 1 - (distance * 0.12);
+              final opacity = 1 - (distance * 0.24);
+              final isCurrentMood = assetIndex == _currentMoodIndex;
+              return Center(
+                child: Transform.scale(
+                  scale: scale,
+                  child: Opacity(
+                    opacity: opacity,
+                    child: _ConstellationMoodCard(
+                      asset: widget.assets[assetIndex],
+                      selected: isCurrentMood,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 7),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(widget.assets.length, (index) {
+            final active = index == visibleIndex;
+            final currentMood = index == _currentMoodIndex;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 260),
+              curve: Curves.easeOutCubic,
+              width: active ? 22 : 7,
+              height: 7,
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              decoration: BoxDecoration(
+                gradient: active
+                    ? const LinearGradient(
+                        colors: [Color(0xffd987b1), Color(0xff8f78cf)],
+                      )
+                    : null,
+                color: active
+                    ? null
+                    : currentMood
+                        ? const Color(0xffd99ab9)
+                        : const Color(0xffe7dae1),
+                borderRadius: BorderRadius.circular(99),
+                boxShadow: active
+                    ? const [
+                        BoxShadow(
+                          color: Color(0x4dbe75a2),
+                          blurRadius: 8,
+                        ),
+                      ]
+                    : null,
+              ),
+            );
+          }),
+        ),
+        const SizedBox(height: 13),
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xffffedf5), Color(0xfff0eafa)],
+            ),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: const Color(0xbfffffff)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x1f9f4f79),
+                blurRadius: 12,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 8),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Color(0xffb26795),
+                  size: 15,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '此刻 · ${widget.moodLabel}',
+                  style: const TextStyle(
+                    color: _roseDark,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  int _positiveModulo(int value, int divisor) {
+    final remainder = value % divisor;
+    return remainder < 0 ? remainder + divisor : remainder;
+  }
+}
+
+class _ConstellationMoodCard extends StatefulWidget {
+  const _ConstellationMoodCard({
+    required this.asset,
+    required this.selected,
+  });
+
+  final String asset;
+  final bool selected;
+
+  @override
+  State<_ConstellationMoodCard> createState() => _ConstellationMoodCardState();
+}
+
+class _ConstellationMoodCardState extends State<_ConstellationMoodCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 4200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final float = sin(_controller.value * pi * 2) * 3.5;
+        return Transform.translate(
+          offset: Offset(0, float),
+          child: SizedBox(
+            width: 214,
+            height: 258,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                if (widget.selected)
+                  Positioned.fill(
+                    child: ImageFiltered(
+                      imageFilter: ImageFilter.blur(sigmaX: 13, sigmaY: 13),
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(32),
+                          gradient: SweepGradient(
+                            transform: GradientRotation(
+                              _controller.value * pi * 2,
+                            ),
+                            colors: const [
+                              Color(0x66ffd0e6),
+                              Color(0x668e7bd7),
+                              Color(0x66ffe8b4),
+                              Color(0x66ffd0e6),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                CustomPaint(
+                  painter: _ConstellationFramePainter(
+                    progress: _controller.value,
+                    selected: widget.selected,
+                  ),
+                  child: Container(
+                    margin: const EdgeInsets.all(10),
+                    padding: EdgeInsets.all(widget.selected ? 7 : 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.9),
+                      borderRadius: BorderRadius.circular(27),
+                      border: Border.all(
+                        color: widget.selected
+                            ? const Color(0xfffff2d1)
+                            : const Color(0xffeadde4),
+                        width: widget.selected ? 1.3 : 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: widget.selected
+                              ? const Color(0x3d865b9f)
+                              : const Color(0x24572a40),
+                          blurRadius: widget.selected ? 25 : 14,
+                          offset: const Offset(0, 11),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(21),
+                      child: Image.asset(
+                        widget.asset,
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const ColoredBox(
+                          color: Color(0xfffff3f8),
+                          child: Center(
+                            child: Icon(
+                              Icons.auto_awesome_rounded,
+                              color: _rose,
+                              size: 40,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                if (widget.selected)
+                  Positioned(
+                    right: 1,
+                    top: 18,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xffd57fa9), Color(0xff8574c4)],
+                        ),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.9),
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x4a875f9e),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: const Padding(
+                        padding:
+                            EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.star_rounded,
+                              color: Color(0xfffff1bd),
+                              size: 12,
+                            ),
+                            SizedBox(width: 3),
+                            Text(
+                              '当前',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ConstellationFramePainter extends CustomPainter {
+  const _ConstellationFramePainter({
+    required this.progress,
+    required this.selected,
+  });
+
+  final double progress;
+  final bool selected;
+
+  static const _stars = [
+    Offset(0.10, 0.18),
+    Offset(0.24, 0.05),
+    Offset(0.55, 0.035),
+    Offset(0.84, 0.13),
+    Offset(0.96, 0.39),
+    Offset(0.92, 0.72),
+    Offset(0.76, 0.96),
+    Offset(0.42, 0.98),
+    Offset(0.12, 0.85),
+    Offset(0.035, 0.55),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final borderRect = rect.deflate(4);
+    final border = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = selected ? 2.2 : 1
+      ..shader = SweepGradient(
+        transform: GradientRotation(progress * pi * 2),
+        colors: selected
+            ? const [
+                Color(0xffffd7e7),
+                Color(0xff9c83da),
+                Color(0xffffe6a7),
+                Color(0xffd77da9),
+                Color(0xffffd7e7),
+              ]
+            : const [
+                Color(0xffeadce4),
+                Color(0xfff7edf2),
+                Color(0xffeadce4),
+              ],
+      ).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(borderRect, const Radius.circular(31)),
+      border,
+    );
+    if (!selected) {
+      return;
+    }
+
+    final points = _stars
+        .map((point) => Offset(point.dx * size.width, point.dy * size.height))
+        .toList(growable: false);
+    final linePaint = Paint()
+      ..color = const Color(0x5ca58cc5)
+      ..strokeWidth = 0.8;
+    for (var i = 0; i < points.length - 1; i++) {
+      canvas.drawLine(points[i], points[i + 1], linePaint);
+    }
+    for (var i = 0; i < points.length; i++) {
+      final twinkle = 0.55 + sin((progress * pi * 2) + i * 0.93).abs() * 0.8;
+      final glow = Paint()
+        ..color = const Color(0x55ffe6b0)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
+      canvas.drawCircle(points[i], 3.1 * twinkle, glow);
+      final star = Paint()
+        ..color = i.isEven ? const Color(0xfffff0bf) : const Color(0xfff7cfeb);
+      canvas.drawCircle(points[i], 1.35 * twinkle, star);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConstellationFramePainter oldDelegate) =>
+      oldDelegate.progress != progress || oldDelegate.selected != selected;
+}
+
+class _LeafPhotoDeck extends StatefulWidget {
+  const _LeafPhotoDeck({required this.images});
+
+  final List<ImageProvider<Object>> images;
+
+  @override
+  State<_LeafPhotoDeck> createState() => _LeafPhotoDeckState();
+}
+
+class _LeafPhotoDeckState extends State<_LeafPhotoDeck>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 5200),
+  )..repeat();
+  int _selectedIndex = 0;
+
+  static const _anchors = [
+    Offset(0.01, 0.05),
+    Offset(0.72, 0.02),
+    Offset(0.34, 0.32),
+    Offset(0.75, 0.43),
+    Offset(0.02, 0.68),
+    Offset(0.47, 0.72),
+  ];
+  static const _angles = [-0.12, 0.10, -0.065, 0.125, 0.075, -0.095];
+
+  @override
+  void didUpdateWidget(covariant _LeafPhotoDeck oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_selectedIndex >= widget.images.length) {
+      _selectedIndex = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final cardWidth = (width * 0.36).clamp(104.0, 126.0).toDouble();
+        final cardHeight = cardWidth * 1.32;
+        const deckHeight = 372.0;
+        final order = <int>[
+          for (var i = 0; i < widget.images.length; i++)
+            if (i != _selectedIndex) i,
+          _selectedIndex,
+        ];
+        return Column(
+          children: [
+            SizedBox(
+              width: width,
+              height: deckHeight,
+              child: AnimatedBuilder(
+                animation: _controller,
+                builder: (context, child) {
+                  return Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Positioned.fill(
+                        child: CustomPaint(
+                          painter: _WaterSurfacePainter(
+                            progress: _controller.value,
+                          ),
+                        ),
+                      ),
+                      for (final index in order)
+                        _buildLeaf(
+                          index: index,
+                          width: width,
+                          cardWidth: cardWidth,
+                          cardHeight: cardHeight,
+                        ),
+                    ],
+                  );
+                },
+              ),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 320),
+              transitionBuilder: (child, animation) => FadeTransition(
+                opacity: animation,
+                child: SlideTransition(
+                  position: Tween<Offset>(
+                    begin: const Offset(0, 0.2),
+                    end: Offset.zero,
+                  ).animate(animation),
+                  child: child,
+                ),
+              ),
+              child: Text(
+                '第 ${_selectedIndex + 1} 张 · 轻触照片让她浮到水面',
+                key: ValueKey(_selectedIndex),
+                style: const TextStyle(
+                  color: _muted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildLeaf({
+    required int index,
+    required double width,
+    required double cardWidth,
+    required double cardHeight,
+  }) {
+    final anchor = _anchors[index % _anchors.length];
+    final selected = index == _selectedIndex;
+    final wave = sin((_controller.value * pi * 2) + index * 1.17);
+    final sway = cos((_controller.value * pi * 2) + index * 0.81);
+    final left = anchor.dx * max(0, width - cardWidth);
+    final top = anchor.dy * 228;
+    return Positioned(
+      left: left,
+      top: top,
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedIndex = index),
+        child: AnimatedScale(
+          scale: selected ? 1.10 : 0.94,
+          duration: const Duration(milliseconds: 480),
+          curve: Curves.easeOutBack,
+          child: Transform.translate(
+            offset: Offset(sway * 2.4, wave * (selected ? 4.5 : 3.2)),
+            child: Transform.rotate(
+              angle: _angles[index % _angles.length] + sway * 0.009,
+              child: SizedBox(
+                width: cardWidth + 18,
+                height: cardHeight + 18,
+                child: CustomPaint(
+                  painter: _SelectedPhotoHaloPainter(
+                    progress: _controller.value,
+                    selected: selected,
+                  ),
+                  child: Container(
+                    margin: const EdgeInsets.all(9),
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(34),
+                        topRight: const Radius.circular(21),
+                        bottomLeft: const Radius.circular(19),
+                        bottomRight: const Radius.circular(36),
+                      ),
+                      border: Border.all(
+                        color: selected
+                            ? Colors.white
+                            : Colors.white.withValues(alpha: 0.78),
+                        width: selected ? 1.8 : 1,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: selected
+                              ? const Color(0x4d74467d)
+                              : const Color(0x275b3b50),
+                          blurRadius: selected ? 27 : 17,
+                          spreadRadius: selected ? 2 : 0,
+                          offset: Offset(0, selected ? 13 : 8),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.only(
+                        topLeft: Radius.circular(29),
+                        topRight: Radius.circular(17),
+                        bottomLeft: Radius.circular(15),
+                        bottomRight: Radius.circular(31),
+                      ),
+                      child: Image(
+                        image: widget.images[index],
+                        fit: BoxFit.cover,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const ColoredBox(
+                          color: Color(0xfffff1f6),
+                          child: Center(
+                            child: Icon(
+                              Icons.image_not_supported_outlined,
+                              color: _muted,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WaterSurfacePainter extends CustomPainter {
+  const _WaterSurfacePainter({required this.progress});
+
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final wash = Paint()
+      ..shader = const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color(0x1ff7dceb),
+          Color(0x22dce8f1),
+          Color(0x1ff0e4fa),
+        ],
+      ).createShader(Offset.zero & size);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        (Offset.zero & size).deflate(2),
+        const Radius.circular(28),
+      ),
+      wash,
+    );
+    for (var i = 0; i < 4; i++) {
+      final phase = (progress + i * 0.23) % 1;
+      final center = Offset(
+        size.width * (0.18 + i * 0.22),
+        size.height * (0.25 + (i.isEven ? 0.22 : 0.45)),
+      );
+      final ripple = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1
+        ..color = Color.fromRGBO(181, 139, 174, (1 - phase) * 0.16);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: center,
+          width: 35 + phase * 105,
+          height: 10 + phase * 30,
+        ),
+        ripple,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WaterSurfacePainter oldDelegate) =>
+      oldDelegate.progress != progress;
+}
+
+class _SelectedPhotoHaloPainter extends CustomPainter {
+  const _SelectedPhotoHaloPainter({
+    required this.progress,
+    required this.selected,
+  });
+
+  final double progress;
+  final bool selected;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (!selected) {
+      return;
+    }
+    final rect = (Offset.zero & size).deflate(2);
+    final glow = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 7
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 7)
+      ..shader = SweepGradient(
+        transform: GradientRotation(progress * pi * 2),
+        colors: const [
+          Color(0x99f49ac2),
+          Color(0x998b7bd3),
+          Color(0x99ffe1a8),
+          Color(0x99ffffff),
+          Color(0x99f49ac2),
+        ],
+      ).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(37)),
+      glow,
+    );
+    final ring = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.4
+      ..shader = SweepGradient(
+        transform: GradientRotation(progress * pi * 2),
+        colors: const [
+          Color(0xffffa9ce),
+          Color(0xff8f7bd3),
+          Color(0xffffe1a0),
+          Color(0xffffa9ce),
+        ],
+      ).createShader(rect);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(37)),
+      ring,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _SelectedPhotoHaloPainter oldDelegate) =>
+      oldDelegate.progress != progress || oldDelegate.selected != selected;
+}
+
+class _ProfilePanel extends StatelessWidget {
+  const _ProfilePanel({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.child,
+  });
+
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xffffffff), Color(0xfffff6fb)],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xe8ffffff)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14572a40),
+            blurRadius: 18,
+            offset: Offset(0, 7),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xffffe4f0), Color(0xfff2e8fb)],
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(9),
+                    child: Icon(icon, color: _rose, size: 19),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          color: _ink,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        subtitle,
+                        style: const TextStyle(color: _muted, fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FloatingPhotoCard extends StatefulWidget {
+  const _FloatingPhotoCard({
+    required this.image,
+    required this.width,
+    required this.height,
+    required this.phase,
+    required this.fit,
+  });
+
+  final ImageProvider<Object> image;
+  final double width;
+  final double height;
+  final double phase;
+  final BoxFit fit;
+
+  @override
+  State<_FloatingPhotoCard> createState() => _FloatingPhotoCardState();
+}
+
+class _FloatingPhotoCardState extends State<_FloatingPhotoCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 3200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: widget.width,
+      height: widget.height + 24,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          final wave = sin((_controller.value + widget.phase) * pi * 2);
+          final rippleScale = 0.92 + (wave.abs() * 0.07);
+          return Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.topCenter,
+            children: [
+              Positioned(
+                left: widget.width * 0.13,
+                right: widget.width * 0.13,
+                bottom: 1,
+                child: Transform.scale(
+                  scaleX: rippleScale,
+                  child: ImageFiltered(
+                    imageFilter: ImageFilter.blur(sigmaX: 7, sigmaY: 3),
+                    child: Container(
+                      height: 16,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.rectangle,
+                        borderRadius: BorderRadius.circular(99),
+                        gradient: RadialGradient(
+                          colors: [
+                            const Color(0xffc18eaf).withValues(alpha: 0.25),
+                            const Color(0xffe7d3e1).withValues(alpha: 0.03),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              Transform.translate(
+                offset: Offset(0, wave * 4.6),
+                child: Transform.rotate(
+                  angle: wave * 0.004,
+                  child: Container(
+                    width: widget.width,
+                    height: widget.height,
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.88),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.95),
+                        width: 1.2,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x2a6c415a),
+                          blurRadius: 24,
+                          offset: Offset(0, 13),
+                          spreadRadius: 1,
+                        ),
+                        BoxShadow(
+                          color: Color(0x20ffffff),
+                          blurRadius: 3,
+                          offset: Offset(0, -1),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image(
+                        image: widget.image,
+                        width: widget.width,
+                        height: widget.height,
+                        fit: widget.fit,
+                        errorBuilder: (context, error, stackTrace) =>
+                            const Center(
+                          child: Icon(
+                            Icons.image_not_supported_outlined,
+                            color: _muted,
+                            size: 28,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

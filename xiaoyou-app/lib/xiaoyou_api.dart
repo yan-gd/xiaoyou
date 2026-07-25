@@ -61,6 +61,15 @@ class XiaoyouApi {
     );
   }
 
+  Future<Map<String, dynamic>> profile() async {
+    final payload = await _request(
+      'GET',
+      '/v1/profile',
+      query: {'device_id': deviceId},
+    );
+    return payload;
+  }
+
   Future<bool> sendText({
     required String messageId,
     required String text,

@@ -7,8 +7,10 @@ import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.provider.MediaStore
 import android.provider.Settings
+import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -61,6 +63,22 @@ class MainActivity : FlutterFragmentActivity() {
         ).setMethodCallHandler { call, result ->
             when (call.method) {
                 "notificationsEnabled" -> result.success(notificationsEnabled())
+                "batteryOptimizationIgnored" ->
+                    result.success(batteryOptimizationIgnored())
+                "openBatteryOptimizationSettings" -> {
+                    val directIntent = Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName"),
+                    )
+                    try {
+                        startActivity(directIntent)
+                    } catch (_: Throwable) {
+                        startActivity(
+                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                        )
+                    }
+                    result.success(null)
+                }
                 "requestNotificationPermission" -> requestNotificationPermission(result)
                 "openNotificationSettings" -> {
                     val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
@@ -99,6 +117,14 @@ class MainActivity : FlutterFragmentActivity() {
                     Manifest.permission.POST_NOTIFICATIONS,
                 ) == PackageManager.PERMISSION_GRANTED
         return appNotificationsEnabled && runtimePermissionGranted
+    }
+
+    private fun batteryOptimizationIgnored(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return true
+        }
+        val powerManager = getSystemService(PowerManager::class.java)
+        return powerManager?.isIgnoringBatteryOptimizations(packageName) == true
     }
 
     private fun requestNotificationPermission(result: MethodChannel.Result) {

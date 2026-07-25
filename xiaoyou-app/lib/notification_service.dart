@@ -83,6 +83,25 @@ class AppNotificationService {
     return false;
   }
 
+  Future<bool> batteryOptimizationIgnored() async {
+    if (!Platform.isAndroid) {
+      return true;
+    }
+    return await _systemChannel
+            .invokeMethod<bool>('batteryOptimizationIgnored')
+            .timeout(const Duration(seconds: 5)) ??
+        false;
+  }
+
+  Future<void> openBatteryOptimizationSettings() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    await _systemChannel
+        .invokeMethod<void>('openBatteryOptimizationSettings')
+        .timeout(const Duration(seconds: 5));
+  }
+
   Future<void> openNotificationSettings() async {
     if (!Platform.isAndroid) {
       return;

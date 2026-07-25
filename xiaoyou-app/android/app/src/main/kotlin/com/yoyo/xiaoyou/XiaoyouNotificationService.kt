@@ -5,12 +5,14 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -26,6 +28,8 @@ class XiaoyouNotificationService : Service() {
     companion object {
         private const val TAG = "XiaoyouNotify"
         private const val ACTION_CONFIGURE = "com.yoyo.xiaoyou.notification.CONFIGURE"
+        internal const val ACTION_RESTORE = "com.yoyo.xiaoyou.notification.RESTORE"
+        internal const val ACTION_RESTART = "com.yoyo.xiaoyou.notification.RESTART"
         private const val EXTRA_BASE_URL = "base_url"
         private const val EXTRA_TOKEN = "token"
         private const val EXTRA_DEVICE_ID = "device_id"
@@ -37,6 +41,16 @@ class XiaoyouNotificationService : Service() {
         private const val SERVICE_CHANNEL_ID = "xiaoyou_background_delivery_v1"
         private const val SERVICE_NOTIFICATION_ID = 41001
         private const val MESSAGE_NOTIFICATION_BASE = 42000
+        private const val RESTART_REQUEST_CODE = 41002
+        private const val PREFERENCES_NAME = "xiaoyou_background_notifications"
+        private const val KEY_ENABLED = "enabled"
+        private const val KEY_BASE_URL = "base_url"
+        private const val KEY_TOKEN = "token"
+        private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_FOREGROUND = "app_foreground"
+        private const val KEY_PREVIEW = "preview"
+        private const val KEY_SOUND = "sound"
+        private const val KEY_VIBRATION = "vibration"
         private const val POLL_DELAY_MS = 4_000L
         private const val ERROR_DELAY_MS = 9_000L
 
@@ -59,20 +73,88 @@ class XiaoyouNotificationService : Service() {
                 putExtra(EXTRA_SEQUENCE, sequence)
                 putExtra(EXTRA_FOREGROUND, appForeground)
                 putExtra(EXTRA_PREVIEW, preview)
-                putExtra(EXTRA_SOUND, sound)
-                putExtra(EXTRA_VIBRATION, vibration)
+            putExtra(EXTRA_SOUND, sound)
+            putExtra(EXTRA_VIBRATION, vibration)
             }
+            persistConfiguration(
+                context = context,
+                baseUrl = baseUrl,
+                token = token,
+                deviceId = deviceId,
+                appForeground = appForeground,
+                preview = preview,
+                sound = sound,
+                vibration = vibration,
+                enabled = true,
+            )
             ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {
+            context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            ).edit().putBoolean(KEY_ENABLED, false).apply()
             context.stopService(Intent(context, XiaoyouNotificationService::class.java))
+        }
+
+        internal fun startIfEnabled(context: Context) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            if (!preferences.getBoolean(KEY_ENABLED, false)) {
+                return
+            }
+            val baseUrl = preferences.getString(KEY_BASE_URL, "").orEmpty()
+            val token = preferences.getString(KEY_TOKEN, "").orEmpty()
+            val deviceId = preferences.getString(KEY_DEVICE_ID, "").orEmpty()
+            if (baseUrl.isBlank() || token.isBlank() || deviceId.isBlank()) {
+                Log.w(TAG, "Cannot restore background service without connection config")
+                return
+            }
+            try {
+                ContextCompat.startForegroundService(
+                    context,
+                    Intent(context, XiaoyouNotificationService::class.java).apply {
+                        action = ACTION_RESTORE
+                    },
+                )
+            } catch (error: Throwable) {
+                Log.w(TAG, "Unable to restore background notification service", error)
+            }
+        }
+
+        private fun persistConfiguration(
+            context: Context,
+            baseUrl: String,
+            token: String,
+            deviceId: String,
+            appForeground: Boolean,
+            preview: Boolean,
+            sound: Boolean,
+            vibration: Boolean,
+            enabled: Boolean,
+        ) {
+            context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            ).edit()
+                .putBoolean(KEY_ENABLED, enabled)
+                .putString(KEY_BASE_URL, baseUrl.trim().trimEnd('/'))
+                .putString(KEY_TOKEN, token.trim())
+                .putString(KEY_DEVICE_ID, deviceId.trim())
+                .putBoolean(KEY_FOREGROUND, appForeground)
+                .putBoolean(KEY_PREVIEW, preview)
+                .putBoolean(KEY_SOUND, sound)
+                .putBoolean(KEY_VIBRATION, vibration)
+                .apply()
         }
     }
 
     private val executor = Executors.newSingleThreadExecutor()
     private val cursorPreferences by lazy {
-        getSharedPreferences("xiaoyou_background_notifications", Context.MODE_PRIVATE)
+        getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     }
 
     @Volatile
@@ -111,18 +193,33 @@ class XiaoyouNotificationService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_CONFIGURE -> configureFrom(intent)
+            ACTION_RESTORE -> restoreConfiguration(forceBackground = true)
+            else -> restoreConfiguration(forceBackground = false)
         }
         if (!running) {
             running = true
             executor.execute(::pollLoop)
         }
-        return START_REDELIVER_INTENT
+        // All connection details are persisted locally, so a null restart intent
+        // can still recover after process eviction.
+        return START_STICKY
     }
 
     override fun onDestroy() {
         running = false
         executor.shutdownNow()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // A task swipe can remove the Flutter activity without delivering the
+        // paused callback reliably. The foreground service must then become a
+        // real background poller instead of waiting forever in its foreground
+        // state. Persist this transition so a sticky restart keeps polling.
+        appForeground = false
+        cursorPreferences.edit().putBoolean(KEY_FOREGROUND, false).apply()
+        scheduleRestart()
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -136,6 +233,17 @@ class XiaoyouNotificationService : Service() {
         showPreview = intent.getBooleanExtra(EXTRA_PREVIEW, true)
         playSound = intent.getBooleanExtra(EXTRA_SOUND, true)
         vibrate = intent.getBooleanExtra(EXTRA_VIBRATION, true)
+        persistConfiguration(
+            context = this,
+            baseUrl = baseUrl,
+            token = token,
+            deviceId = deviceId,
+            appForeground = appForeground,
+            preview = showPreview,
+            sound = playSound,
+            vibration = vibrate,
+            enabled = true,
+        )
         val restored = if (nextDeviceId.isEmpty()) {
             0L
         } else {
@@ -146,6 +254,30 @@ class XiaoyouNotificationService : Service() {
             intent.getLongExtra(EXTRA_SEQUENCE, 0L),
         )
         persistCursor()
+    }
+
+    private fun restoreConfiguration(forceBackground: Boolean) {
+        val preferences = cursorPreferences
+        if (!preferences.getBoolean(KEY_ENABLED, false)) {
+            return
+        }
+        baseUrl = preferences.getString(KEY_BASE_URL, "").orEmpty().trim().trimEnd('/')
+        token = preferences.getString(KEY_TOKEN, "").orEmpty().trim()
+        deviceId = preferences.getString(KEY_DEVICE_ID, "").orEmpty().trim()
+        appForeground = if (forceBackground) {
+            false
+        } else {
+            preferences.getBoolean(KEY_FOREGROUND, false)
+        }
+        showPreview = preferences.getBoolean(KEY_PREVIEW, true)
+        playSound = preferences.getBoolean(KEY_SOUND, true)
+        vibrate = preferences.getBoolean(KEY_VIBRATION, true)
+        if (deviceId.isNotEmpty()) {
+            sequence = max(
+                sequence,
+                preferences.getLong(cursorKey(deviceId), 0L),
+            )
+        }
     }
 
     private fun pollLoop() {
@@ -213,6 +345,24 @@ class XiaoyouNotificationService : Service() {
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun scheduleRestart() {
+        val restartIntent = Intent(this, XiaoyouNotificationReceiver::class.java).apply {
+            action = ACTION_RESTART
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            this,
+            RESTART_REQUEST_CODE,
+            restartIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val alarmManager = getSystemService(AlarmManager::class.java) ?: return
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            SystemClock.elapsedRealtime() + 2_000L,
+            pendingIntent,
+        )
     }
 
     private fun showMessageNotification(event: JSONObject, eventSequence: Long) {

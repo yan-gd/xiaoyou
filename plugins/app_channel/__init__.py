@@ -59,6 +59,85 @@ DATABASE_PATH = runtime_path(
 MEDIA_DIR = Path(appdata_root()) / "app_channel" / "media"
 
 
+def _mood_descriptor(state):
+    """Map the model-maintained affect vector to a visual mood asset.
+
+    This is presentation-only: it never participates in routing, prompting or
+    reply decisions. The scores remain continuous and are derived from the
+    inner-state dimensions rather than matching message keywords.
+    """
+    values = {
+        key: float(state.get(key) or 0.0)
+        for key in (
+            "mood_valence",
+            "energy",
+            "security",
+            "longing",
+            "playfulness",
+            "sensitivity",
+            "expression_drive",
+            "sharing_drive",
+            "interruption_caution",
+        )
+    }
+    scores = {
+        "calm": (
+            values["security"] * 0.52
+            + (1.0 - values["sensitivity"]) * 0.22
+            + (1.0 - values["playfulness"]) * 0.16
+            + values["mood_valence"] * 0.10
+        ),
+        "happy": (
+            values["mood_valence"] * 0.42
+            + values["energy"] * 0.22
+            + values["playfulness"] * 0.24
+            + values["security"] * 0.12
+        ),
+        "sad": (
+            (1.0 - values["mood_valence"]) * 0.50
+            + (1.0 - values["energy"]) * 0.22
+            + values["longing"] * 0.18
+            + values["sensitivity"] * 0.10
+        ),
+        "angry": (
+            values["sensitivity"] * 0.34
+            + values["interruption_caution"] * 0.30
+            + (1.0 - values["security"]) * 0.20
+            + (1.0 - values["mood_valence"]) * 0.16
+        ),
+        "surprised": (
+            values["expression_drive"] * 0.34
+            + values["energy"] * 0.26
+            + values["sensitivity"] * 0.18
+            + values["mood_valence"] * 0.14
+            + values["sharing_drive"] * 0.08
+        ),
+        "speechless": (
+            values["sensitivity"] * 0.32
+            + values["interruption_caution"] * 0.24
+            + (1.0 - values["playfulness"]) * 0.22
+            + (1.0 - values["expression_drive"]) * 0.12
+            + values["longing"] * 0.10
+        ),
+    }
+    key = max(scores, key=scores.get)
+    labels = {
+        "calm": ("平静", "平静.png"),
+        "happy": ("开心", "开心.png"),
+        "sad": ("难过", "难过.png"),
+        "angry": ("有点生气", "愤怒.png"),
+        "surprised": ("惊讶", "惊讶.png"),
+        "speechless": ("有点无语", "无语.png"),
+    }
+    label, asset = labels[key]
+    return {
+        "key": key,
+        "label": label,
+        "asset": asset,
+        "updated_at": int(state.get("last_updated_at") or 0),
+    }
+
+
 def _truthy(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -1402,6 +1481,21 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         query = parse_qs(parsed.query)
         device_id = (query.get("device_id") or [""])[0]
+        if parsed.path == "/v1/profile":
+            from plugins.xiaoyou_common.inner_state_service import (
+                get_inner_state_service,
+            )
+
+            state = get_inner_state_service().get(
+                self.plugin.canonical_session_id,
+            )
+            self._json(
+                200,
+                {
+                    "mood": _mood_descriptor(state),
+                },
+            )
+            return
         if parsed.path == "/v1/events":
             events = self.plugin.store.events_after(
                 device_id,

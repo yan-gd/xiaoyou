@@ -723,3 +723,47 @@ def test_outbound_dispatcher_queues_app_without_claiming_delivery(
     assert queued[0]["parts"] == ["第一句", "第二句"]
     assert queued[0]["device_id"] == "phone-1"
     assert dispatcher.resolve_receiver("yoyo", "") == ""
+
+
+def test_profile_mood_is_derived_from_affect_state_not_message_text(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+
+    calm = module._mood_descriptor(
+        {
+            "mood_valence": 0.62,
+            "energy": 0.55,
+            "security": 0.76,
+            "longing": 0.28,
+            "playfulness": 0.48,
+            "sensitivity": 0.24,
+            "expression_drive": 0.42,
+            "sharing_drive": 0.34,
+            "interruption_caution": 0.36,
+            "last_updated_at": 123,
+        }
+    )
+    happy = module._mood_descriptor(
+        {
+            "mood_valence": 0.96,
+            "energy": 0.90,
+            "security": 0.88,
+            "longing": 0.10,
+            "playfulness": 0.94,
+            "sensitivity": 0.08,
+            "expression_drive": 0.72,
+            "sharing_drive": 0.78,
+            "interruption_caution": 0.08,
+        }
+    )
+
+    assert calm == {
+        "key": "calm",
+        "label": "平静",
+        "asset": "平静.png",
+        "updated_at": 123,
+    }
+    assert happy["key"] == "happy"
+    assert happy["asset"] == "开心.png"
