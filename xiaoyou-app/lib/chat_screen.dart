@@ -3,12 +3,11 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:just_audio/just_audio.dart';
 import 'package:local_auth/local_auth.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'chat_models.dart';
 import 'media_save_service.dart';
@@ -17,11 +16,15 @@ import 'session_store.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
 
-const _rose = Color(0xff8f476f);
-const _roseDark = Color(0xff572940);
+const _rose = Color(0xff9f4f79);
+const _roseDark = Color(0xff5c3047);
 const _ink = Color(0xff30252b);
 const _muted = Color(0xff87777f);
-const _canvas = Color(0xfffff9fb);
+const _canvas = Color(0xfffffbfd);
+const _pearl = Color(0xfffffcfe);
+const _blush = Color(0xfff8eaf1);
+const _lavenderMist = Color(0xfff2effa);
+const _glassBorder = Color(0xd9ffffff);
 const _avatarAsset = 'assets/xiaoyou-avatar.png';
 
 class ChatScreen extends StatefulWidget {
@@ -40,6 +43,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _receivedActionEvents = <String, Set<String>>{};
   final _renderedActionEvents = <String, Set<String>>{};
   final _expectedActionEvents = <String, int>{};
+  final _favoriteMessageIds = <String>{};
   final _sessionStore = SessionStore();
   final _localAuth = LocalAuthentication();
   final _voiceRecorder = VoiceRecorderController();
@@ -260,15 +264,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     HapticFeedback.selectionClick();
   }
 
-  void _collapseEmojiPanel() {
-    if (!_emojiPanelOpen) {
-      return;
-    }
-    _composerFocus.unfocus();
-    setState(() => _emojiPanelOpen = false);
-    HapticFeedback.selectionClick();
-  }
-
   void _insertEmoji(String emoji) {
     final value = _composer.value;
     final selection = value.selection.isValid
@@ -290,12 +285,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final saved = await _sessionStore.loadConnection();
       final draft = await _sessionStore.readDraft();
       final preferences = await _sessionStore.loadPreferences();
+      final favoriteMessageIds = await _sessionStore.loadFavoriteMessageIds();
       if (!mounted) {
         return;
       }
       setState(() {
         _savedConnection = saved;
         _preferences = preferences;
+        _favoriteMessageIds
+          ..clear()
+          ..addAll(favoriteMessageIds);
         _lockEnabled = saved?.appLockEnabled ?? false;
         _locked = saved?.appLockEnabled ?? false;
         _booting = false;
@@ -1561,6 +1560,86 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
+  void _toggleFavorite(ChatMessage message) {
+    if (message.id.isEmpty) {
+      return;
+    }
+    final added = !_favoriteMessageIds.contains(message.id);
+    setState(() {
+      if (added) {
+        _favoriteMessageIds.add(message.id);
+      } else {
+        _favoriteMessageIds.remove(message.id);
+      }
+    });
+    unawaited(_sessionStore.saveFavoriteMessageIds(_favoriteMessageIds));
+    _showSnack(added ? '已收藏这条消息' : '已取消收藏');
+  }
+
+  Future<void> _openFavorites() async {
+    final favorites = _messages
+        .where((message) => _favoriteMessageIds.contains(message.id))
+        .toList()
+        .reversed
+        .toList();
+    if (favorites.isEmpty) {
+      _showSnack('还没有收藏的消息');
+      return;
+    }
+    final selected = await showModalBottomSheet<ChatMessage>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _FavoriteMessagesSheet(messages: favorites),
+    );
+    if (selected != null && mounted) {
+      _jumpToMessage(selected);
+    }
+  }
+
+  void _openConversationTools() {
+    final activeDays = _messages
+        .map((message) {
+          final date = message.timestamp;
+          return '${date.year}-${date.month}-${date.day}';
+        })
+        .toSet()
+        .length;
+    final mediaCount =
+        _messages.where((message) => message.kind != 'text').length;
+    showModalBottomSheet<void>(
+      context: context,
+      useSafeArea: true,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => _ConversationToolsSheet(
+        messageCount: _messages.length,
+        mediaCount: mediaCount,
+        activeDays: activeDays,
+        favoriteCount: _favoriteMessageIds
+            .where((id) => _messages.any((message) => message.id == id))
+            .length,
+        onLatest: () {
+          Navigator.pop(sheetContext);
+          _scrollToEnd();
+        },
+        onSearch: () {
+          Navigator.pop(sheetContext);
+          unawaited(_openSearch());
+        },
+        onFavorites: () {
+          Navigator.pop(sheetContext);
+          unawaited(_openFavorites());
+        },
+        onSettings: () {
+          Navigator.pop(sheetContext);
+          unawaited(_openSettings());
+        },
+      ),
+    );
+  }
+
   void _openProfile() {
     showModalBottomSheet<void>(
       context: context,
@@ -1705,166 +1784,191 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             child: child,
           );
         },
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: palette.background,
-            ),
-          ),
-          child: SafeArea(
-            child: Column(
-              children: [
-                _ConversationHeader(
-                  status: _status,
-                  connected: connected,
-                  onAvatarTap: _openProfile,
-                  onSearch: _openSearch,
-                  onSettings: () => unawaited(_openSettings()),
-                ),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 240),
-                  child: _status == '在线'
-                      ? const SizedBox.shrink(key: ValueKey('online'))
-                      : _ConnectionBanner(
-                          key: ValueKey(_status),
-                          status: _status,
-                          onRetry: () {
-                            final saved = _savedConnection;
-                            if (saved != null) {
-                              unawaited(_connectSaved(saved));
-                            }
-                          },
-                        ),
-                ),
-                Expanded(
-                  child: Stack(
-                    children: [
-                      Positioned.fill(
-                        child: _messages.isEmpty
-                            ? const _EmptyConversation()
-                            : ListView.builder(
-                                controller: _scrollController,
-                                keyboardDismissBehavior:
-                                    ScrollViewKeyboardDismissBehavior.onDrag,
-                                padding: EdgeInsets.fromLTRB(
-                                  12,
-                                  18,
-                                  12,
-                                  _awaitingReply ? 74 : 20,
-                                ),
-                                itemCount: _messages.length,
-                                itemBuilder: (context, index) {
-                                  final message = _messages[index];
-                                  final previous =
-                                      index > 0 ? _messages[index - 1] : null;
-                                  final next = index + 1 < _messages.length
-                                      ? _messages[index + 1]
-                                      : null;
-                                  return _MessageRow(
-                                    key: _messageKeys.putIfAbsent(
-                                      message.id,
-                                      GlobalKey.new,
-                                    ),
-                                    message: message,
-                                    api: _api,
-                                    userBubbleColor: palette.userBubble,
-                                    bubbleRadius: _preferences.bubbleRadius,
-                                    compact: _preferences.compactMessages,
-                                    highlighted:
-                                        _highlightedMessageId == message.id,
-                                    showDate: previous == null ||
-                                        !_sameDay(
-                                          previous.timestamp,
-                                          message.timestamp,
-                                        ),
-                                    beginsGroup: previous == null ||
-                                        previous.fromXiaoyou !=
-                                            message.fromXiaoyou ||
-                                        message.createdAt - previous.createdAt >
-                                            180,
-                                    showAvatar: message.fromXiaoyou &&
-                                        (next == null ||
-                                            !next.fromXiaoyou ||
-                                            next.createdAt - message.createdAt >
-                                                180),
-                                    animate:
-                                        index >= max(0, _messages.length - 12),
-                                    onRendered: _markEventRendered,
-                                    onFailedTap: _retryFailedMessage,
-                                    onReply: _replyToMessage,
-                                  );
-                                },
-                              ),
-                      ),
-                      if (_awaitingReply)
-                        const Positioned(
-                          left: 12,
-                          bottom: 10,
-                          child: _TypingIndicator(),
-                        ),
-                      if (_showJumpToBottom)
-                        Positioned(
-                          right: 14,
-                          bottom: 12,
-                          child: _JumpToBottomButton(
-                            count: _newMessageCount,
-                            onTap: _scrollToEnd,
-                          ),
-                        ),
-                    ],
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: palette.background,
+                    stops: const [0, 0.58, 1],
                   ),
                 ),
-                _Composer(
-                  controller: _composer,
-                  focusNode: _composerFocus,
-                  sending: _sending,
-                  connected: connected,
-                  voiceMode: _voiceMode,
-                  recording: _recording,
-                  recordingCancelling: _recordingCancelling,
-                  recordingDurationMs: _recordingDurationMs,
-                  recordingLevel: _recordingLevel,
-                  onSend: _send,
-                  onVoiceModeChanged: _setVoiceMode,
-                  onRecordStart: _startRecording,
-                  onRecordEnd: (cancel) => _finishRecording(cancel: cancel),
-                  onRecordCancelChanged: _setRecordingCancelling,
-                  onComposerTap: _handleComposerFocus,
-                  emojiPanelOpen: _emojiPanelOpen,
-                  accessoryPanelOpen: _accessoryPanelOpen,
-                  onEmoji: _toggleEmojiPanel,
-                  onAccessory: _toggleAccessoryPanel,
-                ),
-                AnimatedSize(
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
-                  child: _emojiPanelOpen
-                      ? _EmojiPanel(
-                          onSelected: _insertEmoji,
-                          onCollapse: _collapseEmojiPanel,
-                        )
-                      : _accessoryPanelOpen
-                          ? _AccessoryPanel(
-                              onGallery: () => _pickImage(
-                                source: ImageSource.gallery,
-                                sticker: false,
-                              ),
-                              onCamera: () => _pickImage(
-                                source: ImageSource.camera,
-                                sticker: false,
-                              ),
-                              onSticker: () => _pickImage(
-                                source: ImageSource.gallery,
-                                sticker: true,
-                              ),
-                            )
-                          : const SizedBox.shrink(),
-                ),
-              ],
+              ),
             ),
-          ),
+            const Positioned(
+              top: 88,
+              right: -96,
+              child: _SoftOrb(size: 250, color: Color(0x28e4a7c5)),
+            ),
+            const Positioned(
+              bottom: 80,
+              left: -110,
+              child: _SoftOrb(size: 280, color: Color(0x24c7b9eb)),
+            ),
+            Positioned.fill(
+              child: SafeArea(
+                child: Column(
+                  children: [
+                    _ConversationHeader(
+                      status: _status,
+                      connected: connected,
+                      onAvatarTap: _openProfile,
+                      onSearch: _openSearch,
+                      onSettings: _openConversationTools,
+                    ),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 240),
+                      child: _status == '在线'
+                          ? const SizedBox.shrink(key: ValueKey('online'))
+                          : _ConnectionBanner(
+                              key: ValueKey(_status),
+                              status: _status,
+                              onRetry: () {
+                                final saved = _savedConnection;
+                                if (saved != null) {
+                                  unawaited(_connectSaved(saved));
+                                }
+                              },
+                            ),
+                    ),
+                    Expanded(
+                      child: Stack(
+                        children: [
+                          Positioned.fill(
+                            child: _messages.isEmpty
+                                ? const _EmptyConversation()
+                                : ListView.builder(
+                                    controller: _scrollController,
+                                    keyboardDismissBehavior:
+                                        ScrollViewKeyboardDismissBehavior
+                                            .onDrag,
+                                    padding: EdgeInsets.fromLTRB(
+                                      14,
+                                      12,
+                                      14,
+                                      _awaitingReply ? 74 : 20,
+                                    ),
+                                    itemCount: _messages.length,
+                                    itemBuilder: (context, index) {
+                                      final message = _messages[index];
+                                      final previous = index > 0
+                                          ? _messages[index - 1]
+                                          : null;
+                                      final next = index + 1 < _messages.length
+                                          ? _messages[index + 1]
+                                          : null;
+                                      return _MessageRow(
+                                        key: _messageKeys.putIfAbsent(
+                                          message.id,
+                                          GlobalKey.new,
+                                        ),
+                                        message: message,
+                                        api: _api,
+                                        userBubbleColor: palette.userBubble,
+                                        bubbleRadius: _preferences.bubbleRadius,
+                                        compact: _preferences.compactMessages,
+                                        favorite: _favoriteMessageIds
+                                            .contains(message.id),
+                                        highlighted:
+                                            _highlightedMessageId == message.id,
+                                        showDate: previous == null ||
+                                            !_sameDay(
+                                              previous.timestamp,
+                                              message.timestamp,
+                                            ),
+                                        beginsGroup: previous == null ||
+                                            previous.fromXiaoyou !=
+                                                message.fromXiaoyou ||
+                                            message.createdAt -
+                                                    previous.createdAt >
+                                                180,
+                                        showAvatar: message.fromXiaoyou &&
+                                            (next == null ||
+                                                !next.fromXiaoyou ||
+                                                next.createdAt -
+                                                        message.createdAt >
+                                                    180),
+                                        animate: index >=
+                                            max(0, _messages.length - 12),
+                                        onRendered: _markEventRendered,
+                                        onFailedTap: _retryFailedMessage,
+                                        onReply: _replyToMessage,
+                                        onToggleFavorite: _toggleFavorite,
+                                      );
+                                    },
+                                  ),
+                          ),
+                          if (_awaitingReply)
+                            const Positioned(
+                              left: 12,
+                              bottom: 10,
+                              child: _TypingIndicator(),
+                            ),
+                          if (_showJumpToBottom)
+                            Positioned(
+                              right: 14,
+                              bottom: 12,
+                              child: _JumpToBottomButton(
+                                count: _newMessageCount,
+                                onTap: _scrollToEnd,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    _Composer(
+                      controller: _composer,
+                      focusNode: _composerFocus,
+                      sending: _sending,
+                      connected: connected,
+                      voiceMode: _voiceMode,
+                      recording: _recording,
+                      recordingCancelling: _recordingCancelling,
+                      recordingDurationMs: _recordingDurationMs,
+                      recordingLevel: _recordingLevel,
+                      onSend: _send,
+                      onVoiceModeChanged: _setVoiceMode,
+                      onRecordStart: _startRecording,
+                      onRecordEnd: (cancel) => _finishRecording(cancel: cancel),
+                      onRecordCancelChanged: _setRecordingCancelling,
+                      onComposerTap: _handleComposerFocus,
+                      emojiPanelOpen: _emojiPanelOpen,
+                      accessoryPanelOpen: _accessoryPanelOpen,
+                      onEmoji: _toggleEmojiPanel,
+                      onAccessory: _toggleAccessoryPanel,
+                    ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      child: _emojiPanelOpen
+                          ? _EmojiPanel(
+                              onSelected: _insertEmoji,
+                            )
+                          : _accessoryPanelOpen
+                              ? _AccessoryPanel(
+                                  onGallery: () => _pickImage(
+                                    source: ImageSource.gallery,
+                                    sticker: false,
+                                  ),
+                                  onCamera: () => _pickImage(
+                                    source: ImageSource.camera,
+                                    sticker: false,
+                                  ),
+                                  onSticker: () => _pickImage(
+                                    source: ImageSource.gallery,
+                                    sticker: true,
+                                  ),
+                                )
+                              : const SizedBox.shrink(),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -2487,11 +2591,29 @@ class _SettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white,
-      borderRadius: BorderRadius.circular(22),
-      clipBehavior: Clip.antiAlias,
-      child: Column(children: children),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xfcffffff), Color(0xfffbf3f8)],
+        ),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xdfffffff)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x12572a40),
+            blurRadius: 16,
+            offset: Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(22),
+        clipBehavior: Clip.antiAlias,
+        child: Column(children: children),
+      ),
     );
   }
 }
@@ -2508,13 +2630,354 @@ class _SettingsIcon extends StatelessWidget {
       width: 38,
       height: 38,
       decoration: BoxDecoration(
-        color: danger ? const Color(0xffffeeee) : const Color(0xfff4eaf0),
+        gradient: danger
+            ? const LinearGradient(
+                colors: [Color(0xffffeeee), Color(0xffffe4ea)],
+              )
+            : const LinearGradient(
+                colors: [Color(0xffffedf5), Color(0xfff1e8f7)],
+              ),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Icon(
         icon,
         color: danger ? Colors.redAccent : _rose,
         size: 21,
+      ),
+    );
+  }
+}
+
+class _ConversationToolsSheet extends StatelessWidget {
+  const _ConversationToolsSheet({
+    required this.messageCount,
+    required this.mediaCount,
+    required this.activeDays,
+    required this.favoriteCount,
+    required this.onLatest,
+    required this.onSearch,
+    required this.onFavorites,
+    required this.onSettings,
+  });
+
+  final int messageCount;
+  final int mediaCount;
+  final int activeDays;
+  final int favoriteCount;
+  final VoidCallback onLatest;
+  final VoidCallback onSearch;
+  final VoidCallback onFavorites;
+  final VoidCallback onSettings;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(32)),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Material(
+          color: _pearl.withValues(alpha: 0.93),
+          clipBehavior: Clip.antiAlias,
+          child: SafeArea(
+            top: false,
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 26),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 42,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xffd8bdcd), Color(0xffb88da8)],
+                        ),
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  const Row(
+                    children: [
+                      _Avatar(size: 48),
+                      SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '聊天工具',
+                            style: TextStyle(
+                              color: _ink,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          SizedBox(height: 3),
+                          Text(
+                            '把常用操作放在手边，也让每一次聊天更有连续感',
+                            style: TextStyle(color: _muted, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      _ConversationToolButton(
+                        icon: Icons.vertical_align_bottom_rounded,
+                        label: '回到最新',
+                        onTap: onLatest,
+                      ),
+                      _ConversationToolButton(
+                        icon: Icons.search_rounded,
+                        label: '搜索记录',
+                        onTap: onSearch,
+                      ),
+                      _ConversationToolButton(
+                        icon: Icons.bookmark_rounded,
+                        label: '我的收藏',
+                        enabled: favoriteCount > 0,
+                        onTap: onFavorites,
+                      ),
+                      _ConversationToolButton(
+                        icon: Icons.tune_rounded,
+                        label: '系统设置',
+                        onTap: onSettings,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  _SettingsCard(
+                    children: [
+                      const ListTile(
+                        leading: _SettingsIcon(icon: Icons.insights_rounded),
+                        title: Text('这段关系的足迹'),
+                        subtitle: Text('统计只来自当前已加载的聊天记录，不会上传到服务器'),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Row(
+                          children: [
+                            _ConversationStat(
+                              value: '$messageCount',
+                              label: '条消息',
+                            ),
+                            _ConversationStat(
+                              value: '$mediaCount',
+                              label: '条媒体',
+                            ),
+                            _ConversationStat(
+                              value: '$activeDays',
+                              label: '个活跃日',
+                            ),
+                            _ConversationStat(
+                              value: '$favoriteCount',
+                              label: '条收藏',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConversationToolButton extends StatelessWidget {
+  const _ConversationToolButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.enabled = true,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = (MediaQuery.sizeOf(context).width - 50) / 2;
+    return SizedBox(
+      width: width,
+      height: 74,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: enabled
+              ? const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xffffffff), Color(0xfffbf2f8)],
+                )
+              : const LinearGradient(
+                  colors: [Color(0xfff3edf0), Color(0xfff3edf0)],
+                ),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: enabled ? const Color(0xdfffffff) : const Color(0xffeadfe4),
+          ),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x10572a40),
+              blurRadius: 12,
+              offset: Offset(0, 5),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(20),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Row(
+                children: [
+                  _GradientIcon(
+                    icon: icon,
+                    size: 23,
+                    enabled: enabled,
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      color: enabled ? _ink : _muted,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConversationStat extends StatelessWidget {
+  const _ConversationStat({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              color: _roseDark,
+              fontSize: 19,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 3),
+          Text(
+            label,
+            style: const TextStyle(color: _muted, fontSize: 11),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FavoriteMessagesSheet extends StatelessWidget {
+  const _FavoriteMessagesSheet({required this.messages});
+
+  final List<ChatMessage> messages;
+
+  @override
+  Widget build(BuildContext context) {
+    return FractionallySizedBox(
+      heightFactor: 0.72,
+      child: Material(
+        color: _canvas,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
+        clipBehavior: Clip.antiAlias,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            children: [
+              const SizedBox(height: 14),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0xffddcfd6),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.fromLTRB(20, 18, 20, 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.bookmark_rounded, color: _rose),
+                    SizedBox(width: 8),
+                    Text(
+                      '我的收藏',
+                      style: TextStyle(
+                        color: _ink,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 20),
+                  itemCount: messages.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 4),
+                  itemBuilder: (context, index) {
+                    final message = messages[index];
+                    return ListTile(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      tileColor: Colors.white,
+                      leading: message.fromXiaoyou
+                          ? const _Avatar(size: 38)
+                          : const CircleAvatar(
+                              backgroundColor: Color(0xffead7e1),
+                              child: Text(
+                                '您',
+                                style: TextStyle(color: _roseDark),
+                              ),
+                            ),
+                      title: Text(
+                        _searchMessageSummary(message),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(
+                        '${_searchKindLabel(message.kind)} · '
+                        '${_formatDateTime(message.timestamp)}',
+                      ),
+                      onTap: () => Navigator.pop(context, message),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2537,86 +3000,174 @@ class _ConversationHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(14, 6, 8, 7),
-      decoration: const BoxDecoration(
-        color: Color(0xf7fffafd),
-        border: Border(bottom: BorderSide(color: Color(0xffeee3e8))),
-      ),
-      child: Row(
-        children: [
-          GestureDetector(
-            onTap: onAvatarTap,
-            child: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                const Hero(
-                  tag: 'xiaoyou-avatar',
-                  child: _Avatar(size: 42),
-                ),
-                Positioned(
-                  right: -1,
-                  bottom: 1,
-                  child: _PresenceDot(online: connected),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(24),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.65),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  Color(0xeaffffff),
+                  Color(0xc9fff5fa),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: _glassBorder),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x14572a40),
+                  blurRadius: 18,
+                  offset: Offset(0, 6),
                 ),
               ],
             ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: GestureDetector(
-              onTap: onAvatarTap,
-              behavior: HitTestBehavior.opaque,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+              child: Row(
                 children: [
-                  const Row(
-                    children: [
-                      Text(
-                        '小悠',
-                        style: TextStyle(
-                          color: _ink,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 17,
+                  GestureDetector(
+                    onTap: onAvatarTap,
+                    child: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        const Hero(
+                          tag: 'xiaoyou-avatar',
+                          child: _Avatar(size: 44),
                         ),
-                      ),
-                      SizedBox(width: 6),
-                      Icon(
-                        Icons.favorite_rounded,
-                        size: 12,
-                        color: Color(0xffc36d98),
-                      ),
-                    ],
+                        Positioned(
+                          right: -1,
+                          bottom: 1,
+                          child: _PresenceDot(online: connected),
+                        ),
+                      ],
+                    ),
                   ),
-                  const SizedBox(height: 2),
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    child: Text(
-                      status,
-                      key: ValueKey(status),
-                      style: TextStyle(
-                        color: connected ? const Color(0xff5e8d77) : _muted,
-                        fontSize: 11.5,
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: onAvatarTap,
+                      behavior: HitTestBehavior.opaque,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Row(
+                            children: [
+                              Text(
+                                '小悠',
+                                style: TextStyle(
+                                  color: _ink,
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 18,
+                                  letterSpacing: 0.1,
+                                ),
+                              ),
+                              SizedBox(width: 6),
+                              Icon(
+                                Icons.favorite_rounded,
+                                size: 13,
+                                color: Color(0xffc36d98),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 180),
+                            child: Text(
+                              status,
+                              key: ValueKey(status),
+                              style: TextStyle(
+                                color: connected
+                                    ? const Color(0xff5e8d77)
+                                    : _muted,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
+                  ),
+                  _HeaderIconButton(
+                    onPressed: onSearch,
+                    tooltip: '搜索聊天记录',
+                    icon: Icons.search_rounded,
+                  ),
+                  const SizedBox(width: 6),
+                  _HeaderIconButton(
+                    onPressed: onSettings,
+                    tooltip: '小悠与设置',
+                    icon: Icons.more_horiz_rounded,
                   ),
                 ],
               ),
             ),
           ),
-          IconButton(
-            onPressed: onSearch,
-            tooltip: '搜索聊天记录',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.search_rounded, color: _ink),
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderIconButton extends StatelessWidget {
+  const _HeaderIconButton({
+    required this.onPressed,
+    required this.tooltip,
+    required this.icon,
+  });
+
+  final VoidCallback onPressed;
+  final String tooltip;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xffffffff),
+              Color(0xfff5edf7),
+            ],
           ),
-          IconButton(
-            onPressed: onSettings,
-            tooltip: '小悠与设置',
-            visualDensity: VisualDensity.compact,
-            icon: const Icon(Icons.more_horiz_rounded, color: _ink),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xe0ffffff)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x10572a40),
+              blurRadius: 8,
+              offset: Offset(0, 3),
+            ),
+          ],
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: onPressed,
+            borderRadius: BorderRadius.circular(16),
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Center(
+                child: _GradientIcon(
+                  icon: icon,
+                  size: 20,
+                  enabled: true,
+                ),
+              ),
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -2732,6 +3283,7 @@ class _MessageRow extends StatefulWidget {
     required this.userBubbleColor,
     required this.bubbleRadius,
     required this.compact,
+    required this.favorite,
     required this.highlighted,
     required this.showDate,
     required this.beginsGroup,
@@ -2740,6 +3292,7 @@ class _MessageRow extends StatefulWidget {
     required this.onRendered,
     required this.onFailedTap,
     required this.onReply,
+    required this.onToggleFavorite,
   });
 
   final ChatMessage message;
@@ -2747,6 +3300,7 @@ class _MessageRow extends StatefulWidget {
   final Color userBubbleColor;
   final double bubbleRadius;
   final bool compact;
+  final bool favorite;
   final bool highlighted;
   final bool showDate;
   final bool beginsGroup;
@@ -2755,6 +3309,7 @@ class _MessageRow extends StatefulWidget {
   final ValueChanged<ChatMessage> onRendered;
   final ValueChanged<ChatMessage> onFailedTap;
   final ValueChanged<ChatMessage> onReply;
+  final ValueChanged<ChatMessage> onToggleFavorite;
 
   @override
   State<_MessageRow> createState() => _MessageRowState();
@@ -2770,9 +3325,8 @@ class _MessageRowState extends State<_MessageRow>
   bool _renderReported = false;
   AudioPlayer? _voicePlayer;
   StreamSubscription<PlayerState>? _voiceStateSubscription;
-  StreamSubscription<Duration?>? _voiceDurationSubscription;
-  File? _voiceTempFile;
-  bool _voiceHasSource = false;
+  StreamSubscription<Duration>? _voiceDurationSubscription;
+  StreamSubscription<void>? _voiceCompleteSubscription;
   bool _voiceLoading = false;
   bool _voicePlaying = false;
   Duration _voiceDuration = Duration.zero;
@@ -2789,25 +3343,10 @@ class _MessageRowState extends State<_MessageRow>
   void dispose() {
     _voiceStateSubscription?.cancel();
     _voiceDurationSubscription?.cancel();
+    _voiceCompleteSubscription?.cancel();
     _voicePlayer?.dispose();
-    unawaited(_deleteVoiceTempFile());
     _controller.dispose();
     super.dispose();
-  }
-
-  Future<void> _deleteVoiceTempFile() async {
-    final file = _voiceTempFile;
-    _voiceTempFile = null;
-    if (file == null) {
-      return;
-    }
-    try {
-      if (await file.exists()) {
-        await file.delete();
-      }
-    } catch (_) {
-      // The OS will eventually clear its temporary directory.
-    }
   }
 
   void _reportRendered() {
@@ -2864,6 +3403,19 @@ class _MessageRowState extends State<_MessageRow>
                 widget.onReply(widget.message);
               },
             ),
+            ListTile(
+              leading: Icon(
+                widget.favorite
+                    ? Icons.bookmark_rounded
+                    : Icons.bookmark_border_rounded,
+                color: _rose,
+              ),
+              title: Text(widget.favorite ? '取消收藏' : '收藏消息'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                widget.onToggleFavorite(widget.message);
+              },
+            ),
             if (widget.message.text.trim().isNotEmpty)
               ListTile(
                 leading: const Icon(Icons.copy_rounded, color: _rose),
@@ -2907,17 +3459,19 @@ class _MessageRowState extends State<_MessageRow>
       return existing;
     }
     final player = AudioPlayer();
-    _voiceStateSubscription = player.playerStateStream.listen((state) {
+    _voiceStateSubscription = player.onPlayerStateChanged.listen((state) {
       if (mounted) {
-        setState(
-          () => _voicePlaying = state.playing &&
-              state.processingState != ProcessingState.completed,
-        );
+        setState(() => _voicePlaying = state == PlayerState.playing);
       }
     });
-    _voiceDurationSubscription = player.durationStream.listen((duration) {
-      if (mounted && duration != null) {
+    _voiceDurationSubscription = player.onDurationChanged.listen((duration) {
+      if (mounted) {
         setState(() => _voiceDuration = duration);
+      }
+    });
+    _voiceCompleteSubscription = player.onPlayerComplete.listen((_) {
+      if (mounted) {
+        setState(() => _voicePlaying = false);
       }
     });
     _voicePlayer = player;
@@ -2933,11 +3487,8 @@ class _MessageRowState extends State<_MessageRow>
       await player.pause();
       return;
     }
-    if (_voiceHasSource) {
-      if (player.processingState == ProcessingState.completed) {
-        await player.seek(Duration.zero);
-      }
-      unawaited(player.play());
+    if (player.state == PlayerState.paused) {
+      await player.resume();
       return;
     }
     final message = widget.message;
@@ -2948,27 +3499,18 @@ class _MessageRowState extends State<_MessageRow>
     setState(() => _voiceLoading = true);
     try {
       if (message.localPath.isNotEmpty) {
-        final duration = await player.setFilePath(message.localPath);
-        if (mounted && duration != null) {
-          setState(() => _voiceDuration = duration);
-        }
+        await player.play(
+          DeviceFileSource(
+            message.localPath,
+            mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
+          ),
+        );
       } else {
         final media = await widget.api!.downloadMedia(message.mediaId);
-        final tempDirectory = await getTemporaryDirectory();
-        final file = File(
-          '${tempDirectory.path}${Platform.pathSeparator}'
-          'xiaoyou-voice-${message.mediaId.hashCode.toUnsigned(32)}'
-          '${_audioFileExtension(media.mimeType)}',
+        await player.play(
+          BytesSource(media.bytes, mimeType: media.mimeType),
         );
-        await file.writeAsBytes(media.bytes, flush: true);
-        _voiceTempFile = file;
-        final duration = await player.setFilePath(file.path);
-        if (mounted && duration != null) {
-          setState(() => _voiceDuration = duration);
-        }
       }
-      _voiceHasSource = true;
-      unawaited(player.play());
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -2992,8 +3534,25 @@ class _MessageRowState extends State<_MessageRow>
     final message = widget.message;
     final fromXiaoyou = message.fromXiaoyou;
     final screenWidth = MediaQuery.sizeOf(context).width;
-    final maxBubbleWidth = min(screenWidth * 0.76, 340.0);
+    final maxBubbleWidth = min(screenWidth * 0.78, 346.0);
     final slideBegin = Offset(fromXiaoyou ? -0.06 : 0.06, 0.04);
+    final outgoingLight =
+        Color.lerp(widget.userBubbleColor, Colors.white, 0.14)!;
+    final bubbleGradient = widget.highlighted
+        ? const LinearGradient(
+            colors: [Color(0xffffedf6), Color(0xffffdfef)],
+          )
+        : fromXiaoyou
+            ? const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xfaffffff), Color(0xf6fffafd)],
+              )
+            : LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [outgoingLight, widget.userBubbleColor],
+              );
     return FadeTransition(
       opacity: CurvedAnimation(
         parent: _controller,
@@ -3021,12 +3580,12 @@ class _MessageRowState extends State<_MessageRow>
               children: [
                 if (fromXiaoyou) ...[
                   SizedBox(
-                    width: 34,
+                    width: 36,
                     child: widget.showAvatar
-                        ? const _Avatar(size: 28)
+                        ? const _Avatar(size: 30)
                         : const SizedBox.shrink(),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 7),
                 ],
                 Flexible(
                   child: GestureDetector(
@@ -3038,37 +3597,43 @@ class _MessageRowState extends State<_MessageRow>
                           message.kind == 'image' || message.kind == 'sticker'
                               ? const EdgeInsets.all(4)
                               : EdgeInsets.fromLTRB(
-                                  14,
-                                  widget.compact ? 7 : 10,
-                                  14,
-                                  widget.compact ? 7 : 9,
+                                  15,
+                                  widget.compact ? 8 : 10,
+                                  15,
+                                  widget.compact ? 8 : 10,
                                 ),
                       decoration: BoxDecoration(
-                        color: widget.highlighted
-                            ? const Color(0xffffe0ee)
-                            : fromXiaoyou
-                                ? Colors.white
-                                : widget.userBubbleColor,
-                        border: widget.highlighted
-                            ? Border.all(color: _rose, width: 1.5)
-                            : null,
+                        gradient: bubbleGradient,
+                        border: Border.all(
+                          color: widget.highlighted
+                              ? _rose
+                              : fromXiaoyou
+                                  ? const Color(0xe8ffffff)
+                                  : Colors.white.withValues(alpha: 0.2),
+                          width: widget.highlighted ? 1.4 : 0.8,
+                        ),
                         borderRadius: BorderRadius.only(
                           topLeft: Radius.circular(widget.bubbleRadius),
                           topRight: Radius.circular(widget.bubbleRadius),
                           bottomLeft: Radius.circular(
                             fromXiaoyou && widget.showAvatar
-                                ? 6
+                                ? 7
                                 : widget.bubbleRadius,
                           ),
                           bottomRight: Radius.circular(
-                            !fromXiaoyou ? 6 : widget.bubbleRadius,
+                            !fromXiaoyou ? 7 : widget.bubbleRadius,
                           ),
                         ),
                         boxShadow: const [
                           BoxShadow(
-                            color: Color(0x104c2839),
-                            blurRadius: 14,
-                            offset: Offset(0, 4),
+                            color: Color(0x14572a40),
+                            blurRadius: 18,
+                            offset: Offset(0, 6),
+                          ),
+                          BoxShadow(
+                            color: Color(0x0cffffff),
+                            blurRadius: 2,
+                            offset: Offset(0, -1),
                           ),
                         ],
                       ),
@@ -3081,8 +3646,8 @@ class _MessageRowState extends State<_MessageRow>
                                   message.text,
                                   style: TextStyle(
                                     color: fromXiaoyou ? _ink : Colors.white,
-                                    fontSize: 16,
-                                    height: 1.42,
+                                    fontSize: 15.5,
+                                    height: 1.45,
                                   ),
                                 ),
                     ),
@@ -3106,12 +3671,25 @@ class _MessageRowState extends State<_MessageRow>
               child: Align(
                 alignment:
                     fromXiaoyou ? Alignment.centerLeft : Alignment.centerRight,
-                child: Text(
-                  _formatTime(message.timestamp),
-                  style: const TextStyle(
-                    color: Color(0xffaaa0a5),
-                    fontSize: 10,
-                  ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _formatTime(message.timestamp),
+                      style: const TextStyle(
+                        color: Color(0xffaaa0a5),
+                        fontSize: 10,
+                      ),
+                    ),
+                    if (widget.favorite) ...[
+                      const SizedBox(width: 4),
+                      const Icon(
+                        Icons.bookmark_rounded,
+                        color: _rose,
+                        size: 12,
+                      ),
+                    ],
+                  ],
                 ),
               ),
             ),
@@ -3129,16 +3707,17 @@ class _MessageRowState extends State<_MessageRow>
     final headers = message.mediaId.isNotEmpty ? api?.mediaHeaders : null;
     final localPath = message.localPath;
     final hasLocal = localPath.isNotEmpty && File(localPath).existsSync();
+    final imageWidth = message.kind == 'sticker' ? 154.0 : 220.0;
     final image = hasLocal
         ? Image.file(
             File(localPath),
-            width: message.kind == 'sticker' ? 180 : 258,
+            width: imageWidth,
             fit: BoxFit.cover,
           )
         : Image.network(
             url,
             headers: headers,
-            width: message.kind == 'sticker' ? 180 : 258,
+            width: imageWidth,
             fit: BoxFit.cover,
           );
     return GestureDetector(
@@ -3156,7 +3735,7 @@ class _MessageRowState extends State<_MessageRow>
           borderRadius: BorderRadius.circular(15),
           child: Image(
             image: image.image,
-            width: message.kind == 'sticker' ? 180 : 258,
+            width: imageWidth,
             fit: BoxFit.cover,
             frameBuilder: (context, child, frame, synchronous) {
               if (synchronous || frame != null) {
@@ -3168,16 +3747,18 @@ class _MessageRowState extends State<_MessageRow>
               if (progress == null) {
                 return child;
               }
-              return const SizedBox(
-                width: 250,
+              return SizedBox(
+                width: imageWidth,
                 height: 180,
-                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                child: const Center(
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
               );
             },
-            errorBuilder: (_, __, ___) => const SizedBox(
-              width: 250,
+            errorBuilder: (_, __, ___) => SizedBox(
+              width: imageWidth,
               height: 150,
-              child: Center(child: Text('图片暂时加载失败')),
+              child: const Center(child: Text('图片暂时加载失败')),
             ),
           ),
         ),
@@ -3259,7 +3840,7 @@ class _MessageRowState extends State<_MessageRow>
                 ),
                 const SizedBox(width: 9),
                 Text(
-                  seconds > 0 ? '$seconds″' : '语音',
+                  seconds > 0 ? '$seconds″' : '—″',
                   style: TextStyle(
                     color: (fromXiaoyou ? _ink : Colors.white)
                         .withValues(alpha: 0.72),
@@ -3349,8 +3930,11 @@ class _DateDivider extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           decoration: BoxDecoration(
-            color: const Color(0x99eee5e9),
+            gradient: const LinearGradient(
+              colors: [Color(0xc9ffffff), Color(0xbff5eaf1)],
+            ),
             borderRadius: BorderRadius.circular(99),
+            border: Border.all(color: const Color(0xbfffffff)),
           ),
           child: Text(
             _formatDate(date),
@@ -3393,18 +3977,23 @@ class _TypingIndicatorState extends State<_TypingIndicator>
           height: 42,
           padding: const EdgeInsets.symmetric(horizontal: 15),
           decoration: BoxDecoration(
-            color: Colors.white,
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xfbffffff), Color(0xf5fff8fb)],
+            ),
             borderRadius: const BorderRadius.only(
               topLeft: Radius.circular(18),
               topRight: Radius.circular(18),
               bottomLeft: Radius.circular(6),
               bottomRight: Radius.circular(18),
             ),
+            border: Border.all(color: const Color(0xdfffffff)),
             boxShadow: const [
               BoxShadow(
-                color: Color(0x104c2839),
-                blurRadius: 12,
-                offset: Offset(0, 3),
+                color: Color(0x14572a40),
+                blurRadius: 16,
+                offset: Offset(0, 5),
               ),
             ],
           ),
@@ -3493,35 +4082,50 @@ class _AccessoryPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 178,
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(22, 20, 22, 26),
-      decoration: const BoxDecoration(
-        color: Color(0xfffffafd),
-        border: Border(top: BorderSide(color: Color(0xffeee3e8))),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _AccessoryItem(
-            icon: Icons.photo_library_outlined,
-            label: '相册',
-            onTap: onGallery,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Container(
+        height: 166,
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(22, 22, 22, 24),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xfaffffff), Color(0xf5f7edf6)],
           ),
-          const SizedBox(width: 24),
-          _AccessoryItem(
-            icon: Icons.camera_alt_outlined,
-            label: '拍摄',
-            onTap: onCamera,
-          ),
-          const SizedBox(width: 24),
-          _AccessoryItem(
-            icon: Icons.gif_box_outlined,
-            label: '表情包',
-            onTap: onSticker,
-          ),
-        ],
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: _glassBorder),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14572a40),
+              blurRadius: 18,
+              offset: Offset(0, 7),
+            ),
+          ],
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _AccessoryItem(
+              icon: Icons.photo_library_outlined,
+              label: '相册',
+              onTap: onGallery,
+            ),
+            const SizedBox(width: 24),
+            _AccessoryItem(
+              icon: Icons.camera_alt_outlined,
+              label: '拍摄',
+              onTap: onCamera,
+            ),
+            const SizedBox(width: 24),
+            _AccessoryItem(
+              icon: Icons.gif_box_outlined,
+              label: '表情包',
+              onTap: onSticker,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -3552,7 +4156,14 @@ class _AccessoryItem extends StatelessWidget {
               width: 62,
               height: 62,
               decoration: BoxDecoration(
-                color: Colors.white,
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xffffffff),
+                    Color(0xfff5edf8),
+                  ],
+                ),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: const Color(0xffeadde4)),
                 boxShadow: const [
@@ -3563,7 +4174,13 @@ class _AccessoryItem extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Icon(icon, color: _rose, size: 28),
+              child: Center(
+                child: _GradientIcon(
+                  icon: icon,
+                  size: 27,
+                  enabled: true,
+                ),
+              ),
             ),
             const SizedBox(height: 8),
             Text(label, style: const TextStyle(color: _muted, fontSize: 12)),
@@ -3577,7 +4194,6 @@ class _AccessoryItem extends StatelessWidget {
 class _EmojiPanel extends StatelessWidget {
   const _EmojiPanel({
     required this.onSelected,
-    required this.onCollapse,
   });
 
   static const _emojis = [
@@ -3679,62 +4295,50 @@ class _EmojiPanel extends StatelessWidget {
   ];
 
   final ValueChanged<String> onSelected;
-  final VoidCallback onCollapse;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 246,
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 10, 14, 18),
-      decoration: const BoxDecoration(
-        color: Color(0xfffffafd),
-        border: Border(top: BorderSide(color: Color(0xffeee3e8))),
-      ),
-      child: Column(
-        children: [
-          SizedBox(
-            height: 38,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: SizedBox(
-                width: 38,
-                height: 38,
-                child: IconButton.filledTonal(
-                  tooltip: '收起表情面板',
-                  onPressed: onCollapse,
-                  style: IconButton.styleFrom(
-                    backgroundColor: const Color(0xfff1e5eb),
-                    foregroundColor: _roseDark,
-                  ),
-                  icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+      child: Container(
+        height: 246,
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xfaffffff), Color(0xf5f7edf6)],
+          ),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(color: _glassBorder),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x14572a40),
+              blurRadius: 18,
+              offset: Offset(0, 7),
+            ),
+          ],
+        ),
+        child: GridView.builder(
+          padding: EdgeInsets.zero,
+          itemCount: _emojis.length,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 8,
+            mainAxisSpacing: 4,
+            crossAxisSpacing: 4,
+          ),
+          itemBuilder: (context, index) => InkWell(
+            onTap: () => onSelected(_emojis[index]),
+            borderRadius: BorderRadius.circular(12),
+            child: Center(
+              child: Text(
+                _emojis[index],
+                style: const TextStyle(fontSize: 27),
               ),
             ),
           ),
-          const SizedBox(height: 7),
-          Expanded(
-            child: GridView.builder(
-              padding: EdgeInsets.zero,
-              itemCount: _emojis.length,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 8,
-                mainAxisSpacing: 4,
-                crossAxisSpacing: 4,
-              ),
-              itemBuilder: (context, index) => InkWell(
-                onTap: () => onSelected(_emojis[index]),
-                borderRadius: BorderRadius.circular(12),
-                child: Center(
-                  child: Text(
-                    _emojis[index],
-                    style: const TextStyle(fontSize: 27),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -3818,7 +4422,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
         child: SizedBox(
           height: sheetHeight,
           child: Material(
-            color: _canvas,
+            color: _pearl.withValues(alpha: 0.96),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
             clipBehavior: Clip.antiAlias,
             child: Column(
@@ -3828,7 +4432,9 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                   width: 42,
                   height: 4,
                   decoration: BoxDecoration(
-                    color: const Color(0xffddcfd6),
+                    gradient: const LinearGradient(
+                      colors: [Color(0xffd8bdcd), Color(0xffb88da8)],
+                    ),
                     borderRadius: BorderRadius.circular(99),
                   ),
                 ),
@@ -3851,10 +4457,20 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                               icon: const Icon(Icons.close_rounded),
                             ),
                       filled: true,
-                      fillColor: Colors.white,
+                      fillColor: const Color(0xfaffffff),
+                      prefixIconColor: _rose,
+                      suffixIconColor: _muted,
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(18),
-                        borderSide: BorderSide.none,
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: const BorderSide(color: Color(0xffead6e2)),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: const BorderSide(color: Color(0xffead6e2)),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        borderSide: const BorderSide(color: _rose, width: 1.2),
                       ),
                     ),
                   ),
@@ -3924,9 +4540,13 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                             final message = results[index];
                             return ListTile(
                               shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
+                                borderRadius: BorderRadius.circular(20),
                               ),
-                              tileColor: Colors.white,
+                              tileColor: const Color(0xfaffffff),
+                              contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 4,
+                              ),
                               leading: message.fromXiaoyou
                                   ? const _Avatar(size: 38)
                                   : const CircleAvatar(
@@ -3966,14 +4586,12 @@ class _SearchFilterRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 40,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 3),
-        itemCount: children.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 7),
-        itemBuilder: (_, index) => children[index],
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 3),
+      child: Wrap(
+        spacing: 7,
+        runSpacing: 4,
+        children: children,
       ),
     );
   }
@@ -3996,11 +4614,20 @@ class _SearchFilterChip extends StatelessWidget {
       label: Text(label),
       selected: selected,
       onSelected: (_) => onTap(),
-      visualDensity: VisualDensity.compact,
+      visualDensity: const VisualDensity(horizontal: -1, vertical: -1),
       showCheckmark: false,
-      selectedColor: const Color(0xffead1df),
+      backgroundColor: const Color(0xdfffffff),
+      selectedColor: _blush,
+      labelStyle: TextStyle(
+        color: selected ? _roseDark : _muted,
+        fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
       side: BorderSide(
         color: selected ? _rose : const Color(0xffeadfe4),
+        width: selected ? 1.1 : 0.8,
       ),
     );
   }
@@ -4051,213 +4678,317 @@ class _Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 7),
-      decoration: const BoxDecoration(
-        color: Color(0xfafffbfd),
-        border: Border(top: BorderSide(color: Color(0xffeee3e8))),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          SizedBox(
-            width: 40,
-            height: 44,
-            child: IconButton(
-              tooltip: voiceMode ? '切换到键盘' : '发送语音',
-              onPressed: connected && !sending && !recording
-                  ? () => onVoiceModeChanged(!voiceMode)
-                  : null,
-              icon: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
-                transitionBuilder: (child, animation) => RotationTransition(
-                  turns: Tween<double>(begin: 0.88, end: 1).animate(animation),
-                  child: FadeTransition(opacity: animation, child: child),
-                ),
-                child: Icon(
-                  voiceMode
-                      ? Icons.keyboard_alt_outlined
-                      : Icons.mic_none_rounded,
-                  key: ValueKey(voiceMode),
-                  color: connected ? _rose : const Color(0xffb7aab0),
-                  size: 24,
-                ),
-              ),
-            ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xfcffffff),
+              Color(0xf8f9edf7),
+              Color(0xf5f2effa),
+            ],
           ),
-          if (!voiceMode) ...[
-            SizedBox(
-              width: 38,
-              height: 44,
-              child: IconButton(
-                tooltip: '表情',
-                onPressed: connected && !sending ? onEmoji : null,
-                icon: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 160),
-                  child: Icon(
-                    emojiPanelOpen
-                        ? Icons.keyboard_alt_outlined
-                        : Icons.sentiment_satisfied_alt_rounded,
-                    key: ValueKey(emojiPanelOpen),
-                    color: emojiPanelOpen ? _roseDark : _rose,
-                    size: 24,
-                  ),
-                ),
-              ),
+          borderRadius: BorderRadius.circular(29),
+          border: Border.all(color: _glassBorder),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x24572a40),
+              blurRadius: 24,
+              offset: Offset(0, 9),
+            ),
+            BoxShadow(
+              color: Color(0x18a85e85),
+              blurRadius: 4,
+              offset: Offset(0, 1),
             ),
           ],
-          const SizedBox(width: 2),
-          Expanded(
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              constraints: const BoxConstraints(minHeight: 44),
-              decoration: BoxDecoration(
-                color: recording
-                    ? (recordingCancelling
-                        ? const Color(0xffffe8ec)
-                        : const Color(0xfffff1f7))
-                    : Colors.white,
-                borderRadius: BorderRadius.circular(22),
-                border: Border.all(
-                  color: recording
-                      ? (recordingCancelling ? Colors.redAccent : _rose)
-                      : const Color(0xffeadfe4),
-                  width: recording ? 1.4 : 1,
-                ),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x0d5c3447),
-                    blurRadius: 12,
-                    offset: Offset(0, 3),
-                  ),
-                ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(7, 4, 7, 4),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              _ComposerIconButton(
+                tooltip: voiceMode ? '切换到键盘' : '发送语音',
+                selected: voiceMode,
+                enabled: connected && !sending && !recording,
+                onPressed: connected && !sending && !recording
+                    ? () => onVoiceModeChanged(!voiceMode)
+                    : null,
+                icon: voiceMode
+                    ? Icons.keyboard_alt_outlined
+                    : Icons.keyboard_voice_rounded,
               ),
-              child: voiceMode
-                  ? Listener(
-                      behavior: HitTestBehavior.opaque,
-                      onPointerDown:
-                          connected && !sending ? (_) => onRecordStart() : null,
-                      onPointerMove: connected
-                          ? (event) => onRecordCancelChanged(
-                                event.localPosition.dy < -42,
-                              )
-                          : null,
-                      onPointerUp: connected
-                          ? (_) => onRecordEnd(recordingCancelling)
-                          : null,
-                      onPointerCancel:
-                          connected ? (_) => onRecordEnd(true) : null,
-                      child: SizedBox(
-                        height: 44,
-                        child: AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 150),
-                          child: recording
-                              ? _RecordingComposer(
-                                  key: const ValueKey('recording'),
-                                  cancelling: recordingCancelling,
-                                  durationMs: recordingDurationMs,
-                                  level: recordingLevel,
-                                )
-                              : Center(
-                                  key: const ValueKey('idle'),
-                                  child: Text(
-                                    connected ? '按住 说话' : '正在连接小悠…',
-                                    style: const TextStyle(
-                                      color: _ink,
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w600,
+              if (!voiceMode) ...[
+                const SizedBox(width: 2),
+                _ComposerIconButton(
+                  tooltip: '表情',
+                  selected: emojiPanelOpen,
+                  enabled: connected && !sending,
+                  onPressed: connected && !sending ? onEmoji : null,
+                  icon: emojiPanelOpen
+                      ? Icons.keyboard_alt_outlined
+                      : Icons.sentiment_satisfied_alt_rounded,
+                ),
+              ],
+              const SizedBox(width: 4),
+              Expanded(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  constraints: const BoxConstraints(minHeight: 40),
+                  decoration: BoxDecoration(
+                    color: recording
+                        ? (recordingCancelling
+                            ? const Color(0xffffe8ec)
+                            : const Color(0xfffff1f7))
+                        : Colors.white.withValues(alpha: 0.9),
+                    borderRadius: BorderRadius.circular(22),
+                    border: Border.all(
+                      color: recording
+                          ? (recordingCancelling ? Colors.redAccent : _rose)
+                          : const Color(0xffeadfe4),
+                      width: recording ? 1.4 : 1,
+                    ),
+                  ),
+                  child: voiceMode
+                      ? Listener(
+                          behavior: HitTestBehavior.opaque,
+                          onPointerDown: connected && !sending
+                              ? (_) => onRecordStart()
+                              : null,
+                          onPointerMove: connected
+                              ? (event) => onRecordCancelChanged(
+                                    event.localPosition.dy < -42,
+                                  )
+                              : null,
+                          onPointerUp: connected
+                              ? (_) => onRecordEnd(recordingCancelling)
+                              : null,
+                          onPointerCancel:
+                              connected ? (_) => onRecordEnd(true) : null,
+                          child: SizedBox(
+                            height: 40,
+                            child: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 150),
+                              child: recording
+                                  ? _RecordingComposer(
+                                      key: const ValueKey('recording'),
+                                      cancelling: recordingCancelling,
+                                      durationMs: recordingDurationMs,
+                                      level: recordingLevel,
+                                    )
+                                  : Center(
+                                      key: const ValueKey('idle'),
+                                      child: Text(
+                                        connected ? '按住 说话' : '正在连接小悠…',
+                                        style: const TextStyle(
+                                          color: _ink,
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
                                     ),
+                            ),
+                          ),
+                        )
+                      : TextField(
+                          controller: controller,
+                          focusNode: focusNode,
+                          enabled: connected,
+                          minLines: 1,
+                          maxLines: 5,
+                          onTap: onComposerTap,
+                          textInputAction: TextInputAction.newline,
+                          style: const TextStyle(color: _ink, fontSize: 16),
+                          decoration: InputDecoration(
+                            hintText: connected ? '和小悠说点什么…' : '正在连接小悠…',
+                            hintStyle:
+                                const TextStyle(color: Color(0xffb4a7ad)),
+                            contentPadding:
+                                const EdgeInsets.fromLTRB(15, 10, 11, 9),
+                            border: InputBorder.none,
+                          ),
+                        ),
+                ),
+              ),
+              if (!voiceMode) ...[
+                const SizedBox(width: 6),
+                ValueListenableBuilder<TextEditingValue>(
+                  valueListenable: controller,
+                  builder: (context, value, _) {
+                    final enabled =
+                        connected && !sending && value.text.trim().isNotEmpty;
+                    final canOpen = connected && !sending && !enabled;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: enabled || accessoryPanelOpen
+                              ? const [
+                                  Color(0xff8f476f),
+                                  Color(0xffb477ad),
+                                ]
+                              : const [
+                                  Color(0xfff1e6ee),
+                                  Color(0xffeee9f7),
+                                ],
+                        ),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.9),
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x1a8f476f),
+                            blurRadius: 10,
+                            offset: Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints.tightFor(
+                            width: 40, height: 40),
+                        onPressed:
+                            enabled ? onSend : (canOpen ? onAccessory : null),
+                        icon: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 160),
+                          child: sending
+                              ? const SizedBox(
+                                  key: ValueKey('sending'),
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Colors.white,
                                   ),
-                                ),
+                                )
+                              : enabled
+                                  ? const Icon(
+                                      Icons.arrow_upward_rounded,
+                                      key: ValueKey('send'),
+                                      color: Colors.white,
+                                      size: 21,
+                                    )
+                                  : AnimatedRotation(
+                                      turns: accessoryPanelOpen ? 0.125 : 0,
+                                      duration:
+                                          const Duration(milliseconds: 180),
+                                      child: Icon(
+                                        Icons.add_rounded,
+                                        key: const ValueKey('accessory'),
+                                        color: accessoryPanelOpen
+                                            ? Colors.white
+                                            : const Color(0xff8f7d86),
+                                        size: 21,
+                                      ),
+                                    ),
                         ),
                       ),
-                    )
-                  : TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      enabled: connected,
-                      minLines: 1,
-                      maxLines: 5,
-                      onTap: onComposerTap,
-                      textInputAction: TextInputAction.newline,
-                      style: const TextStyle(color: _ink, fontSize: 16),
-                      decoration: InputDecoration(
-                        hintText: connected ? '和小悠说点什么…' : '正在连接小悠…',
-                        hintStyle: const TextStyle(color: Color(0xffb4a7ad)),
-                        contentPadding:
-                            const EdgeInsets.fromLTRB(15, 10, 11, 9),
-                        border: InputBorder.none,
-                      ),
-                    ),
+                    );
+                  },
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ComposerIconButton extends StatelessWidget {
+  const _ComposerIconButton({
+    required this.tooltip,
+    required this.icon,
+    required this.enabled,
+    required this.onPressed,
+    this.selected = false,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final bool enabled;
+  final VoidCallback? onPressed;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: selected
+              ? const LinearGradient(
+                  colors: [Color(0xffffeaf4), Color(0xffeee9f8)],
+                )
+              : null,
+          shape: BoxShape.circle,
+          border: selected ? Border.all(color: const Color(0xffead6e2)) : null,
+        ),
+        child: Material(
+          color: Colors.transparent,
+          shape: const CircleBorder(),
+          child: InkWell(
+            onTap: enabled ? onPressed : null,
+            customBorder: const CircleBorder(),
+            child: SizedBox(
+              width: 36,
+              height: 40,
+              child: Center(
+                child: _GradientIcon(
+                  icon: icon,
+                  size: 20,
+                  enabled: enabled,
+                ),
+              ),
             ),
           ),
-          if (!voiceMode) ...[
-            const SizedBox(width: 9),
-            ValueListenableBuilder<TextEditingValue>(
-              valueListenable: controller,
-              builder: (context, value, _) {
-                final enabled =
-                    connected && !sending && value.text.trim().isNotEmpty;
-                final canOpen = connected && !sending && !enabled;
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 180),
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: enabled || accessoryPanelOpen
-                        ? _rose
-                        : const Color(0xffe9dfe4),
-                    shape: BoxShape.circle,
-                    boxShadow: enabled
-                        ? const [
-                            BoxShadow(
-                              color: Color(0x338f476f),
-                              blurRadius: 12,
-                              offset: Offset(0, 4),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  child: IconButton(
-                    onPressed:
-                        enabled ? onSend : (canOpen ? onAccessory : null),
-                    icon: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 160),
-                      child: sending
-                          ? const SizedBox(
-                              key: ValueKey('sending'),
-                              width: 19,
-                              height: 19,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: Colors.white,
-                              ),
-                            )
-                          : enabled
-                              ? const Icon(
-                                  Icons.arrow_upward_rounded,
-                                  key: ValueKey('send'),
-                                  color: Colors.white,
-                                )
-                              : AnimatedRotation(
-                                  turns: accessoryPanelOpen ? 0.125 : 0,
-                                  duration: const Duration(milliseconds: 180),
-                                  child: Icon(
-                                    Icons.add_rounded,
-                                    key: const ValueKey('accessory'),
-                                    color: accessoryPanelOpen
-                                        ? Colors.white
-                                        : const Color(0xff8f7d86),
-                                  ),
-                                ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ],
-        ],
+        ),
       ),
+    );
+  }
+}
+
+class _GradientIcon extends StatelessWidget {
+  const _GradientIcon({
+    required this.icon,
+    required this.size,
+    required this.enabled,
+  });
+
+  final IconData icon;
+  final double size;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final child = Icon(
+      icon,
+      size: size,
+      color: enabled ? Colors.white : const Color(0xffb7aab0),
+    );
+    if (!enabled) {
+      return child;
+    }
+    return ShaderMask(
+      blendMode: BlendMode.srcIn,
+      shaderCallback: (bounds) => const LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: [
+          Color(0xff8f476f),
+          Color(0xffb477ad),
+        ],
+      ).createShader(bounds),
+      child: child,
     );
   }
 }
@@ -5057,16 +5788,28 @@ class _AppearancePalette {
 _AppearancePalette _appearancePalette(String key) {
   return switch (key) {
     'lilac' => const _AppearancePalette(
-        background: [Color(0xfffffbff), Color(0xfff0edf9)],
+        background: [
+          Color(0xfffffcff),
+          Color(0xfff8f3fb),
+          Color(0xfff0edf9),
+        ],
         userBubble: Color(0xff826aa8),
       ),
     'peach' => const _AppearancePalette(
-        background: [Color(0xfffffbf7), Color(0xfff8eee6)],
+        background: [
+          Color(0xfffffcfa),
+          Color(0xfffff4ee),
+          Color(0xfff8eee6),
+        ],
         userBubble: Color(0xffb77661),
       ),
     _ => const _AppearancePalette(
-        background: [Color(0xfffffbfd), Color(0xfff9f3f6)],
-        userBubble: Color(0xffa85e85),
+        background: [
+          Color(0xfffffcfe),
+          Color(0xfffbf4f8),
+          _lavenderMist,
+        ],
+        userBubble: Color(0xff9f4f79),
       ),
   };
 }
@@ -5075,19 +5818,6 @@ String _newId(String prefix) {
   final random = Random.secure().nextInt(0x7fffffff).toRadixString(16);
   final time = DateTime.now().microsecondsSinceEpoch.toRadixString(16);
   return prefix.isEmpty ? '$time$random' : '$prefix-$time$random';
-}
-
-String _audioFileExtension(String mimeType) {
-  return switch (mimeType.toLowerCase()) {
-    'audio/aac' => '.aac',
-    'audio/flac' => '.flac',
-    'audio/mpeg' => '.mp3',
-    'audio/ogg' => '.ogg',
-    'audio/opus' => '.opus',
-    'audio/wav' || 'audio/x-wav' => '.wav',
-    'audio/webm' => '.webm',
-    _ => '.m4a',
-  };
 }
 
 bool _sameDay(DateTime a, DateTime b) {

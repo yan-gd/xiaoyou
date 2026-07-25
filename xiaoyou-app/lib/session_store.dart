@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -92,6 +94,7 @@ class SessionStore {
   static const _compactMessagesKey = 'xiaoyou.compact_messages';
   static const _paletteKey = 'xiaoyou.palette';
   static const _bubbleRadiusKey = 'xiaoyou.bubble_radius';
+  static const _favoriteMessageIdsKey = 'xiaoyou.favorite_message_ids';
   static const _tokenKey = 'xiaoyou.connection_token';
 
   final SharedPreferencesAsync _preferences;
@@ -139,6 +142,38 @@ class SessionStore {
       return;
     }
     await _preferences.setString(_draftKey, value);
+  }
+
+  Future<Set<String>> loadFavoriteMessageIds() async {
+    final raw = await _preferences.getString(_favoriteMessageIdsKey);
+    if (raw == null || raw.trim().isEmpty) {
+      return <String>{};
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        return <String>{};
+      }
+      return decoded
+          .whereType<String>()
+          .where((id) => id.trim().isNotEmpty)
+          .toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  Future<void> saveFavoriteMessageIds(Iterable<String> ids) async {
+    final normalized = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    await _preferences.setString(
+      _favoriteMessageIdsKey,
+      jsonEncode(normalized),
+    );
   }
 
   Future<AppPreferences> loadPreferences() async {
@@ -208,6 +243,7 @@ class SessionStore {
     await _preferences.remove(_deviceIdKey);
     await _preferences.remove(_appLockKey);
     await _preferences.remove(_draftKey);
+    await _preferences.remove(_favoriteMessageIdsKey);
     await _preferences.remove(_notificationsKey);
     await _preferences.remove(_notificationSoundKey);
     await _preferences.remove(_notificationVibrationKey);
