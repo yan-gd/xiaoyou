@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
+import 'achievement_screen.dart';
 import 'chat_models.dart';
 import 'media_save_service.dart';
 import 'notification_service.dart';
@@ -1672,6 +1673,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _openAchievements() async {
+    final favoriteCount = _favoriteMessageIds
+        .where((id) => _messages.any((message) => message.id == id))
+        .length;
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => ChatAchievementScreen(
+          messages: List<ChatMessage>.unmodifiable(_messages),
+          favoriteCount: favoriteCount,
+        ),
+      ),
+    );
+  }
+
   void _openConversationTools() {
     final activeDays = _messages
         .map((message) {
@@ -1705,6 +1720,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onFavorites: () {
           Navigator.pop(sheetContext);
           unawaited(_openFavorites());
+        },
+        onAchievements: () {
+          Navigator.pop(sheetContext);
+          unawaited(_openAchievements());
         },
         onSettings: () {
           Navigator.pop(sheetContext);
@@ -2828,6 +2847,7 @@ class _ConversationToolsSheet extends StatelessWidget {
     required this.onLatest,
     required this.onSearch,
     required this.onFavorites,
+    required this.onAchievements,
     required this.onSettings,
   });
 
@@ -2838,6 +2858,7 @@ class _ConversationToolsSheet extends StatelessWidget {
   final VoidCallback onLatest;
   final VoidCallback onSearch;
   final VoidCallback onFavorites;
+  final VoidCallback onAchievements;
   final VoidCallback onSettings;
 
   @override
@@ -2924,39 +2945,53 @@ class _ConversationToolsSheet extends StatelessWidget {
                   const SizedBox(height: 16),
                   _SettingsCard(
                     children: [
-                      const ListTile(
-                        leading: _SettingsIcon(icon: Icons.insights_rounded),
-                        title: Text('这段关系的足迹'),
-                        subtitle: Text('统计只来自当前已加载的聊天记录，不会上传到服务器'),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                        child: _RelationshipChart(
-                          messageCount: messageCount,
-                          mediaCount: mediaCount,
-                          activeDays: activeDays,
-                          favoriteCount: favoriteCount,
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                        child: Row(
+                      InkWell(
+                        onTap: onAchievements,
+                        child: Column(
                           children: [
-                            _ConversationStat(
-                              value: '$messageCount',
-                              label: '条消息',
+                            const ListTile(
+                              leading: _SettingsIcon(
+                                icon: Icons.workspace_premium_rounded,
+                              ),
+                              title: Text('这段关系的足迹'),
+                              subtitle: Text('打开 72 项情侣聊天成就，回看你们共同写下的故事'),
+                              trailing: Icon(
+                                Icons.arrow_forward_ios_rounded,
+                                color: _rose,
+                                size: 17,
+                              ),
                             ),
-                            _ConversationStat(
-                              value: '$mediaCount',
-                              label: '条媒体',
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                              child: _RelationshipChart(
+                                messageCount: messageCount,
+                                mediaCount: mediaCount,
+                                activeDays: activeDays,
+                                favoriteCount: favoriteCount,
+                              ),
                             ),
-                            _ConversationStat(
-                              value: '$activeDays',
-                              label: '个活跃日',
-                            ),
-                            _ConversationStat(
-                              value: '$favoriteCount',
-                              label: '条收藏',
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              child: Row(
+                                children: [
+                                  _ConversationStat(
+                                    value: '$messageCount',
+                                    label: '条消息',
+                                  ),
+                                  _ConversationStat(
+                                    value: '$mediaCount',
+                                    label: '条媒体',
+                                  ),
+                                  _ConversationStat(
+                                    value: '$activeDays',
+                                    label: '个活跃日',
+                                  ),
+                                  _ConversationStat(
+                                    value: '$favoriteCount',
+                                    label: '条收藏',
+                                  ),
+                                ],
+                              ),
                             ),
                           ],
                         ),
