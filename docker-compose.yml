@@ -24,6 +24,9 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_HOST: '0.0.0.0' # 容器内监听地址；宿主机端口仍只绑定127.0.0.1。
       XIAOYOU_APP_PORT: '8787' # App HTTP/SSE 服务端口。
       XIAOYOU_APP_DB_PATH: '/app/data/app_channel/app.db' # App设备、输入幂等、输出收件箱和送达回执。
+      XIAOYOU_RELATIONSHIP_DB_PATH: '/app/data/app_channel/relationship.db' # 日记草稿、时光信笺和语音房间纪念卡；不参与长期记忆。
+      XIAOYOU_APP_JOURNAL_MODEL: '${XIAOYOU_APP_JOURNAL_MODEL:-qwen3.7-plus}' # 只整理当天真实对话，确认前不会成为共同经历。
+      XIAOYOU_APP_JOURNAL_TIMEOUT: '${XIAOYOU_APP_JOURNAL_TIMEOUT:-45}' # 日记模型失败时退回可验证的本地事实摘要。
       XIAOYOU_APP_DEFAULT_PROACTIVE: '${XIAOYOU_APP_DEFAULT_PROACTIVE:-false}' # 无明确来源的主动消息默认仍走微信；开启后优先进入最近App设备收件箱。
       XIAOYOU_APP_VOICE_ENABLED: '${XIAOYOU_APP_VOICE_ENABLED:-true}' # 只启用App录音转写与语音回复；不改变微信语音开关。
       XIAOYOU_APP_ASR_MODEL: 'qwen3-asr-flash' # App短语音同步识别，结果作为用户原话进入现有对话链路。
@@ -42,6 +45,9 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_VOICE_ROUTE_CONTEXT_MAX_CHARS: '2600' # 判断可读取的近期真实对话上限。
       XIAOYOU_APP_VOICE_MAX_BYTES: '6291456' # 单条App录音最多6MiB；客户端同时限制60秒。
       XIAOYOU_APP_IMAGE_MAX_BYTES: '8388608' # App上传图片或表情包最大8MiB；Nginx需同步允许8m。
+      XIAOYOU_VIVO_PUSH_APP_ID: '${XIAOYOU_VIVO_PUSH_APP_ID:-}' # vivo推送应用ID；服务端鉴权与APK必须使用同一应用。
+      XIAOYOU_VIVO_PUSH_APP_KEY: '${XIAOYOU_VIVO_PUSH_APP_KEY:-}' # vivo推送App Key；同时在构建APK时通过环境变量注入。
+      XIAOYOU_VIVO_PUSH_APP_SECRET: '${XIAOYOU_VIVO_PUSH_APP_SECRET:-}' # vivo推送App Secret；只允许保存在服务器.env，禁止打入APK。
       SHORT_MEMORY_STATE_PATH: '/app/data/short_memory/short_memory.json' # 短期记忆主文件；备份写入同目录。
       REMINDER_LOVE_STATE_PATH: '/app/data/reminder_love/reminders.json' # 提醒任务状态。
       PROACTIVE_LOVE_STATE_PATH: '/app/data/proactive_love/proactive_state.json' # 主动消息调度状态。

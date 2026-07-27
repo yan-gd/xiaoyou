@@ -9,10 +9,10 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
-import 'achievement_screen.dart';
 import 'chat_models.dart';
 import 'media_save_service.dart';
 import 'notification_service.dart';
+import 'relationship_universe_screen.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
@@ -78,6 +78,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _appInForeground = true;
   bool _systemNotificationsAllowed = false;
   bool _batteryOptimizationIgnored = true;
+  SystemPushStatus _systemPushStatus = const SystemPushStatus();
   AppPreferences _preferences = const AppPreferences();
   String _moodAsset = 'assets/moods/平静.png';
   String _moodLabel = '平静';
@@ -172,6 +173,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     _batterySettingsResume = null;
     unawaited(_syncNotificationPermissionFromSystem());
+    unawaited(_syncSystemPushStatus());
     unawaited(_syncBatteryOptimization());
     if (_lockEnabled && _locked && !_authenticating) {
       unawaited(_unlock());
@@ -334,6 +336,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ..selection = TextSelection.collapsed(offset: draft.length);
       }
       await _syncNotificationPermissionFromSystem();
+      await _syncSystemPushStatus();
       if (saved == null) {
         return;
       }
@@ -1315,6 +1318,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         preview: _preferences.notificationPreview,
         sound: _preferences.notificationSound,
         vibration: _preferences.notificationVibration,
+        systemPush: _preferences.systemPushEnabled,
       );
       return true;
     } catch (_) {
@@ -1343,6 +1347,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       } else if (!systemEnabled) {
         unawaited(_notificationService.stopBackgroundDelivery());
+        if (_preferences.systemPushEnabled) {
+          _updatePreferences(
+            _preferences.copyWith(systemPushEnabled: false),
+          );
+        }
       }
     } catch (_) {
       // System permission synchronization is best effort.
@@ -1410,6 +1419,112 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _preferences.copyWith(
         notificationsEnabled: enabled,
         notificationExplicitlyDisabled: !enabled,
+      ),
+    );
+    return true;
+  }
+
+  Future<void> _syncSystemPushStatus() async {
+    if (!Platform.isAndroid) {
+      return;
+    }
+    try {
+      final status = await _notificationService.systemPushStatus();
+      if (!mounted) {
+        return;
+      }
+      setState(() => _systemPushStatus = status);
+      if (_preferences.systemPushEnabled != status.active) {
+        _updatePreferences(
+          _preferences.copyWith(systemPushEnabled: status.active),
+        );
+      }
+    } catch (_) {
+      // System push status is advisory; polling remains available.
+    }
+  }
+
+  Future<bool> _setSystemPushEnabled(bool enabled) async {
+    if (!Platform.isAndroid) {
+      return false;
+    }
+    if (enabled) {
+      if (!_preferences.notificationsEnabled) {
+        final notificationsReady = await _setNotificationsEnabled(true);
+        if (!notificationsReady) {
+          return false;
+        }
+      }
+      if (!mounted) {
+        return false;
+      }
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('启用 vivo 系统级推送'),
+          content: const Text(
+            '启用后会使用 vivo 推送 SDK 获取设备推送标识、设备类型与系统版本，'
+            '仅用于把小悠的新消息交给手机系统及时提醒。服务商为维沃移动通信有限公司。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('暂不启用'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('同意并启用'),
+            ),
+          ],
+        ),
+      );
+      if (accepted != true) {
+        return false;
+      }
+      try {
+        final status = await _notificationService.enableSystemPush();
+        if (!mounted) {
+          return false;
+        }
+        setState(() => _systemPushStatus = status);
+        if (!status.active) {
+          final message = switch (status.error) {
+            'not_configured' => '当前安装包尚未配置 vivo 推送凭证，已继续使用后台服务兜底',
+            'unsupported_device' => '这台设备不支持 vivo 系统推送，已继续使用后台服务兜底',
+            _ => '系统级推送注册失败，已继续使用后台服务兜底',
+          };
+          _showSnack(message);
+          return false;
+        }
+        _updatePreferences(
+          _preferences.copyWith(systemPushEnabled: true),
+        );
+        _showSnack('vivo 系统级推送已连接，关闭 App 后也能及时提醒');
+        return true;
+      } catch (_) {
+        if (mounted) {
+          _showSnack('系统级推送暂时无法连接，已继续使用后台服务兜底');
+        }
+        return false;
+      }
+    }
+    try {
+      final status = await _notificationService.disableSystemPush();
+      if (mounted) {
+        setState(() => _systemPushStatus = status);
+      }
+    } catch (_) {
+      // Local preference still controls whether registration is retried.
+    }
+    if (!mounted) {
+      return false;
+    }
+    _updatePreferences(
+      _preferences.copyWith(systemPushEnabled: false),
+    );
+    unawaited(
+      _configureBackgroundNotifications(
+        appInForeground: _appInForeground,
       ),
     );
     return true;
@@ -1597,6 +1712,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _openSettings() async {
     await _syncNotificationPermissionFromSystem();
+    await _syncSystemPushStatus();
     await _syncBatteryOptimization();
     if (!mounted) {
       return;
@@ -1612,9 +1728,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         lockEnabled: _lockEnabled,
         preferences: _preferences,
         systemNotificationsAllowed: _systemNotificationsAllowed,
+        systemPushStatus: _systemPushStatus,
         batteryOptimizationIgnored: _batteryOptimizationIgnored,
         onLockChanged: _setAppLock,
         onNotificationsChanged: _setNotificationsEnabled,
+        onSystemPushChanged: _setSystemPushEnabled,
         onTestNotification: _sendTestNotification,
         onOpenNotificationSettings: _openSystemNotificationSettings,
         onOpenBatteryOptimizationSettings: _openBatteryOptimizationSettings,
@@ -1673,15 +1791,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _openAchievements() async {
-    final favoriteCount = _favoriteMessageIds
-        .where((id) => _messages.any((message) => message.id == id))
-        .length;
+  Future<void> _openRelationshipUniverse() async {
+    final api = _api;
+    if (api == null) {
+      _showSnack('先连接小悠，就能打开你们的关系星图');
+      return;
+    }
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (context) => ChatAchievementScreen(
+        builder: (_) => RelationshipUniverseScreen(
+          api: api,
           messages: List<ChatMessage>.unmodifiable(_messages),
-          favoriteCount: favoriteCount,
+          favoriteMessageIds: Set<String>.unmodifiable(_favoriteMessageIds),
+          lastEventSequence: _lastEventSequence,
         ),
       ),
     );
@@ -1723,7 +1845,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         },
         onAchievements: () {
           Navigator.pop(sheetContext);
-          unawaited(_openAchievements());
+          unawaited(_openRelationshipUniverse());
         },
         onSettings: () {
           Navigator.pop(sheetContext);
@@ -2331,9 +2453,11 @@ class _SettingsSheet extends StatefulWidget {
     required this.lockEnabled,
     required this.preferences,
     required this.systemNotificationsAllowed,
+    required this.systemPushStatus,
     required this.batteryOptimizationIgnored,
     required this.onLockChanged,
     required this.onNotificationsChanged,
+    required this.onSystemPushChanged,
     required this.onTestNotification,
     required this.onOpenNotificationSettings,
     required this.onOpenBatteryOptimizationSettings,
@@ -2348,9 +2472,11 @@ class _SettingsSheet extends StatefulWidget {
   final bool lockEnabled;
   final AppPreferences preferences;
   final bool systemNotificationsAllowed;
+  final SystemPushStatus systemPushStatus;
   final bool batteryOptimizationIgnored;
   final Future<bool> Function(bool) onLockChanged;
   final Future<bool> Function(bool) onNotificationsChanged;
+  final Future<bool> Function(bool) onSystemPushChanged;
   final Future<bool> Function() onTestNotification;
   final Future<void> Function() onOpenNotificationSettings;
   final Future<bool> Function() onOpenBatteryOptimizationSettings;
@@ -2367,9 +2493,11 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _lockEnabled = widget.lockEnabled;
   late AppPreferences _preferences = widget.preferences;
   late bool _systemNotificationsAllowed = widget.systemNotificationsAllowed;
+  late SystemPushStatus _systemPushStatus = widget.systemPushStatus;
   late bool _batteryOptimizationIgnored = widget.batteryOptimizationIgnored;
   bool _changingLock = false;
   bool _changingNotifications = false;
+  bool _changingSystemPush = false;
   bool _testingNotifications = false;
 
   Future<void> _changeLock(bool value) async {
@@ -2412,6 +2540,46 @@ class _SettingsSheetState extends State<_SettingsSheet> {
         });
       }
     }
+  }
+
+  Future<void> _changeSystemPush(bool value) async {
+    setState(() => _changingSystemPush = true);
+    var changed = false;
+    try {
+      changed = await widget.onSystemPushChanged(value);
+    } catch (_) {
+      changed = false;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _changingSystemPush = false;
+          if (changed) {
+            _preferences = _preferences.copyWith(
+              systemPushEnabled: value,
+            );
+            _systemPushStatus = SystemPushStatus(
+              configured: _systemPushStatus.configured,
+              supported: _systemPushStatus.supported,
+              consented: value,
+              active: value,
+            );
+          }
+        });
+      }
+    }
+  }
+
+  String get _systemPushSubtitle {
+    if (_systemPushStatus.active) {
+      return '已交给 vivo 系统长连接，App 关闭后也能秒级提醒';
+    }
+    if (!_systemPushStatus.configured) {
+      return '当前安装包未配置 vivo 凭证，暂由后台服务兜底';
+    }
+    if (!_systemPushStatus.supported) {
+      return '当前设备不支持 vivo 推送，暂由后台服务兜底';
+    }
+    return '减少 OriginOS 冻结后台造成的延迟和漏提醒';
   }
 
   Future<void> _testNotification() async {
@@ -2524,6 +2692,30 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                           onChanged: _changeNotifications,
                         ),
                 ),
+                if (Platform.isAndroid)
+                  ListTile(
+                    enabled: _preferences.notificationsEnabled,
+                    leading: _SettingsIcon(
+                      icon: _systemPushStatus.active
+                          ? Icons.bolt_rounded
+                          : Icons.cloud_sync_outlined,
+                    ),
+                    title: const Text('vivo 系统级推送'),
+                    subtitle: Text(_systemPushSubtitle),
+                    trailing: _changingSystemPush
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Switch.adaptive(
+                            value: _preferences.systemPushEnabled &&
+                                _systemPushStatus.active,
+                            onChanged: _preferences.notificationsEnabled
+                                ? _changeSystemPush
+                                : null,
+                          ),
+                  ),
                 ListTile(
                   leading: _SettingsIcon(
                     icon: _systemNotificationsAllowed
@@ -2953,8 +3145,10 @@ class _ConversationToolsSheet extends StatelessWidget {
                               leading: _SettingsIcon(
                                 icon: Icons.workspace_premium_rounded,
                               ),
-                              title: Text('这段关系的足迹'),
-                              subtitle: Text('打开 72 项情侣聊天成就，回看你们共同写下的故事'),
+                              title: Text('我们的轨道'),
+                              subtitle: Text(
+                                '星图、日记、时光信笺、语音房间与 72 项相伴成就',
+                              ),
                               trailing: Icon(
                                 Icons.arrow_forward_ios_rounded,
                                 color: _rose,

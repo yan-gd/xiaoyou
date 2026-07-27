@@ -45,6 +45,7 @@ from plugins.xiaoyou_common.outbound_dispatcher import (
 )
 from plugins.xiaoyou_common.recent_state_service import get_recent_state_service
 from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
+from plugins.xiaoyou_common.system_push_service import SystemPushDispatcher
 from plugins.xiaoyou_common.trace_service import (
     attach_input_trace,
     trace_event,
@@ -159,10 +160,11 @@ def _safe_device_id(value):
 class AppInboxStore:
     """Durable App input/output inbox under ``data/app_channel``."""
 
-    def __init__(self, path=DATABASE_PATH):
+    def __init__(self, path=DATABASE_PATH, push_dispatcher=None):
         self.path = str(path)
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
+        self.push_dispatcher = push_dispatcher
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         self._initialize()
@@ -184,6 +186,11 @@ class AppInboxStore:
                     session_id TEXT NOT NULL,
                     platform TEXT NOT NULL DEFAULT '',
                     push_token TEXT NOT NULL DEFAULT '',
+                    push_provider TEXT NOT NULL DEFAULT '',
+                    push_enabled INTEGER NOT NULL DEFAULT 0,
+                    push_preview INTEGER NOT NULL DEFAULT 1,
+                    push_sound INTEGER NOT NULL DEFAULT 1,
+                    push_vibration INTEGER NOT NULL DEFAULT 1,
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at INTEGER NOT NULL,
                     last_seen_at INTEGER NOT NULL
@@ -263,6 +270,22 @@ class AppInboxStore:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(inputs)")
             }
+            device_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(devices)")
+            }
+            for column, definition in (
+                ("push_provider", "TEXT NOT NULL DEFAULT ''"),
+                ("push_enabled", "INTEGER NOT NULL DEFAULT 0"),
+                ("push_preview", "INTEGER NOT NULL DEFAULT 1"),
+                ("push_sound", "INTEGER NOT NULL DEFAULT 1"),
+                ("push_vibration", "INTEGER NOT NULL DEFAULT 1"),
+            ):
+                if column not in device_columns:
+                    connection.execute(
+                        "ALTER TABLE devices ADD COLUMN %s %s"
+                        % (column, definition)
+                    )
             if "status" not in input_columns:
                 connection.execute(
                     """
@@ -320,36 +343,131 @@ class AppInboxStore:
                 """
             )
 
-    def register_device(self, device_id, session_id, platform="", push_token=""):
+    def set_push_dispatcher(self, dispatcher):
+        self.push_dispatcher = dispatcher
+
+    def register_device(
+        self,
+        device_id,
+        session_id,
+        platform="",
+        push_token=None,
+        push_provider=None,
+        push_enabled=None,
+        push_preview=None,
+        push_sound=None,
+        push_vibration=None,
+    ):
         device_id = _safe_device_id(device_id)
         session_id = str(session_id or "").strip()
         if not device_id or not session_id:
             return False
         now = int(time.time())
         with self.lock, self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO devices(
-                    device_id, session_id, platform, push_token,
-                    active, created_at, last_seen_at
-                ) VALUES(?, ?, ?, ?, 1, ?, ?)
-                ON CONFLICT(device_id) DO UPDATE SET
-                    session_id=excluded.session_id,
-                    platform=excluded.platform,
-                    push_token=excluded.push_token,
-                    active=1,
-                    last_seen_at=excluded.last_seen_at
-                """,
-                (
-                    device_id,
-                    session_id,
-                    str(platform or "")[:40],
-                    str(push_token or "")[:2048],
-                    now,
-                    now,
-                ),
-            )
+            existing = connection.execute(
+                "SELECT 1 FROM devices WHERE device_id=?",
+                (device_id,),
+            ).fetchone()
+            if existing:
+                updates = [
+                    "session_id=?",
+                    "platform=?",
+                    "active=1",
+                    "last_seen_at=?",
+                ]
+                values = [session_id, str(platform or "")[:40], now]
+                for column, value, normalize in (
+                    (
+                        "push_token",
+                        push_token,
+                        lambda item: str(item or "")[:2048],
+                    ),
+                    (
+                        "push_provider",
+                        push_provider,
+                        lambda item: str(item or "")[:40],
+                    ),
+                    (
+                        "push_enabled",
+                        push_enabled,
+                        lambda item: int(bool(item)),
+                    ),
+                    (
+                        "push_preview",
+                        push_preview,
+                        lambda item: int(bool(item)),
+                    ),
+                    (
+                        "push_sound",
+                        push_sound,
+                        lambda item: int(bool(item)),
+                    ),
+                    (
+                        "push_vibration",
+                        push_vibration,
+                        lambda item: int(bool(item)),
+                    ),
+                ):
+                    if value is not None:
+                        updates.append(column + "=?")
+                        values.append(normalize(value))
+                values.append(device_id)
+                connection.execute(
+                    "UPDATE devices SET %s WHERE device_id=?"
+                    % ", ".join(updates),
+                    tuple(values),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO devices(
+                        device_id, session_id, platform, push_token,
+                        push_provider, push_enabled, push_preview, push_sound,
+                        push_vibration, active, created_at, last_seen_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        device_id,
+                        session_id,
+                        str(platform or "")[:40],
+                        str(push_token or "")[:2048],
+                        str(push_provider or "")[:40],
+                        int(bool(push_enabled)),
+                        1 if push_preview is None else int(bool(push_preview)),
+                        1 if push_sound is None else int(bool(push_sound)),
+                        1
+                        if push_vibration is None
+                        else int(bool(push_vibration)),
+                        now,
+                        now,
+                    ),
+                )
         return True
+
+    def push_target(self, device_id):
+        device_id = _safe_device_id(device_id)
+        if not device_id:
+            return None
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT push_provider, push_token, push_preview,
+                       push_sound, push_vibration
+                FROM devices
+                WHERE device_id=? AND active=1 AND push_enabled=1
+                  AND push_token != ''
+                """,
+                (device_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "provider": str(row["push_provider"] or ""),
+            "token": str(row["push_token"] or ""),
+            "preview": bool(row["push_preview"]),
+            "sound": bool(row["push_sound"]),
+            "vibration": bool(row["push_vibration"]),
+        }
 
     def preferred_device(self, session_id):
         with self.lock, self._connect() as connection:
@@ -525,6 +643,8 @@ class AppInboxStore:
             return False
 
         now = int(time.time())
+        push_kind = "text"
+        push_text = parts[0] if parts else ""
         with self.changed, self._connect() as connection:
             existing = connection.execute(
                 "SELECT 1 FROM actions WHERE action_id=?",
@@ -543,6 +663,15 @@ class AppInboxStore:
                 )
             elif voice_path:
                 voice_media = self._copy_media(voice_path, device_id)
+            if voice_media:
+                push_kind = "voice"
+                push_text = str(voice_text or "").strip()
+            elif parts:
+                push_kind = "text"
+                push_text = parts[0]
+            elif media or image_url:
+                push_kind = "image"
+                push_text = ""
             event_count = (
                 len(parts)
                 + int(bool(media or image_url))
@@ -652,6 +781,23 @@ class AppInboxStore:
                     (message_id,),
                 )
             self.changed.notify_all()
+        target = self.push_target(device_id)
+        dispatcher = self.push_dispatcher
+        if (
+            dispatcher is not None
+            and target is not None
+            and target.get("provider") == "vivo"
+        ):
+            dispatcher.enqueue(
+                action_id=action_id,
+                device_id=device_id,
+                reg_id=target["token"],
+                kind=push_kind,
+                text=push_text,
+                preview=target["preview"],
+                sound=target["sound"],
+                vibration=target["vibration"],
+            )
         return True
 
     def _copy_media(self, source_path, device_id):
@@ -1496,6 +1642,13 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/v1/relationship/entries":
+            entries = self.plugin.relationship.list_entries(
+                self.plugin.canonical_session_id,
+                include_drafts=True,
+            )
+            self._json(200, {"entries": entries})
+            return
         if parsed.path == "/v1/events":
             events = self.plugin.store.events_after(
                 device_id,
@@ -1579,11 +1732,22 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 device_id = _safe_device_id(payload.get("device_id"))
                 if not device_id:
                     raise ValueError("invalid_device_id")
+                push_options = {}
+                for key in (
+                    "push_token",
+                    "push_provider",
+                    "push_enabled",
+                    "push_preview",
+                    "push_sound",
+                    "push_vibration",
+                ):
+                    if key in payload:
+                        push_options[key] = payload[key]
                 self.plugin.store.register_device(
                     device_id,
                     self.plugin.canonical_session_id,
                     platform=payload.get("platform", ""),
-                    push_token=payload.get("push_token", ""),
+                    **push_options,
                 )
                 self._json(200, {"ok": True, "device_id": device_id})
                 return
@@ -1603,6 +1767,83 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         "message_id": str(payload.get("message_id") or ""),
                     },
                 )
+                return
+            if parsed.path == "/v1/relationship/journals/draft":
+                from plugins.xiaoyou_common.inner_state_service import (
+                    get_inner_state_service,
+                )
+
+                device_id = _safe_device_id(payload.get("device_id"))
+                if not device_id:
+                    raise ValueError("invalid_device_id")
+                day = str(payload.get("day") or "").strip()
+                history = self.plugin.store.history(device_id, limit=300)
+                state = get_inner_state_service().get(
+                    self.plugin.canonical_session_id,
+                )
+                entry = self.plugin.relationship.draft_daily_journal(
+                    session_id=self.plugin.canonical_session_id,
+                    day=day,
+                    messages=history,
+                    mood=_mood_descriptor(state),
+                )
+                self._json(200, {"entry": entry})
+                return
+            journal_prefix = "/v1/relationship/journals/"
+            if (
+                parsed.path.startswith(journal_prefix)
+                and parsed.path.endswith("/confirm")
+            ):
+                entry_id = parsed.path[
+                    len(journal_prefix):-len("/confirm")
+                ].strip("/")
+                entry = self.plugin.relationship.confirm_journal(
+                    self.plugin.canonical_session_id,
+                    entry_id,
+                    body=payload.get("body"),
+                )
+                if entry is None:
+                    self._json(404, {"error": "journal_not_found"})
+                else:
+                    self._json(200, {"entry": entry})
+                return
+            if parsed.path == "/v1/relationship/capsules":
+                entry = self.plugin.relationship.create_capsule(
+                    session_id=self.plugin.canonical_session_id,
+                    title=payload.get("title"),
+                    text=payload.get("text"),
+                    unlock_at=payload.get("unlock_at"),
+                    author=payload.get("author", "user"),
+                )
+                self._json(201, {"entry": entry})
+                return
+            capsule_prefix = "/v1/relationship/capsules/"
+            if (
+                parsed.path.startswith(capsule_prefix)
+                and parsed.path.endswith("/open")
+            ):
+                entry_id = parsed.path[
+                    len(capsule_prefix):-len("/open")
+                ].strip("/")
+                entry = self.plugin.relationship.open_capsule(
+                    self.plugin.canonical_session_id,
+                    entry_id,
+                )
+                if entry is None:
+                    self._json(404, {"error": "capsule_not_found"})
+                else:
+                    self._json(200, {"entry": entry})
+                return
+            if parsed.path == "/v1/relationship/voice-memories":
+                entry = self.plugin.relationship.record_voice_memory(
+                    session_id=self.plugin.canonical_session_id,
+                    started_at=payload.get("started_at"),
+                    ended_at=payload.get("ended_at"),
+                    turn_count=payload.get("turn_count"),
+                    duration_ms=payload.get("duration_ms"),
+                    title=payload.get("title", "耳边的一会儿"),
+                )
+                self._json(201, {"entry": entry})
                 return
             prefix = "/v1/deliveries/"
             if parsed.path.startswith(prefix):
@@ -1758,7 +1999,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.3-semantic-voice",
+    version="1.4-relationship-universe",
     author="yoyo",
     desire_priority=10001,
 )
@@ -1774,6 +2015,7 @@ class AppChannel(Plugin):
         self.store = None
         self.runtime = None
         self.httpd = None
+        self.relationship = None
         if not self.enabled:
             logger.info("[AppChannel] disabled")
             return
@@ -1784,9 +2026,16 @@ class AppChannel(Plugin):
             self.enabled = False
             return
 
+        from plugins.xiaoyou_common.relationship_universe_service import (
+            RelationshipUniverseService,
+        )
+
+        self.relationship = RelationshipUniverseService()
+
         existing = get_app_service()
         if existing is not None:
             self.store = existing.store
+            self.store.set_push_dispatcher(SystemPushDispatcher())
             self.runtime = existing.runtime
             self.runtime.voice_service = AppVoiceService()
             self.runtime.voice_reply_decision = (
@@ -1800,7 +2049,9 @@ class AppChannel(Plugin):
             )
             return
 
-        self.store = AppInboxStore()
+        self.store = AppInboxStore(
+            push_dispatcher=SystemPushDispatcher(),
+        )
         register_app_store(self.store)
         self.runtime = AppRuntimeChannel(
             self.store,

@@ -136,6 +136,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "plugins.xiaoyou_common.runtime_paths": types.ModuleType(
             "plugins.xiaoyou_common.runtime_paths"
         ),
+        "plugins.xiaoyou_common.system_push_service": types.ModuleType(
+            "plugins.xiaoyou_common.system_push_service"
+        ),
         "plugins.xiaoyou_common.trace_service": types.ModuleType(
             "plugins.xiaoyou_common.trace_service"
         ),
@@ -176,6 +179,12 @@ def _load_app_channel(monkeypatch, tmp_path):
     runtime_paths.runtime_path = (
         lambda *_args, **_kwargs: str(tmp_path / "app_channel" / "app.db")
     )
+    modules[
+        "plugins.xiaoyou_common.system_push_service"
+    ].SystemPushDispatcher = lambda: types.SimpleNamespace(
+        enabled=False,
+        enqueue=lambda **_kwargs: False,
+    )
     trace = modules["plugins.xiaoyou_common.trace_service"]
     trace.attach_input_trace = lambda *args, **kwargs: None
     trace.trace_event = lambda *args, **kwargs: None
@@ -213,6 +222,78 @@ def test_app_runtime_owns_work_queues_but_shares_input_version_clock(
         is module.ChatChannel.input_versions
     )
     assert module.AppRuntimeChannel.lock is module.ChatChannel.lock
+
+
+def test_device_reconnect_preserves_system_push_registration(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+
+    assert store.register_device(
+        "phone-push",
+        "yoyo",
+        platform="android",
+        push_provider="vivo",
+        push_token="reg-id-1",
+        push_enabled=True,
+        push_preview=False,
+        push_sound=True,
+        push_vibration=False,
+    )
+    # Normal App reconnects do not include push fields.
+    assert store.register_device(
+        "phone-push",
+        "yoyo",
+        platform="android",
+    )
+
+    assert store.push_target("phone-push") == {
+        "provider": "vivo",
+        "token": "reg-id-1",
+        "preview": False,
+        "sound": True,
+        "vibration": False,
+    }
+
+
+def test_committed_action_enqueues_system_push_once(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    queued = []
+    dispatcher = types.SimpleNamespace(
+        enqueue=lambda **kwargs: queued.append(kwargs) or True,
+    )
+    store = module.AppInboxStore(
+        tmp_path / "app_channel" / "app.db",
+        push_dispatcher=dispatcher,
+    )
+    store.register_device(
+        "phone-push",
+        "yoyo",
+        platform="android",
+        push_provider="vivo",
+        push_token="reg-id-1",
+        push_enabled=True,
+    )
+
+    arguments = {
+        "action_id": "push-action-1",
+        "session_id": "yoyo",
+        "device_id": "phone-push",
+        "source": "proactive_love",
+        "parts": ["记得吃午饭呀"],
+    }
+    assert store.queue_action(**arguments)
+    assert store.queue_action(**arguments)
+
+    assert len(queued) == 1
+    assert queued[0]["action_id"] == "push-action-1"
+    assert queued[0]["text"] == "记得吃午饭呀"
+    assert queued[0]["reg_id"] == "reg-id-1"
 
 
 def test_app_text_reply_uses_model_selected_voice_medium(

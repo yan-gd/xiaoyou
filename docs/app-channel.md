@@ -44,6 +44,9 @@ XIAOYOU_APP_VOICE_ENABLED=true
 XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED=true
 XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 XIAOYOU_APP_TTS_LOUDNESS_RATE=100
+XIAOYOU_VIVO_PUSH_APP_ID=vivo开放平台应用ID
+XIAOYOU_VIVO_PUSH_APP_KEY=vivo开放平台AppKey
+XIAOYOU_VIVO_PUSH_APP_SECRET=vivo开放平台AppSecret
 ```
 
 生成随机令牌：
@@ -72,6 +75,34 @@ XIAOYOU_APP_VOICE_ROUTE_ENABLE_THINKING=false
 `[-50, 100]`，默认 `100`；其中 `100` 代表 2 倍音量、`0` 代表默认音量、
 `-50` 代表 0.5 倍音量。凭证只放服务器 `.env`，不要写入 APK 或提交 Git。
 App 播放端不再额外增加 Android 响度，避免双重放大和跨平台音量不一致。
+
+### vivo 系统级推送
+
+原生后台轮询仍作为降级链路，但 OriginOS 可以冻结或终止 App 进程。要在
+App 已退出时仍由手机系统秒级唤醒通知，需要在 vivo 开放平台创建推送应用：
+
+1. 应用包名固定为 `com.yoyo.xiaoyou`，使用稳定的正式签名登记应用。
+2. 服务器 `.env` 配置上面的 App ID、App Key 和 App Secret；Secret 不得写入
+   APK、Gradle 文件或 Git。
+3. 构建 APK 的电脑只注入 App ID 与 App Key：
+
+```powershell
+$env:XIAOYOU_VIVO_PUSH_APP_ID="你的AppID"
+$env:XIAOYOU_VIVO_PUSH_APP_KEY="你的AppKey"
+cd xiaoyou-app
+flutter build apk --release
+```
+
+4. 安装后在「系统设置 → vivo 系统级推送」中阅读隐私说明并明确同意。
+
+注册成功后，服务器在消息事务提交后把 `action_id` 放入有界后台队列，再调用
+vivo 系统长连接。推送只是唤醒信号，完整消息仍保存在
+`data/app_channel/app.db`；推送接口失败不会阻塞回复，也不会丢消息。系统推送
+生效时 Android 会停用 4 秒轮询，避免双重通知与常驻耗电；凭证缺失、设备不
+支持或注册失败时自动继续使用原生前台服务。
+
+vivo 推送 SDK 只有在用户明确同意后才初始化。它会按照 vivo SDK 的要求处理
+设备推送标识、设备类型和系统版本，唯一用途是系统消息提醒。
 
 重新创建容器：
 
@@ -220,12 +251,39 @@ Content-Type: application/json
 只有客户端实际渲染并确认的回复才会作为“小悠确实说过的话”写入助手记忆。
 语音事件的对应文本参与记忆，二进制音频本身不进入模型上下文。
 
+### 关系轨道、共同日记和时光信笺
+
+App 的“我们的轨道”把已加载的真实聊天、照片、语音、收藏和成就映射为可缩放
+星图。额外的展示记录使用独立 SQLite，不写入长期记忆，也不参与聊天路由：
+
+```text
+GET  /v1/relationship/entries
+POST /v1/relationship/journals/draft
+POST /v1/relationship/journals/<entry_id>/confirm
+POST /v1/relationship/capsules
+POST /v1/relationship/capsules/<entry_id>/open
+POST /v1/relationship/voice-memories
+```
+
+“我们今天”先以当天真实对话生成草稿。代表原话必须逐字存在于当天聊天中，
+代表照片必须来自当天已有 `media_id`；模型结果无法通过事实校验时退回本地
+统计摘要。只有 YoYo 确认后状态才变为 `confirmed`。
+
+时光信笺在 `unlock_at` 之前不会向客户端返回正文。连续语音房间只保存开始、
+结束、时长和来回数作为纪念卡，不保存第二份整段通话录音。
+
+Android 回退通知使用系统 Conversation API：小悠会作为长效会话联系人出现，
+支持通知栏直接回复、优先会话、动态桌面快捷方式、未读角标和独立通知声道。
+vivo 厂商通知仍负责进程完全退出后的可靠到达；系统能力是否展示由手机 ROM
+和用户通知设置共同决定。
+
 ## 数据和影响
 
 运行数据位于：
 
 ```text
 data/app_channel/app.db
+data/app_channel/relationship.db
 data/app_channel/media/
 ```
 
@@ -243,10 +301,11 @@ data/app_channel/media/
 - 图片和表情包同样占用 `data/` 磁盘空间，并会增加一次视觉模型调用。
 - App 语音输入以及模型选择语音的文字回合不经过文字 SplitReply，以保证
   整段回复使用同一语音气泡；模型选择文字时仍保持原有文字行为。
-- Android 使用声明为 `remoteMessaging` 的原生前台服务维持后台消息拉取，约每 4 秒读取一次 `/v1/events`；
-  Flutter 进入后台后停止自身轮询，避免与原生服务重复通知。
-- 前台服务会显示一条低打扰常驻通知。用户强制停止 App、设备重启后尚未重新打开 App，或厂商禁止后台活动时，
-  仍不能等同于 FCM/APNs 离线推送；消息会保存在收件箱并在下次打开时显示。
+- Android 优先使用 vivo 系统长连接推送；注册成功后，即使 App 进程退出也由
+  系统投递通知，不再依赖 App 自己每 4 秒醒来。
+- 未配置 vivo 凭证、用户未同意、设备不支持或注册失败时，声明为
+  `remoteMessaging` 的原生前台服务继续约每 4 秒读取一次 `/v1/events`。
+  Flutter 进入后台后停止自身轮询，避免重复通知。
 - Android 通知权限由原生 Activity 查询和请求；App 内开关只暂停或恢复后台提醒，不会撤销系统权限。
   已授权时再次开启会直接启动后台服务，不再跳转设置。设置页会显示系统实际授权状态并提供测试通知。
 - 客户端区分“Android 系统权限”“App 内提醒偏好”和“后台服务状态”。系统权限关闭时不再覆盖用户偏好，

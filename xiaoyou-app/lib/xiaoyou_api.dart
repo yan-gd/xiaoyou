@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'chat_models.dart';
+import 'relationship_models.dart';
 
 class XiaoyouApi {
   XiaoyouApi({
@@ -68,6 +69,119 @@ class XiaoyouApi {
       query: {'device_id': deviceId},
     );
     return payload;
+  }
+
+  Future<List<RelationshipEntry>> relationshipEntries() async {
+    final payload = await _request(
+      'GET',
+      '/v1/relationship/entries',
+      query: {'device_id': deviceId},
+    );
+    final values = payload['entries'];
+    if (values is! List) {
+      return const [];
+    }
+    return values
+        .whereType<Map>()
+        .map(
+          (value) => RelationshipEntry.fromJson(value.cast<String, dynamic>()),
+        )
+        .toList();
+  }
+
+  Future<DailyJournal> draftDailyJournal(DateTime day) async {
+    final payload = await _request(
+      'POST',
+      '/v1/relationship/journals/draft',
+      body: {
+        'device_id': deviceId,
+        'day': _dateKey(day),
+      },
+    );
+    return DailyJournal.fromEntry(
+      RelationshipEntry.fromJson(
+        (payload['entry'] as Map).cast<String, dynamic>(),
+      ),
+    );
+  }
+
+  Future<DailyJournal> confirmDailyJournal(
+    DailyJournal journal, {
+    required String summary,
+    required String tomorrowWish,
+  }) async {
+    final payload = await _request(
+      'POST',
+      '/v1/relationship/journals/${journal.entry.id}/confirm',
+      body: {
+        'device_id': deviceId,
+        'body': {
+          ...journal.entry.body,
+          'summary': summary,
+          'tomorrow_wish': tomorrowWish,
+        },
+      },
+    );
+    return DailyJournal.fromEntry(
+      RelationshipEntry.fromJson(
+        (payload['entry'] as Map).cast<String, dynamic>(),
+      ),
+    );
+  }
+
+  Future<RelationshipEntry> createTimeCapsule({
+    required String title,
+    required String text,
+    required DateTime unlockAt,
+  }) async {
+    final payload = await _request(
+      'POST',
+      '/v1/relationship/capsules',
+      body: {
+        'device_id': deviceId,
+        'title': title,
+        'text': text,
+        'unlock_at': unlockAt.millisecondsSinceEpoch ~/ 1000,
+        'author': 'user',
+      },
+    );
+    return RelationshipEntry.fromJson(
+      (payload['entry'] as Map).cast<String, dynamic>(),
+    );
+  }
+
+  Future<RelationshipEntry> openTimeCapsule(String entryId) async {
+    final payload = await _request(
+      'POST',
+      '/v1/relationship/capsules/$entryId/open',
+      body: {'device_id': deviceId},
+    );
+    return RelationshipEntry.fromJson(
+      (payload['entry'] as Map).cast<String, dynamic>(),
+    );
+  }
+
+  Future<RelationshipEntry> recordVoiceRoomMemory({
+    required DateTime startedAt,
+    required DateTime endedAt,
+    required int turnCount,
+    required int durationMs,
+  }) async {
+    final payload = await _request(
+      'POST',
+      '/v1/relationship/voice-memories',
+      body: {
+        'device_id': deviceId,
+        'started_at': startedAt.millisecondsSinceEpoch ~/ 1000,
+        'ended_at': endedAt.millisecondsSinceEpoch ~/ 1000,
+        'turn_count': turnCount,
+        'duration_ms': durationMs,
+        'title': '耳边的一会儿',
+      },
+    );
+    return RelationshipEntry.fromJson(
+      (payload['entry'] as Map).cast<String, dynamic>(),
+    );
   }
 
   Future<bool> sendText({
@@ -229,6 +343,11 @@ class XiaoyouApi {
   void close() {
     _client.close(force: true);
   }
+
+  static String _dateKey(DateTime value) =>
+      '${value.year.toString().padLeft(4, '0')}-'
+      '${value.month.toString().padLeft(2, '0')}-'
+      '${value.day.toString().padLeft(2, '0')}';
 
   Future<Map<String, dynamic>> _request(
     String method,

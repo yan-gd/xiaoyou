@@ -89,6 +89,20 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "configureBackgroundNotifications" ->
                     configureBackgroundNotifications(call, result)
+                "systemPushStatus" ->
+                    result.success(
+                        XiaoyouNotificationService.systemPushStatus(this),
+                    )
+                "enableSystemPush" -> {
+                    XiaoyouNotificationService.enableSystemPush(this) { status ->
+                        runOnUiThread { result.success(status) }
+                    }
+                }
+                "disableSystemPush" -> {
+                    XiaoyouNotificationService.disableSystemPush(this) { status ->
+                        runOnUiThread { result.success(status) }
+                    }
+                }
                 "stopBackgroundNotifications" -> {
                     XiaoyouNotificationService.stop(this)
                     result.success(true)
@@ -173,6 +187,7 @@ class MainActivity : FlutterFragmentActivity() {
             call.argument<Boolean>("preview") ?: true,
             call.argument<Boolean>("sound") ?: true,
             call.argument<Boolean>("vibration") ?: true,
+            call.argument<Boolean>("systemPush") ?: false,
         )
         result.success(true)
     }

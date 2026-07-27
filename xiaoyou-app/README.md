@@ -61,7 +61,15 @@ flutter build apk --debug
 flutter build apk --release
 ```
 
-生成结果位于 `build/app/outputs/flutter-apk/`。当前 `release` 构建暂时使用 Android 调试证书，只适合个人安装测试；正式分发或上架前必须配置独立 release keystore，后续更新也必须持续使用同一把发布密钥。
+生成结果位于 `build/app/outputs/flutter-apk/`。`release` 构建必须使用小悠自己的永久发布证书；缺少签名配置时构建会直接失败，不会再静默退回 Android 调试证书。
+
+首次配置正式签名时，在仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\xiaoyou-app\tooling\create_release_keystore.ps1
+```
+
+脚本会生成 `android/keystore/xiaoyou-release.jks` 与 `android/key.properties`。二者均被 Git 忽略，必须一起备份到可靠的私密位置；丢失发布密钥后，已经安装或上架的小悠将无法使用新 APK 原位升级。不要使用 `-Force` 覆盖现有密钥，除非明确要创建无法兼容旧版本的新应用身份。CI 可改用 `XIAOYOU_RELEASE_STORE_FILE`、`XIAOYOU_RELEASE_STORE_PASSWORD`、`XIAOYOU_RELEASE_KEY_ALIAS` 和 `XIAOYOU_RELEASE_KEY_PASSWORD` 环境变量。
 
 Android 端使用 `flutter_secure_storage` 保存连接令牌，使用 `local_auth` 调用系统生物识别或设备锁。iOS 端已声明 Face ID 用途和 Keychain 权限，但仍需在 macOS/Xcode 环境完成正式签名构建。
 

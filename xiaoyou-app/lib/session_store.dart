@@ -30,6 +30,7 @@ class AppPreferences {
     this.notificationVibration = true,
     this.notificationPreview = true,
     this.notificationExplicitlyDisabled = false,
+    this.systemPushEnabled = false,
     this.fontScale = 1,
     this.compactMessages = false,
     this.palette = 'rose',
@@ -41,6 +42,7 @@ class AppPreferences {
   final bool notificationVibration;
   final bool notificationPreview;
   final bool notificationExplicitlyDisabled;
+  final bool systemPushEnabled;
   final double fontScale;
   final bool compactMessages;
   final String palette;
@@ -52,6 +54,7 @@ class AppPreferences {
     bool? notificationVibration,
     bool? notificationPreview,
     bool? notificationExplicitlyDisabled,
+    bool? systemPushEnabled,
     double? fontScale,
     bool? compactMessages,
     String? palette,
@@ -65,6 +68,7 @@ class AppPreferences {
       notificationPreview: notificationPreview ?? this.notificationPreview,
       notificationExplicitlyDisabled:
           notificationExplicitlyDisabled ?? this.notificationExplicitlyDisabled,
+      systemPushEnabled: systemPushEnabled ?? this.systemPushEnabled,
       fontScale: fontScale ?? this.fontScale,
       compactMessages: compactMessages ?? this.compactMessages,
       palette: palette ?? this.palette,
@@ -90,6 +94,7 @@ class SessionStore {
   static const _notificationPreviewKey = 'xiaoyou.notification_preview';
   static const _notificationExplicitlyDisabledKey =
       'xiaoyou.notification_explicitly_disabled';
+  static const _systemPushEnabledKey = 'xiaoyou.system_push_enabled';
   static const _fontScaleKey = 'xiaoyou.font_scale';
   static const _compactMessagesKey = 'xiaoyou.compact_messages';
   static const _paletteKey = 'xiaoyou.palette';
@@ -196,6 +201,8 @@ class SessionStore {
       notificationExplicitlyDisabled:
           await _preferences.getBool(_notificationExplicitlyDisabledKey) ??
               false,
+      systemPushEnabled:
+          await _preferences.getBool(_systemPushEnabledKey) ?? false,
       fontScale: fontScale,
       compactMessages: await _preferences.getBool(_compactMessagesKey) ?? false,
       palette:
@@ -225,6 +232,10 @@ class SessionStore {
       _notificationExplicitlyDisabledKey,
       preferences.notificationExplicitlyDisabled,
     );
+    await _preferences.setBool(
+      _systemPushEnabledKey,
+      preferences.systemPushEnabled,
+    );
     await _preferences.setDouble(_fontScaleKey, preferences.fontScale);
     await _preferences.setBool(
       _compactMessagesKey,
@@ -249,6 +260,7 @@ class SessionStore {
     await _preferences.remove(_notificationVibrationKey);
     await _preferences.remove(_notificationPreviewKey);
     await _preferences.remove(_notificationExplicitlyDisabledKey);
+    await _preferences.remove(_systemPushEnabledKey);
     await _preferences.remove(_fontScaleKey);
     await _preferences.remove(_compactMessagesKey);
     await _preferences.remove(_paletteKey);

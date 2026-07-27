@@ -3,6 +3,36 @@ import 'dart:io';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
 
+class SystemPushStatus {
+  const SystemPushStatus({
+    this.provider = 'vivo',
+    this.configured = false,
+    this.supported = false,
+    this.consented = false,
+    this.active = false,
+    this.error = '',
+  });
+
+  factory SystemPushStatus.fromMap(Map<Object?, Object?>? value) {
+    final payload = value ?? const <Object?, Object?>{};
+    return SystemPushStatus(
+      provider: '${payload['provider'] ?? 'vivo'}',
+      configured: payload['configured'] == true,
+      supported: payload['supported'] == true,
+      consented: payload['consented'] == true,
+      active: payload['active'] == true,
+      error: '${payload['error'] ?? ''}',
+    );
+  }
+
+  final String provider;
+  final bool configured;
+  final bool supported;
+  final bool consented;
+  final bool active;
+  final String error;
+}
+
 class AppNotificationService {
   AppNotificationService._();
 
@@ -120,6 +150,7 @@ class AppNotificationService {
     required bool preview,
     required bool sound,
     required bool vibration,
+    required bool systemPush,
   }) async {
     if (!Platform.isAndroid) {
       return;
@@ -135,8 +166,39 @@ class AppNotificationService {
         'preview': preview,
         'sound': sound,
         'vibration': vibration,
+        'systemPush': systemPush,
       },
     ).timeout(const Duration(seconds: 8));
+  }
+
+  Future<SystemPushStatus> systemPushStatus() async {
+    if (!Platform.isAndroid) {
+      return const SystemPushStatus();
+    }
+    final value = await _systemChannel
+        .invokeMethod<Map<Object?, Object?>>('systemPushStatus')
+        .timeout(const Duration(seconds: 8));
+    return SystemPushStatus.fromMap(value);
+  }
+
+  Future<SystemPushStatus> enableSystemPush() async {
+    if (!Platform.isAndroid) {
+      return const SystemPushStatus(error: 'unsupported_platform');
+    }
+    final value = await _systemChannel
+        .invokeMethod<Map<Object?, Object?>>('enableSystemPush')
+        .timeout(const Duration(seconds: 25));
+    return SystemPushStatus.fromMap(value);
+  }
+
+  Future<SystemPushStatus> disableSystemPush() async {
+    if (!Platform.isAndroid) {
+      return const SystemPushStatus();
+    }
+    final value = await _systemChannel
+        .invokeMethod<Map<Object?, Object?>>('disableSystemPush')
+        .timeout(const Duration(seconds: 15));
+    return SystemPushStatus.fromMap(value);
   }
 
   Future<void> stopBackgroundDelivery() async {

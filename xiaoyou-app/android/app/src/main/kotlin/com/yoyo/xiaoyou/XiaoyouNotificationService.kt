@@ -16,7 +16,12 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
+import androidx.core.app.RemoteInput
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -38,10 +43,14 @@ class XiaoyouNotificationService : Service() {
         private const val EXTRA_PREVIEW = "preview"
         private const val EXTRA_SOUND = "sound"
         private const val EXTRA_VIBRATION = "vibration"
+        private const val EXTRA_SYSTEM_PUSH = "system_push"
         private const val SERVICE_CHANNEL_ID = "xiaoyou_background_delivery_v1"
         private const val SERVICE_NOTIFICATION_ID = 41001
         private const val MESSAGE_NOTIFICATION_BASE = 42000
         private const val RESTART_REQUEST_CODE = 41002
+        internal const val CONVERSATION_SHORTCUT_ID = "xiaoyou_conversation"
+        internal const val DIRECT_REPLY_KEY = "xiaoyou_direct_reply"
+        internal const val EXTRA_NOTIFICATION_ID = "notification_id"
         private const val PREFERENCES_NAME = "xiaoyou_background_notifications"
         private const val KEY_ENABLED = "enabled"
         private const val KEY_BASE_URL = "base_url"
@@ -51,8 +60,10 @@ class XiaoyouNotificationService : Service() {
         private const val KEY_PREVIEW = "preview"
         private const val KEY_SOUND = "sound"
         private const val KEY_VIBRATION = "vibration"
+        private const val KEY_SYSTEM_PUSH = "system_push"
         private const val POLL_DELAY_MS = 4_000L
         private const val ERROR_DELAY_MS = 9_000L
+        private val registrationExecutor = Executors.newSingleThreadExecutor()
 
         fun configure(
             context: Context,
@@ -64,6 +75,7 @@ class XiaoyouNotificationService : Service() {
             preview: Boolean,
             sound: Boolean,
             vibration: Boolean,
+            systemPush: Boolean,
         ) {
             val intent = Intent(context, XiaoyouNotificationService::class.java).apply {
                 action = ACTION_CONFIGURE
@@ -74,7 +86,8 @@ class XiaoyouNotificationService : Service() {
                 putExtra(EXTRA_FOREGROUND, appForeground)
                 putExtra(EXTRA_PREVIEW, preview)
             putExtra(EXTRA_SOUND, sound)
-            putExtra(EXTRA_VIBRATION, vibration)
+                putExtra(EXTRA_VIBRATION, vibration)
+                putExtra(EXTRA_SYSTEM_PUSH, systemPush)
             }
             persistConfiguration(
                 context = context,
@@ -85,17 +98,93 @@ class XiaoyouNotificationService : Service() {
                 preview = preview,
                 sound = sound,
                 vibration = vibration,
+                systemPush = systemPush,
                 enabled = true,
             )
+            if (systemPush && XiaoyouSystemPush.isActive(context)) {
+                uploadSystemPushRegistration(context, enabled = true)
+                context.stopService(
+                    Intent(context, XiaoyouNotificationService::class.java),
+                )
+                return
+            }
             ContextCompat.startForegroundService(context, intent)
+            if (systemPush) {
+                XiaoyouSystemPush.enable(context) { status ->
+                    if (status["active"] == true) {
+                        uploadSystemPushRegistration(context, enabled = true)
+                        context.stopService(
+                            Intent(
+                                context,
+                                XiaoyouNotificationService::class.java,
+                            ),
+                        )
+                    }
+                }
+            }
         }
 
         fun stop(context: Context) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            uploadSystemPushRegistration(context, enabled = false)
+            preferences.edit()
+                .putBoolean(KEY_ENABLED, false)
+                .putBoolean(KEY_SYSTEM_PUSH, false)
+                .apply()
+            XiaoyouSystemPush.disable(context) {}
+            context.stopService(Intent(context, XiaoyouNotificationService::class.java))
+        }
+
+        fun systemPushStatus(context: Context): Map<String, Any> =
+            XiaoyouSystemPush.status(context)
+
+        fun enableSystemPush(
+            context: Context,
+            callback: (Map<String, Any>) -> Unit,
+        ) {
             context.getSharedPreferences(
                 PREFERENCES_NAME,
                 Context.MODE_PRIVATE,
-            ).edit().putBoolean(KEY_ENABLED, false).apply()
-            context.stopService(Intent(context, XiaoyouNotificationService::class.java))
+            ).edit().putBoolean(KEY_SYSTEM_PUSH, true).apply()
+            XiaoyouSystemPush.enable(context) { status ->
+                if (status["active"] == true) {
+                    uploadSystemPushRegistration(context, enabled = true)
+                    context.stopService(
+                        Intent(context, XiaoyouNotificationService::class.java),
+                    )
+                } else {
+                    startIfEnabled(context)
+                }
+                callback(status)
+            }
+        }
+
+        fun disableSystemPush(
+            context: Context,
+            callback: (Map<String, Any>) -> Unit,
+        ) {
+            uploadSystemPushRegistration(context, enabled = false)
+            context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            ).edit().putBoolean(KEY_SYSTEM_PUSH, false).apply()
+            XiaoyouSystemPush.disable(context) { status ->
+                startIfEnabled(context)
+                callback(status)
+            }
+        }
+
+        fun onSystemPushTokenChanged(context: Context, regId: String) {
+            if (regId.isBlank() || !XiaoyouSystemPush.consented(context)) {
+                return
+            }
+            uploadSystemPushRegistration(context, enabled = true)
+            context.stopService(
+                Intent(context, XiaoyouNotificationService::class.java),
+            )
         }
 
         internal fun startIfEnabled(context: Context) {
@@ -113,6 +202,24 @@ class XiaoyouNotificationService : Service() {
                 Log.w(TAG, "Cannot restore background service without connection config")
                 return
             }
+            if (preferences.getBoolean(KEY_SYSTEM_PUSH, false)) {
+                if (XiaoyouSystemPush.isActive(context)) {
+                    uploadSystemPushRegistration(context, enabled = true)
+                    return
+                }
+                XiaoyouSystemPush.enable(context) { status ->
+                    if (status["active"] == true) {
+                        uploadSystemPushRegistration(context, enabled = true)
+                    } else {
+                        startFallbackService(context)
+                    }
+                }
+                return
+            }
+            startFallbackService(context)
+        }
+
+        private fun startFallbackService(context: Context) {
             try {
                 ContextCompat.startForegroundService(
                     context,
@@ -134,6 +241,7 @@ class XiaoyouNotificationService : Service() {
             preview: Boolean,
             sound: Boolean,
             vibration: Boolean,
+            systemPush: Boolean,
             enabled: Boolean,
         ) {
             context.getSharedPreferences(
@@ -148,7 +256,76 @@ class XiaoyouNotificationService : Service() {
                 .putBoolean(KEY_PREVIEW, preview)
                 .putBoolean(KEY_SOUND, sound)
                 .putBoolean(KEY_VIBRATION, vibration)
+                .putBoolean(KEY_SYSTEM_PUSH, systemPush)
                 .apply()
+        }
+
+        private fun uploadSystemPushRegistration(
+            context: Context,
+            enabled: Boolean,
+        ) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            val baseUrl = preferences.getString(KEY_BASE_URL, "")
+                .orEmpty()
+                .trim()
+                .trimEnd('/')
+            val bearer = preferences.getString(KEY_TOKEN, "").orEmpty().trim()
+            val deviceId = preferences.getString(KEY_DEVICE_ID, "").orEmpty().trim()
+            val regId = XiaoyouSystemPush.token(context)
+            if (
+                baseUrl.isEmpty() ||
+                bearer.isEmpty() ||
+                deviceId.isEmpty() ||
+                (enabled && regId.isEmpty())
+            ) {
+                return
+            }
+            val preview = preferences.getBoolean(KEY_PREVIEW, true)
+            val sound = preferences.getBoolean(KEY_SOUND, true)
+            val vibration = preferences.getBoolean(KEY_VIBRATION, true)
+            registrationExecutor.execute {
+                val connection = (
+                    URL("$baseUrl/v1/devices").openConnection()
+                        as HttpURLConnection
+                    ).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 8_000
+                    readTimeout = 8_000
+                    doOutput = true
+                    useCaches = false
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Content-Type", "application/json")
+                    setRequestProperty("Authorization", "Bearer $bearer")
+                }
+                try {
+                    val body = JSONObject().apply {
+                        put("device_id", deviceId)
+                        put("platform", "android")
+                        put("push_provider", "vivo")
+                        put("push_token", if (enabled) regId else "")
+                        put("push_enabled", enabled)
+                        put("push_preview", preview)
+                        put("push_sound", sound)
+                        put("push_vibration", vibration)
+                    }.toString().toByteArray(Charsets.UTF_8)
+                    connection.setFixedLengthStreamingMode(body.size)
+                    connection.outputStream.use { it.write(body) }
+                    val status = connection.responseCode
+                    if (status !in 200..299) {
+                        connection.errorStream?.close()
+                        Log.w(TAG, "Push registration upload failed HTTP $status")
+                    } else {
+                        connection.inputStream.close()
+                    }
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Push registration upload failed", error)
+                } finally {
+                    connection.disconnect()
+                }
+            }
         }
     }
 
@@ -191,6 +368,11 @@ class XiaoyouNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (XiaoyouSystemPush.isActive(this)) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_CONFIGURE -> configureFrom(intent)
             ACTION_RESTORE -> restoreConfiguration(forceBackground = true)
@@ -233,6 +415,7 @@ class XiaoyouNotificationService : Service() {
         showPreview = intent.getBooleanExtra(EXTRA_PREVIEW, true)
         playSound = intent.getBooleanExtra(EXTRA_SOUND, true)
         vibrate = intent.getBooleanExtra(EXTRA_VIBRATION, true)
+        val systemPush = intent.getBooleanExtra(EXTRA_SYSTEM_PUSH, false)
         persistConfiguration(
             context = this,
             baseUrl = baseUrl,
@@ -242,6 +425,7 @@ class XiaoyouNotificationService : Service() {
             preview = showPreview,
             sound = playSound,
             vibration = vibrate,
+            systemPush = systemPush,
             enabled = true,
         )
         val restored = if (nextDeviceId.isEmpty()) {
@@ -283,11 +467,16 @@ class XiaoyouNotificationService : Service() {
     private fun pollLoop() {
         while (running) {
             if (
+                XiaoyouSystemPush.isActive(this) ||
                 appForeground ||
                 baseUrl.isEmpty() ||
                 token.isEmpty() ||
                 deviceId.isEmpty()
             ) {
+                if (XiaoyouSystemPush.isActive(this)) {
+                    stopSelf()
+                    return
+                }
                 sleep(1_000L)
                 continue
             }
@@ -389,28 +578,94 @@ class XiaoyouNotificationService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val xiaoyou = Person.Builder()
+            .setName("小悠")
+            .setKey("xiaoyou")
+            .setImportant(true)
+            .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+            .build()
+        publishConversationShortcut(xiaoyou)
+        val notificationId =
+            MESSAGE_NOTIFICATION_BASE + (messageId.hashCode() and 0x0fffffff)
+        val replyIntent = Intent(this, XiaoyouDirectReplyReceiver::class.java).apply {
+            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        val mutableFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE
+        } else {
+            0
+        }
+        val replyPendingIntent = PendingIntent.getBroadcast(
+            this,
+            notificationId,
+            replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag,
+        )
+        val replyAction = NotificationCompat.Action.Builder(
+            R.drawable.ic_stat_xiaoyou,
+            "直接回复",
+            replyPendingIntent,
+        )
+            .addRemoteInput(
+                RemoteInput.Builder(DIRECT_REPLY_KEY)
+                    .setLabel("回复小悠")
+                    .build(),
+            )
+            .setAllowGeneratedReplies(true)
+            .build()
+        val timestamp = event.optLong(
+            "created_at",
+            System.currentTimeMillis() / 1000L,
+        ) * 1000L
         val notification = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_stat_xiaoyou)
             .setContentTitle("小悠")
             .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setStyle(
+                NotificationCompat.MessagingStyle(xiaoyou)
+                    .setConversationTitle("小悠")
+                    .addMessage(body, timestamp, xiaoyou),
+            )
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(openApp)
+            .setShortcutId(CONVERSATION_SHORTCUT_ID)
+            .addPerson(xiaoyou)
+            .addAction(replyAction)
+            .setNumber(1)
             .setGroup("xiaoyou_conversation")
             .setSound(if (playSound) RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) else null)
             .setVibrate(if (vibrate) longArrayOf(0L, 180L, 90L, 180L) else longArrayOf(0L))
             .build()
         try {
             NotificationManagerCompat.from(this).notify(
-                MESSAGE_NOTIFICATION_BASE + (messageId.hashCode() and 0x0fffffff),
+                notificationId,
                 notification,
             )
         } catch (error: SecurityException) {
             Log.w(TAG, "Notification permission was revoked", error)
         }
+    }
+
+    private fun publishConversationShortcut(person: Person) {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_VIEW
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val shortcut = ShortcutInfoCompat.Builder(
+            this,
+            CONVERSATION_SHORTCUT_ID,
+        )
+            .setShortLabel("小悠")
+            .setLongLabel("和小悠聊天")
+            .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
+            .setIntent(intent)
+            .setPerson(person)
+            .setLongLived(true)
+            .build()
+        ShortcutManagerCompat.pushDynamicShortcut(this, shortcut)
     }
 
     private fun createServiceChannel() {
@@ -446,6 +701,7 @@ class XiaoyouNotificationService : Service() {
             NotificationManager.IMPORTANCE_HIGH,
         ).apply {
             description = "小悠发来的聊天消息和主动关心"
+            setShowBadge(true)
             enableVibration(vibration)
             vibrationPattern = if (vibration) {
                 longArrayOf(0L, 180L, 90L, 180L)

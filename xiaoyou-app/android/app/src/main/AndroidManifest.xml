@@ -52,6 +52,22 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".XiaoyouVivoPushReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.vivo.pushclient.action.RECEIVE"/>
+            </intent-filter>
+        </receiver>
+        <receiver
+            android:name=".XiaoyouDirectReplyReceiver"
+            android:exported="false"/>
+        <meta-data
+            android:name="com.vivo.push.api_key"
+            android:value="${VIVO_PUSH_APP_KEY}"/>
+        <meta-data
+            android:name="com.vivo.push.app_id"
+            android:value="${VIVO_PUSH_APP_ID}"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

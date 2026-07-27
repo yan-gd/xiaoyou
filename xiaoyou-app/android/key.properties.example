@@ -1,0 +1,6 @@
+# Copy this file to key.properties only when configuring signing manually.
+# Never commit key.properties or the keystore itself.
+storeFile=keystore/xiaoyou-release.jks
+storePassword=replace-with-a-strong-password
+keyAlias=xiaoyou-release
+keyPassword=replace-with-a-strong-password
