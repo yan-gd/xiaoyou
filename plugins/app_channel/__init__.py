@@ -346,6 +346,19 @@ class AppInboxStore:
     def set_push_dispatcher(self, dispatcher):
         self.push_dispatcher = dispatcher
 
+    def push_delivery_outcomes(self, action_ids):
+        dispatcher = self.push_dispatcher
+        if dispatcher is None or not hasattr(dispatcher, "outcomes"):
+            return {}
+        try:
+            return dispatcher.outcomes(action_ids)
+        except Exception as error:
+            logger.warning(
+                "[AppChannel] unable to read push outcomes error=%s",
+                type(error).__name__,
+            )
+            return {}
+
     def register_device(
         self,
         device_id,
@@ -780,7 +793,6 @@ class AppInboxStore:
                     """,
                     (message_id,),
                 )
-            self.changed.notify_all()
         target = self.push_target(device_id)
         dispatcher = self.push_dispatcher
         if (
@@ -798,6 +810,11 @@ class AppInboxStore:
                 sound=target["sound"],
                 vibration=target["vibration"],
             )
+        # Wake long-poll clients only after the push dispatcher has recorded
+        # a pending/failed state. This prevents the App from racing ahead and
+        # showing a fallback notification before vivo has accepted the action.
+        with self.changed:
+            self.changed.notify_all()
         return True
 
     def _copy_media(self, source_path, device_id):
@@ -1650,12 +1667,35 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._json(200, {"entries": entries})
             return
         if parsed.path == "/v1/events":
-            events = self.plugin.store.events_after(
-                device_id,
-                after=self._integer((query.get("after") or [0])[0], 0),
-                limit=self._integer((query.get("limit") or [50])[0], 50),
+            after = self._integer((query.get("after") or [0])[0], 0)
+            limit = self._integer((query.get("limit") or [50])[0], 50)
+            wait = max(
+                0,
+                min(self._integer((query.get("wait") or [0])[0], 0), 25),
             )
-            self._json(200, {"events": events})
+            if wait:
+                events = self.plugin.store.wait_for_events(
+                    device_id,
+                    after=after,
+                    timeout=wait,
+                )[:max(1, min(limit, 200))]
+            else:
+                events = self.plugin.store.events_after(
+                    device_id,
+                    after=after,
+                    limit=limit,
+                )
+            outcomes = self.plugin.store.push_delivery_outcomes(
+                event.get("action_id")
+                for event in events
+            )
+            self._json(
+                200,
+                {
+                    "events": events,
+                    "push_delivery": outcomes,
+                },
+            )
             return
         if parsed.path == "/v1/events/stream":
             self._sse(device_id, query)

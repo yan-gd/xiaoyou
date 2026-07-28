@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -109,3 +110,45 @@ def test_vivo_gateway_refreshes_auth_once_after_send_rejection(monkeypatch):
         "/message/auth",
         "/message/send",
     ]
+
+
+def test_dispatcher_tracks_per_action_push_outcomes(monkeypatch):
+    module = _load_module(monkeypatch)
+
+    class Gateway:
+        enabled = True
+
+        def send(self, **kwargs):
+            if kwargs["action_id"] == "failed-action":
+                raise RuntimeError("vivo_push_send_failed:10045")
+            return True
+
+    dispatcher = module.SystemPushDispatcher(
+        gateway=Gateway(),
+        queue_size=16,
+    )
+    assert dispatcher.enqueue(
+        action_id="accepted-action",
+        device_id="phone",
+        reg_id="reg-id",
+        kind="text",
+        text="晚安",
+    )
+    assert dispatcher.enqueue(
+        action_id="failed-action",
+        device_id="phone",
+        reg_id="reg-id",
+        kind="text",
+        text="早安",
+    )
+
+    dispatcher.queue.join()
+    outcomes = dispatcher.outcomes(
+        ["accepted-action", "failed-action", "missing-action"],
+    )
+
+    assert outcomes["accepted-action"]["state"] == "accepted"
+    assert outcomes["failed-action"]["state"] == "failed"
+    assert "10045" in outcomes["failed-action"]["error"]
+    assert "missing-action" not in outcomes
+    assert outcomes["accepted-action"]["updated_at"] <= int(time.time())

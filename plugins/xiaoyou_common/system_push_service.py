@@ -236,6 +236,12 @@ class SystemPushDispatcher:
         )
         self._thread = None
         self._lock = threading.Lock()
+        self._outcome_lock = threading.Lock()
+        self._outcomes = {}
+        self._outcome_limit = max(
+            128,
+            int(os.getenv("XIAOYOU_SYSTEM_PUSH_OUTCOME_LIMIT", "2048")),
+        )
         if self.gateway.enabled:
             self._ensure_worker()
             logger.info("[SystemPush] vivo gateway enabled")
@@ -260,6 +266,39 @@ class SystemPushDispatcher:
             )
             self._thread.start()
 
+    def _record_outcome(self, action_id, state, error=""):
+        action_id = str(action_id or "").strip()
+        if not action_id:
+            return
+        with self._outcome_lock:
+            self._outcomes.pop(action_id, None)
+            self._outcomes[action_id] = {
+                "state": str(state or "unknown"),
+                "updated_at": int(time.time()),
+                "error": str(error or "")[:96],
+            }
+            overflow = len(self._outcomes) - self._outcome_limit
+            if overflow > 0:
+                for oldest in tuple(self._outcomes)[:overflow]:
+                    self._outcomes.pop(oldest, None)
+
+    def outcomes(self, action_ids):
+        """Return recent per-action states for reliable App fallback delivery."""
+
+        requested = {
+            str(action_id or "").strip()
+            for action_id in (action_ids or ())
+            if str(action_id or "").strip()
+        }
+        if not requested:
+            return {}
+        with self._outcome_lock:
+            return {
+                action_id: dict(self._outcomes[action_id])
+                for action_id in requested
+                if action_id in self._outcomes
+            }
+
     def enqueue(
         self,
         *,
@@ -274,6 +313,7 @@ class SystemPushDispatcher:
     ):
         if not self.enabled or not str(reg_id or "").strip():
             return False
+        action_id = str(action_id or "").strip()
         body = (
             str(text or "").strip()
             if preview
@@ -286,7 +326,7 @@ class SystemPushDispatcher:
                 "voice": "小悠发来了一条语音",
             }.get(str(kind or ""), "小悠发来了一条新消息")
         item = {
-            "action_id": str(action_id or ""),
+            "action_id": action_id,
             "device_id_hash": hashlib.sha256(
                 str(device_id or "").encode("utf-8")
             ).hexdigest()[:12],
@@ -296,9 +336,11 @@ class SystemPushDispatcher:
             "sound": bool(sound),
             "vibration": bool(vibration),
         }
+        self._record_outcome(action_id, "pending")
         try:
             self.queue.put_nowait(item)
         except queue.Full:
+            self._record_outcome(action_id, "failed", "queue_full")
             logger.warning(
                 "[SystemPush] queue full action=%s device=%s",
                 item["action_id"],
@@ -320,17 +362,24 @@ class SystemPushDispatcher:
                     vibration=item["vibration"],
                     kind=item["kind"],
                 )
+                self._record_outcome(item["action_id"], "accepted")
                 logger.info(
                     "[SystemPush] delivered action=%s device=%s",
                     item["action_id"],
                     item["device_id_hash"],
                 )
             except Exception as error:
+                self._record_outcome(
+                    item["action_id"],
+                    "failed",
+                    str(error),
+                )
                 logger.warning(
-                    "[SystemPush] failed action=%s device=%s error=%s",
+                    "[SystemPush] failed action=%s device=%s error=%s detail=%s",
                     item["action_id"],
                     item["device_id_hash"],
                     type(error).__name__,
+                    str(error)[:96],
                 )
             finally:
                 self.queue.task_done()

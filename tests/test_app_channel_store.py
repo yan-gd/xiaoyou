@@ -296,6 +296,31 @@ def test_committed_action_enqueues_system_push_once(
     assert queued[0]["reg_id"] == "reg-id-1"
 
 
+def test_store_exposes_recent_push_delivery_outcomes(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    dispatcher = types.SimpleNamespace(
+        outcomes=lambda action_ids: {
+            action_id: {"state": "accepted", "updated_at": 1, "error": ""}
+            for action_id in action_ids
+        },
+    )
+    store = module.AppInboxStore(
+        tmp_path / "app_channel" / "app.db",
+        push_dispatcher=dispatcher,
+    )
+
+    assert store.push_delivery_outcomes(["action-1"]) == {
+        "action-1": {
+            "state": "accepted",
+            "updated_at": 1,
+            "error": "",
+        },
+    }
+
+
 def test_app_text_reply_uses_model_selected_voice_medium(
     monkeypatch,
     tmp_path,

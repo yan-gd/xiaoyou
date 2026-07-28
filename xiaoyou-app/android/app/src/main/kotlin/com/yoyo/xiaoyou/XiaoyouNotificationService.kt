@@ -61,8 +61,8 @@ class XiaoyouNotificationService : Service() {
         private const val KEY_SOUND = "sound"
         private const val KEY_VIBRATION = "vibration"
         private const val KEY_SYSTEM_PUSH = "system_push"
-        private const val POLL_DELAY_MS = 4_000L
-        private const val ERROR_DELAY_MS = 9_000L
+        private const val POLL_DELAY_MS = 350L
+        private const val ERROR_DELAY_MS = 3_000L
         private val registrationExecutor = Executors.newSingleThreadExecutor()
 
         fun configure(
@@ -101,24 +101,15 @@ class XiaoyouNotificationService : Service() {
                 systemPush = systemPush,
                 enabled = true,
             )
-            if (systemPush && XiaoyouSystemPush.isActive(context)) {
-                uploadSystemPushRegistration(context, enabled = true)
-                context.stopService(
-                    Intent(context, XiaoyouNotificationService::class.java),
-                )
-                return
-            }
             ContextCompat.startForegroundService(context, intent)
             if (systemPush) {
+                if (XiaoyouSystemPush.isActive(context)) {
+                    uploadSystemPushRegistration(context, enabled = true)
+                    return
+                }
                 XiaoyouSystemPush.enable(context) { status ->
                     if (status["active"] == true) {
                         uploadSystemPushRegistration(context, enabled = true)
-                        context.stopService(
-                            Intent(
-                                context,
-                                XiaoyouNotificationService::class.java,
-                            ),
-                        )
                     }
                 }
             }
@@ -152,12 +143,8 @@ class XiaoyouNotificationService : Service() {
             XiaoyouSystemPush.enable(context) { status ->
                 if (status["active"] == true) {
                     uploadSystemPushRegistration(context, enabled = true)
-                    context.stopService(
-                        Intent(context, XiaoyouNotificationService::class.java),
-                    )
-                } else {
-                    startIfEnabled(context)
                 }
+                startFallbackService(context, forceBackground = false)
                 callback(status)
             }
         }
@@ -172,7 +159,7 @@ class XiaoyouNotificationService : Service() {
                 Context.MODE_PRIVATE,
             ).edit().putBoolean(KEY_SYSTEM_PUSH, false).apply()
             XiaoyouSystemPush.disable(context) { status ->
-                startIfEnabled(context)
+                startFallbackService(context, forceBackground = false)
                 callback(status)
             }
         }
@@ -182,9 +169,7 @@ class XiaoyouNotificationService : Service() {
                 return
             }
             uploadSystemPushRegistration(context, enabled = true)
-            context.stopService(
-                Intent(context, XiaoyouNotificationService::class.java),
-            )
+            startFallbackService(context, forceBackground = false)
         }
 
         internal fun startIfEnabled(context: Context) {
@@ -202,6 +187,7 @@ class XiaoyouNotificationService : Service() {
                 Log.w(TAG, "Cannot restore background service without connection config")
                 return
             }
+            startFallbackService(context, forceBackground = true)
             if (preferences.getBoolean(KEY_SYSTEM_PUSH, false)) {
                 if (XiaoyouSystemPush.isActive(context)) {
                     uploadSystemPushRegistration(context, enabled = true)
@@ -210,21 +196,22 @@ class XiaoyouNotificationService : Service() {
                 XiaoyouSystemPush.enable(context) { status ->
                     if (status["active"] == true) {
                         uploadSystemPushRegistration(context, enabled = true)
-                    } else {
-                        startFallbackService(context)
                     }
                 }
-                return
             }
-            startFallbackService(context)
         }
 
-        private fun startFallbackService(context: Context) {
+        private fun startFallbackService(
+            context: Context,
+            forceBackground: Boolean,
+        ) {
             try {
                 ContextCompat.startForegroundService(
                     context,
                     Intent(context, XiaoyouNotificationService::class.java).apply {
-                        action = ACTION_RESTORE
+                        if (forceBackground) {
+                            action = ACTION_RESTORE
+                        }
                     },
                 )
             } catch (error: Throwable) {
@@ -368,11 +355,6 @@ class XiaoyouNotificationService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (XiaoyouSystemPush.isActive(this)) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            stopSelf()
-            return START_NOT_STICKY
-        }
         when (intent?.action) {
             ACTION_CONFIGURE -> configureFrom(intent)
             ACTION_RESTORE -> restoreConfiguration(forceBackground = true)
@@ -467,16 +449,11 @@ class XiaoyouNotificationService : Service() {
     private fun pollLoop() {
         while (running) {
             if (
-                XiaoyouSystemPush.isActive(this) ||
                 appForeground ||
                 baseUrl.isEmpty() ||
                 token.isEmpty() ||
                 deviceId.isEmpty()
             ) {
-                if (XiaoyouSystemPush.isActive(this)) {
-                    stopSelf()
-                    return
-                }
                 sleep(1_000L)
                 continue
             }
@@ -495,12 +472,12 @@ class XiaoyouNotificationService : Service() {
     private fun pollOnce() {
         val encodedDevice = URLEncoder.encode(deviceId, Charsets.UTF_8.name())
         val url = URL(
-            "$baseUrl/v1/events?device_id=$encodedDevice&after=$sequence&limit=100",
+            "$baseUrl/v1/events?device_id=$encodedDevice&after=$sequence&limit=100&wait=25",
         )
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 12_000
-            readTimeout = 22_000
+            readTimeout = 35_000
             useCaches = false
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer $token")
@@ -515,6 +492,11 @@ class XiaoyouNotificationService : Service() {
                 it.readText()
             }
             val events = JSONObject(payload).optJSONArray("events") ?: return
+            val pushDelivery = JSONObject(payload).optJSONObject("push_delivery")
+                ?: JSONObject()
+            val systemPushRequested =
+                cursorPreferences.getBoolean(KEY_SYSTEM_PUSH, false) &&
+                    XiaoyouSystemPush.isActive(this)
             var newestSequence = sequence
             for (index in 0 until events.length()) {
                 val event = events.optJSONObject(index) ?: continue
@@ -522,8 +504,24 @@ class XiaoyouNotificationService : Service() {
                 if (eventSequence <= sequence) {
                     continue
                 }
+                val actionId = event.optString("action_id", "")
+                val pushState = pushDelivery
+                    .optJSONObject(actionId)
+                    ?.optString("state", "")
+                    .orEmpty()
+                if (systemPushRequested && pushState == "pending") {
+                    // Keep the cursor before this action until the server knows
+                    // whether vivo accepted it. The next long-poll retry then
+                    // chooses exactly one notification path.
+                    break
+                }
                 newestSequence = max(newestSequence, eventSequence)
-                if (event.optString("role", "assistant") == "assistant") {
+                val acceptedBySystemPush =
+                    systemPushRequested && pushState == "accepted"
+                if (
+                    event.optString("role", "assistant") == "assistant" &&
+                    !acceptedBySystemPush
+                ) {
                     showMessageNotification(event, eventSequence)
                 }
             }

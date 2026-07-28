@@ -2571,15 +2571,15 @@ class _SettingsSheetState extends State<_SettingsSheet> {
 
   String get _systemPushSubtitle {
     if (_systemPushStatus.active) {
-      return '已交给 vivo 系统长连接，App 关闭后也能秒级提醒';
+      return '系统推送与实时连接自动协作；推送受限时会立即切回本地提醒';
     }
     if (!_systemPushStatus.configured) {
-      return '当前安装包未配置 vivo 凭证，暂由后台服务兜底';
+      return '当前安装包未配置 vivo 凭证，由实时后台连接负责提醒';
     }
     if (!_systemPushStatus.supported) {
-      return '当前设备不支持 vivo 推送，暂由后台服务兜底';
+      return '当前设备不支持 vivo 推送，由实时后台连接负责提醒';
     }
-    return '减少 OriginOS 冻结后台造成的延迟和漏提醒';
+    return '开启后会优先使用 vivo，失败时自动切换实时后台连接';
   }
 
   Future<void> _testNotification() async {
