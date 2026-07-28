@@ -20,6 +20,7 @@ class VoiceRecorderController {
   DateTime? _startedAt;
   Directory? _temporaryDirectory;
   String? _path;
+  String _mimeType = 'audio/mp4';
 
   Stream<double> amplitudeStream() {
     return _recorder
@@ -36,23 +37,25 @@ class VoiceRecorderController {
     return true;
   }
 
-  Future<bool> start() async {
+  Future<bool> start({bool pcm16Wav = false}) async {
     if (!await prepare()) {
       return false;
     }
     final directory = _temporaryDirectory!;
+    final extension = pcm16Wav ? 'wav' : 'm4a';
     final path = '${directory.path}${Platform.pathSeparator}'
-        'xiaoyou-voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
+        'xiaoyou-voice-${DateTime.now().microsecondsSinceEpoch}.$extension';
     await _recorder.start(
-      const RecordConfig(
-        encoder: AudioEncoder.aacLc,
-        bitRate: 64000,
+      RecordConfig(
+        encoder: pcm16Wav ? AudioEncoder.pcm16bits : AudioEncoder.aacLc,
+        bitRate: pcm16Wav ? 256000 : 64000,
         sampleRate: 16000,
         numChannels: 1,
       ),
       path: path,
     );
     _path = path;
+    _mimeType = pcm16Wav ? 'audio/wav' : 'audio/mp4';
     _startedAt = DateTime.now();
     return true;
   }
@@ -71,7 +74,7 @@ class VoiceRecorderController {
     }
     return RecordedVoice(
       path: recordedPath,
-      mimeType: 'audio/mp4',
+      mimeType: _mimeType,
       durationMs: DateTime.now().difference(startedAt).inMilliseconds,
     );
   }
@@ -81,6 +84,7 @@ class VoiceRecorderController {
     await _recorder.cancel();
     _startedAt = null;
     _path = null;
+    _mimeType = 'audio/mp4';
     if (path != null) {
       final file = File(path);
       if (await file.exists()) {

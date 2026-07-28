@@ -142,6 +142,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "plugins.xiaoyou_common.trace_service": types.ModuleType(
             "plugins.xiaoyou_common.trace_service"
         ),
+        "plugins.xiaoyou_common.voice_room_service": types.ModuleType(
+            "plugins.xiaoyou_common.voice_room_service"
+        ),
     }
     modules["bridge.context"].Context = _Context
     modules["bridge.context"].ContextType = _ContextType
@@ -188,6 +191,21 @@ def _load_app_channel(monkeypatch, tmp_path):
     trace = modules["plugins.xiaoyou_common.trace_service"]
     trace.attach_input_trace = lambda *args, **kwargs: None
     trace.trace_event = lambda *args, **kwargs: None
+    voice_rooms = modules["plugins.xiaoyou_common.voice_room_service"]
+    voice_rooms.VoiceRoomError = type(
+        "VoiceRoomError",
+        (RuntimeError,),
+        {},
+    )
+    voice_rooms.VoiceRoomProviderError = type(
+        "VoiceRoomProviderError",
+        (voice_rooms.VoiceRoomError,),
+        {},
+    )
+    voice_rooms.VoiceRoomService = lambda **_kwargs: types.SimpleNamespace(
+        available=False,
+        close_all=lambda: None,
+    )
 
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

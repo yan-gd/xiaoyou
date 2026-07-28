@@ -378,6 +378,38 @@ class ShortMemory(Plugin):
 
             item = self._migrate_session(session_id, data.get(session_id, self._empty_session()))
 
+            # External transports can replay a committed event after a process
+            # restart.  Content/time similarity is not sufficient for that
+            # case, so preserve the immutable delivery identity and make the
+            # target write idempotent per role.
+            identity = str(action_id or input_id or "").strip()
+            if identity:
+                for existing in (
+                    list(item.get("pending_archive", []))
+                    + list(item.get("messages", []))
+                ):
+                    if (
+                        str(existing.get("role") or "") == role
+                        and identity
+                        in (
+                            str(existing.get("action_id") or ""),
+                            str(existing.get("input_id") or ""),
+                        )
+                    ):
+                        existing_id = str(existing.get("id") or "")
+                        logger.info(
+                            "[ShortMemory] idempotent replay ignored "
+                            "role=%s source=%s session=%s",
+                            role,
+                            source,
+                            session_id,
+                        )
+                        return (
+                            existing_id
+                            if return_record_id
+                            else True
+                        )
+
             if self._is_duplicate_message(item, role, content, source, now):
                 logger.info(
                     "[ShortMemory] duplicate message ignored role=%s source=%s session=%s",
@@ -393,6 +425,8 @@ class ShortMemory(Plugin):
                 "content": content,
                 "ts": now,
                 "source": source,
+                "input_id": str(input_id or ""),
+                "action_id": str(action_id or ""),
             })
             item["updated_at"] = now
             item = self._trim_session(item)
@@ -541,6 +575,25 @@ class ShortMemory(Plugin):
         if not self._enabled() or not session_id:
             return ""
         return self._build_injection(session_id)
+
+    def build_dialog_context_for_external_consumer(self, session_id):
+        """Return the exact recent native-role messages selected for injection.
+
+        Realtime voice providers accept structured ``user``/``assistant``
+        history.  Exposing the selected records here keeps ShortMemory as the
+        single owner of recency, blocking and character budgets, and avoids
+        asking transports to parse the human-readable context block.
+        """
+        session_id = str(session_id or "").strip()
+        if not self._enabled() or not session_id:
+            return []
+        item = self._get_session(session_id)
+        _, manifest = self._build_injection_from_item(item)
+        return self._native_history_from_manifest(
+            session_id,
+            manifest,
+            item=item,
+        )
 
     def block_injected_manifest(self, session_id, manifest, reason="provider_content_inspection"):
         """保留原始记忆，只禁止本次实际注入的短期项目再次进入模型上下文。"""

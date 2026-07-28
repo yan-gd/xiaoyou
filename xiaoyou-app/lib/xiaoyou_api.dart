@@ -184,6 +184,103 @@ class XiaoyouApi {
     );
   }
 
+  Future<VoiceRoomRecord> createVoiceRoom({
+    String title = '耳边的一会儿',
+  }) async {
+    final payload = await _request(
+      'POST',
+      '/v1/voice-rooms',
+      body: {
+        'device_id': deviceId,
+        'title': title,
+      },
+    );
+    return VoiceRoomRecord.fromJson(
+      (payload['room'] as Map).cast<String, dynamic>(),
+    );
+  }
+
+  Future<List<VoiceRoomRecord>> voiceRooms({int limit = 30}) async {
+    final payload = await _request(
+      'GET',
+      '/v1/voice-rooms',
+      query: {
+        'device_id': deviceId,
+        'limit': '$limit',
+      },
+    );
+    final rooms = payload['rooms'];
+    if (rooms is! List) {
+      return const [];
+    }
+    return rooms
+        .whereType<Map>()
+        .map(
+          (value) => VoiceRoomRecord.fromJson(
+            value.cast<String, dynamic>(),
+          ),
+        )
+        .toList();
+  }
+
+  Future<VoiceRoomRecord> voiceRoom(String roomId) async {
+    final payload = await _request(
+      'GET',
+      '/v1/voice-rooms/$roomId',
+      query: {'device_id': deviceId},
+    );
+    return VoiceRoomRecord.fromJson(
+      (payload['room'] as Map).cast<String, dynamic>(),
+    );
+  }
+
+  Future<VoiceRoomTurnResult> sendVoiceRoomTurn({
+    required String roomId,
+    required String turnId,
+    required Uint8List audioBytes,
+    required String mimeType,
+    required int durationMs,
+  }) async {
+    final uri = _uri('/v1/voice-rooms/$roomId/turns');
+    final request = await _client.openUrl('POST', uri);
+    request.persistentConnection = true;
+    request.headers
+      ..set(HttpHeaders.acceptHeader, 'application/json')
+      ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
+      ..set(HttpHeaders.contentTypeHeader, mimeType)
+      ..set('X-Turn-Id', turnId)
+      ..set('X-Device-Id', deviceId)
+      ..set('X-Audio-Duration-Ms', '$durationMs')
+      ..contentLength = audioBytes.length;
+    request.add(audioBytes);
+    final response = await request.close().timeout(
+          const Duration(seconds: 120),
+        );
+    final payload = await _jsonResponse(
+      response,
+      uri,
+      timeout: const Duration(seconds: 120),
+    );
+    return VoiceRoomTurnResult(
+      accepted: payload['accepted'] == true,
+      duplicate: payload['duplicate'] == true,
+      turn: VoiceRoomTurn.fromJson(
+        (payload['turn'] as Map).cast<String, dynamic>(),
+      ),
+    );
+  }
+
+  Future<VoiceRoomRecord> finishVoiceRoom(String roomId) async {
+    final payload = await _request(
+      'POST',
+      '/v1/voice-rooms/$roomId/finish',
+      body: {'device_id': deviceId},
+    );
+    return VoiceRoomRecord.fromJson(
+      (payload['room'] as Map).cast<String, dynamic>(),
+    );
+  }
+
   Future<bool> sendText({
     required String messageId,
     required String text,
@@ -449,4 +546,107 @@ class MediaPayload {
 
   final Uint8List bytes;
   final String mimeType;
+}
+
+class VoiceRoomRecord {
+  const VoiceRoomRecord({
+    required this.roomId,
+    required this.title,
+    required this.status,
+    required this.startedAt,
+    required this.endedAt,
+    required this.turnCount,
+    required this.turns,
+  });
+
+  factory VoiceRoomRecord.fromJson(Map<String, dynamic> value) {
+    final rawTurns = value['turns'];
+    return VoiceRoomRecord(
+      roomId: '${value['room_id'] ?? ''}',
+      title: '${value['title'] ?? '耳边的一会儿'}',
+      status: '${value['status'] ?? ''}',
+      startedAt: DateTime.fromMillisecondsSinceEpoch(
+        asInt(value['started_at']) * 1000,
+      ),
+      endedAt: asInt(value['ended_at']) > 0
+          ? DateTime.fromMillisecondsSinceEpoch(
+              asInt(value['ended_at']) * 1000,
+            )
+          : null,
+      turnCount: asInt(value['turn_count']),
+      turns: rawTurns is List
+          ? rawTurns
+              .whereType<Map>()
+              .map(
+                (item) => VoiceRoomTurn.fromJson(
+                  item.cast<String, dynamic>(),
+                ),
+              )
+              .toList()
+          : const [],
+    );
+  }
+
+  final String roomId;
+  final String title;
+  final String status;
+  final DateTime startedAt;
+  final DateTime? endedAt;
+  final int turnCount;
+  final List<VoiceRoomTurn> turns;
+}
+
+class VoiceRoomTurn {
+  const VoiceRoomTurn({
+    required this.turnId,
+    required this.turnIndex,
+    required this.userText,
+    required this.assistantText,
+    required this.userDurationMs,
+    required this.assistantDurationMs,
+    required this.audioMediaId,
+    required this.audioMimeType,
+    required this.createdAt,
+    required this.memoryStatus,
+  });
+
+  factory VoiceRoomTurn.fromJson(Map<String, dynamic> value) {
+    return VoiceRoomTurn(
+      turnId: '${value['turn_id'] ?? ''}',
+      turnIndex: asInt(value['turn_index']),
+      userText: '${value['user_text'] ?? ''}',
+      assistantText: '${value['assistant_text'] ?? ''}',
+      userDurationMs: asInt(value['user_duration_ms']),
+      assistantDurationMs: asInt(value['assistant_duration_ms']),
+      audioMediaId: '${value['audio_media_id'] ?? ''}',
+      audioMimeType: '${value['audio_mime_type'] ?? 'audio/wav'}',
+      createdAt: DateTime.fromMillisecondsSinceEpoch(
+        asInt(value['created_at']) * 1000,
+      ),
+      memoryStatus: '${value['memory_status'] ?? 'pending'}',
+    );
+  }
+
+  final String turnId;
+  final int turnIndex;
+  final String userText;
+  final String assistantText;
+  final int userDurationMs;
+  final int assistantDurationMs;
+  final String audioMediaId;
+  final String audioMimeType;
+  final DateTime createdAt;
+  final String memoryStatus;
+}
+
+class VoiceRoomTurnResult {
+  const VoiceRoomTurnResult({
+    required this.accepted,
+    required this.duplicate,
+    required this.turn,
+  });
+
+  final bool accepted;
+  final bool duplicate;
+  final VoiceRoomTurn turn;
 }

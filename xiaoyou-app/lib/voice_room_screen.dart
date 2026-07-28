@@ -7,7 +7,6 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'chat_models.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
 
@@ -40,8 +39,6 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   StreamSubscription<double>? _amplitude;
   StreamSubscription<void>? _playbackCompleted;
   Timer? _clock;
-  Timer? _poll;
-  late final DateTime _startedAt = DateTime.now();
   late final AnimationController _breath = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 2600),
@@ -53,17 +50,14 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
 
   _RoomPhase _phase = _RoomPhase.listening;
   double _level = 0.08;
-  int _cursor = 0;
-  int _turnCount = 0;
   int _elapsedSeconds = 0;
-  int _clientSequence = 0;
+  String _roomId = '';
+  bool _initializing = true;
   bool _closed = false;
 
   @override
   void initState() {
     super.initState();
-    _cursor = widget.initialEventSequence;
-    _clientSequence = DateTime.now().millisecondsSinceEpoch;
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
         setState(() => _elapsedSeconds += 1);
@@ -78,13 +72,13 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       }
     });
     unawaited(_recorder.prepare());
+    unawaited(_initializeRoom());
   }
 
   @override
   void dispose() {
     _closed = true;
     _clock?.cancel();
-    _poll?.cancel();
     _amplitude?.cancel();
     _playbackCompleted?.cancel();
     _breath.dispose();
@@ -94,9 +88,41 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     super.dispose();
   }
 
+  Future<void> _initializeRoom() async {
+    try {
+      final room = await widget.api.createVoiceRoom();
+      if (!mounted || _closed) {
+        if (room.roomId.isNotEmpty) {
+          unawaited(widget.api.finishVoiceRoom(room.roomId));
+        }
+        return;
+      }
+      setState(() {
+        _roomId = room.roomId;
+        _initializing = false;
+      });
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _initializing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('语音房暂时没有连上，请检查火山 O2.0 配置后重试'),
+        ),
+      );
+    }
+  }
+
   Future<void> _toggleTalk() async {
-    if (_phase == _RoomPhase.ending) {
+    if (_phase == _RoomPhase.ending || _initializing) {
       return;
+    }
+    if (_roomId.isEmpty) {
+      await _initializeRoom();
+      if (_roomId.isEmpty) {
+        return;
+      }
     }
     if (_phase == _RoomPhase.recording) {
       await _finishTurn();
@@ -105,8 +131,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     if (_phase == _RoomPhase.speaking) {
       await _player.stop();
     }
-    _poll?.cancel();
-    final started = await _recorder.start();
+    final started = await _recorder.start(pcm16Wav: true);
     if (!mounted) {
       return;
     }
@@ -150,35 +175,19 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       _phase = _RoomPhase.waiting;
       _level = 0.18;
     });
+    final file = File(recorded.path);
+    late final VoiceRoomTurnResult result;
     try {
-      final file = File(recorded.path);
-      _clientSequence += 1;
-      final result = await widget.api.sendVoice(
-        messageId: 'room-${DateTime.now().microsecondsSinceEpoch}',
+      result = await widget.api.sendVoiceRoomTurn(
+        roomId: _roomId,
+        turnId: 'room-${DateTime.now().microsecondsSinceEpoch}',
         audioBytes: await file.readAsBytes(),
         mimeType: recorded.mimeType,
         durationMs: recorded.durationMs,
-        sequence: _clientSequence,
       );
-      if (await file.exists()) {
-        await file.delete();
-      }
       if (!result.accepted && !result.duplicate) {
         throw const HttpException('voice_not_accepted');
       }
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _turnCount += 1;
-        _lines.add(
-          _VoiceRoomLine(
-            fromXiaoyou: false,
-            text: result.text.isEmpty ? '语音消息' : result.text,
-          ),
-        );
-      });
-      _waitForReply();
     } catch (_) {
       if (mounted) {
         setState(() => _phase = _RoomPhase.listening);
@@ -186,70 +195,65 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           const SnackBar(content: Text('刚才那句话没有送到，再说一次好吗')),
         );
       }
-    }
-  }
-
-  void _waitForReply() {
-    _poll?.cancel();
-    var attempts = 0;
-    _poll = Timer.periodic(const Duration(milliseconds: 900), (timer) async {
-      if (_closed || attempts >= 80) {
-        timer.cancel();
-        if (mounted) {
-          setState(() => _phase = _RoomPhase.listening);
-        }
-        return;
+      return;
+    } finally {
+      if (await file.exists()) {
+        await file.delete();
       }
-      attempts += 1;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _lines
+        ..add(
+          _VoiceRoomLine(
+            fromXiaoyou: false,
+            text: result.turn.userText,
+          ),
+        )
+        ..add(
+          _VoiceRoomLine(
+            fromXiaoyou: true,
+            text: result.turn.assistantText,
+          ),
+        );
+    });
+    if (result.turn.audioMediaId.isNotEmpty) {
       try {
-        final events = await widget.api.eventsAfter(_cursor);
-        if (events.isEmpty || _closed) {
+        final media = await widget.api.downloadMedia(
+          result.turn.audioMediaId,
+        );
+        if (_closed) {
           return;
         }
-        for (final event in events) {
-          _cursor = max(_cursor, asInt(event['sequence']));
-          final role = '${event['role'] ?? 'assistant'}';
-          if (role != 'assistant') {
-            continue;
-          }
-          final text = '${event['text'] ?? ''}'.trim();
-          if (mounted && text.isNotEmpty) {
-            setState(() {
-              _lines.add(_VoiceRoomLine(fromXiaoyou: true, text: text));
-            });
-          }
-          final kind = '${event['kind'] ?? 'text'}';
-          final mediaId = '${event['media_id'] ?? ''}';
-          if (kind == 'voice' && mediaId.isNotEmpty) {
-            final media = await widget.api.downloadMedia(mediaId);
-            if (_closed) {
-              return;
-            }
-            await _player.play(
-              BytesSource(media.bytes, mimeType: media.mimeType),
-            );
-            if (mounted) {
-              setState(() {
-                _phase = _RoomPhase.speaking;
-                _level = 0.58;
-              });
-            }
-          } else if (mounted) {
-            setState(() {
-              _phase = _RoomPhase.listening;
-              _level = 0.08;
-            });
-          }
-          final actionId = '${event['action_id'] ?? ''}';
-          if (actionId.isNotEmpty) {
-            unawaited(widget.api.acknowledge(actionId));
-          }
+        await _player.play(
+          BytesSource(media.bytes, mimeType: media.mimeType),
+        );
+        if (mounted) {
+          setState(() {
+            _phase = _RoomPhase.speaking;
+            _level = 0.58;
+          });
         }
-        timer.cancel();
       } catch (_) {
-        // A later poll can recover without ending the room.
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _phase = _RoomPhase.listening;
+          _level = 0.08;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('小悠的回复已保存，但这次音频没有播放出来')),
+        );
       }
-    });
+    } else if (mounted) {
+      setState(() {
+        _phase = _RoomPhase.listening;
+        _level = 0.08;
+      });
+    }
   }
 
   Future<void> _endRoom() async {
@@ -258,25 +262,31 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     }
     final wasRecording = _phase == _RoomPhase.recording;
     setState(() => _phase = _RoomPhase.ending);
-    _poll?.cancel();
     if (wasRecording) {
       await _recorder.cancel();
     }
     await _player.stop();
-    final endedAt = DateTime.now();
-    try {
-      await widget.api.recordVoiceRoomMemory(
-        startedAt: _startedAt,
-        endedAt: endedAt,
-        turnCount: _turnCount,
-        durationMs: endedAt.difference(_startedAt).inMilliseconds,
-      );
-    } catch (_) {
-      // Ending the room should remain available when the keepsake save fails.
+    if (_roomId.isNotEmpty) {
+      try {
+        await widget.api.finishVoiceRoom(_roomId);
+      } catch (_) {
+        // The persisted turns remain available even if finalization is retried
+        // when the next voice-room request reaches the server.
+      }
     }
     if (mounted) {
       Navigator.of(context).pop(true);
     }
+  }
+
+  Future<void> _showRoomArchive() async {
+    HapticFeedback.selectionClick();
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _VoiceRoomArchiveSheet(api: widget.api),
+    );
   }
 
   @override
@@ -331,11 +341,21 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
                             ],
                           ),
                         ),
-                        Text(
-                          _duration(_elapsedSeconds),
-                          style: const TextStyle(
-                            color: _voiceMuted,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                        IconButton(
+                          tooltip: '语音房记录',
+                          onPressed: _showRoomArchive,
+                          icon: const Icon(Icons.auto_stories_rounded),
+                          color: _voiceRose,
+                        ),
+                        SizedBox(
+                          width: 48,
+                          child: Text(
+                            _duration(_elapsedSeconds),
+                            textAlign: TextAlign.end,
+                            style: const TextStyle(
+                              color: _voiceMuted,
+                              fontFeatures: [FontFeature.tabularFigures()],
+                            ),
                           ),
                         ),
                       ],
@@ -361,8 +381,8 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
                         AnimatedSwitcher(
                           duration: const Duration(milliseconds: 320),
                           child: Text(
-                            _phaseLabel(_phase),
-                            key: ValueKey(_phase),
+                            _initializing ? '正在连接小悠…' : _phaseLabel(_phase),
+                            key: ValueKey('$_phase-$_initializing'),
                             style: const TextStyle(
                               color: _voiceInk,
                               fontSize: 18,
@@ -440,6 +460,359 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     );
   }
 }
+
+class _VoiceRoomArchiveSheet extends StatefulWidget {
+  const _VoiceRoomArchiveSheet({required this.api});
+
+  final XiaoyouApi api;
+
+  @override
+  State<_VoiceRoomArchiveSheet> createState() => _VoiceRoomArchiveSheetState();
+}
+
+class _VoiceRoomArchiveSheetState extends State<_VoiceRoomArchiveSheet> {
+  late Future<List<VoiceRoomRecord>> _rooms = widget.api.voiceRooms();
+
+  Future<void> _openRoom(VoiceRoomRecord summary) async {
+    try {
+      final room = await widget.api.voiceRoom(summary.roomId);
+      if (!mounted) {
+        return;
+      }
+      await showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        backgroundColor: Colors.transparent,
+        builder: (context) => _VoiceRoomTranscript(room: room),
+      );
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('这段语音房记录暂时打不开')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final height = MediaQuery.sizeOf(context).height * 0.74;
+    return Container(
+      height: height,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Color(0xfffffbfd), Color(0xfffff1f7), Color(0xfff2edff)],
+        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(34)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 10),
+          Container(
+            width: 44,
+            height: 5,
+            decoration: BoxDecoration(
+              color: const Color(0x33a06b85),
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 18, 14, 8),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '耳边收藏',
+                        style: TextStyle(
+                          color: _voiceInk,
+                          fontSize: 23,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      SizedBox(height: 3),
+                      Text(
+                        '每次相遇各自保存，主聊天页不会混入逐句记录',
+                        style: TextStyle(color: _voiceMuted, fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: '刷新',
+                  onPressed: () {
+                    setState(() => _rooms = widget.api.voiceRooms());
+                  },
+                  icon: const Icon(Icons.refresh_rounded),
+                  color: _voiceRose,
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: FutureBuilder<List<VoiceRoomRecord>>(
+              future: _rooms,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return const Center(
+                    child: Text(
+                      '记录暂时没有加载出来',
+                      style: TextStyle(color: _voiceMuted),
+                    ),
+                  );
+                }
+                final rooms = snapshot.data ?? const [];
+                if (rooms.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      '下一次耳边相遇，会收藏在这里',
+                      style: TextStyle(color: _voiceMuted),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(18, 8, 18, 28),
+                  itemCount: rooms.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final room = rooms[index];
+                    return Material(
+                      color: const Color(0xd9ffffff),
+                      borderRadius: BorderRadius.circular(24),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(24),
+                        onTap: () => _openRoom(room),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  gradient: const LinearGradient(
+                                    colors: [
+                                      Color(0xffffd9e9),
+                                      Color(0xffded4ff),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(17),
+                                ),
+                                child: const Icon(
+                                  Icons.graphic_eq_rounded,
+                                  color: _voiceRose,
+                                ),
+                              ),
+                              const SizedBox(width: 13),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      room.title,
+                                      style: const TextStyle(
+                                        color: _voiceInk,
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      '${_roomDate(room.startedAt)} · '
+                                      '${room.turnCount} 轮对话',
+                                      style: const TextStyle(
+                                        color: _voiceMuted,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(
+                                Icons.chevron_right_rounded,
+                                color: _voiceMuted,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _VoiceRoomTranscript extends StatelessWidget {
+  const _VoiceRoomTranscript({required this.room});
+
+  final VoiceRoomRecord room;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.sizeOf(context).height * 0.82,
+      decoration: const BoxDecoration(
+        color: Color(0xfffffbfd),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(height: 10),
+          Container(
+            width: 44,
+            height: 5,
+            decoration: BoxDecoration(
+              color: const Color(0x33a06b85),
+              borderRadius: BorderRadius.circular(99),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        room.title,
+                        style: const TextStyle(
+                          color: _voiceInk,
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      Text(
+                        '${_roomDate(room.startedAt)} · '
+                        '${room.turnCount} 轮',
+                        style: const TextStyle(
+                          color: _voiceMuted,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton.filledTonal(
+                  onPressed: () => Navigator.of(context).pop(),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: room.turns.isEmpty
+                ? const Center(
+                    child: Text(
+                      '这一会儿安静地结束了',
+                      style: TextStyle(color: _voiceMuted),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(18, 4, 18, 30),
+                    itemCount: room.turns.length,
+                    itemBuilder: (context, index) {
+                      final turn = room.turns[index];
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 18),
+                        child: Column(
+                          children: [
+                            _TranscriptBubble(
+                              mine: true,
+                              label: 'YoYo',
+                              text: turn.userText,
+                            ),
+                            const SizedBox(height: 8),
+                            _TranscriptBubble(
+                              mine: false,
+                              label: '小悠',
+                              text: turn.assistantText,
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TranscriptBubble extends StatelessWidget {
+  const _TranscriptBubble({
+    required this.mine,
+    required this.label,
+    required this.text,
+  });
+
+  final bool mine;
+  final String label;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 310),
+        padding: const EdgeInsets.fromLTRB(15, 11, 15, 12),
+        decoration: BoxDecoration(
+          color: mine ? const Color(0xfff0e6fa) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x100e0610),
+              blurRadius: 18,
+              offset: Offset(0, 7),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: mine ? _voiceLavender : _voiceRose,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              text,
+              style: const TextStyle(
+                color: _voiceInk,
+                height: 1.42,
+                fontSize: 15,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _roomDate(DateTime value) => '${value.month.toString().padLeft(2, '0')}-'
+    '${value.day.toString().padLeft(2, '0')} '
+    '${value.hour.toString().padLeft(2, '0')}:'
+    '${value.minute.toString().padLeft(2, '0')}';
 
 class _VoiceOrb extends StatefulWidget {
   const _VoiceOrb({

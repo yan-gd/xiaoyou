@@ -37,6 +37,14 @@ services: # Docker Compose 服务集合。
       XIAOYOU_APP_TTS_API_KEY: '${XIAOYOU_APP_TTS_API_KEY:-}' # 火山新控制台API Key；与旧版App ID鉴权二选一。
       XIAOYOU_APP_TTS_APP_ID: '${XIAOYOU_APP_TTS_APP_ID:-}' # 火山旧版控制台App ID；新API Key鉴权可留空。
       XIAOYOU_APP_TTS_ACCESS_KEY: '${XIAOYOU_APP_TTS_ACCESS_KEY:-}' # 火山旧版控制台Access Key；严禁提交仓库。
+      XIAOYOU_VOICE_ROOM_ENABLED: '${XIAOYOU_VOICE_ROOM_ENABLED:-true}' # App独立语音房使用火山端到端语音大模型O2.0。
+      XIAOYOU_VOICE_ROOM_APP_ID: '${XIAOYOU_VOICE_ROOM_APP_ID:-}' # 火山端到端实时语音控制台App ID；只保存在服务器.env。
+      XIAOYOU_VOICE_ROOM_ACCESS_KEY: '${XIAOYOU_VOICE_ROOM_ACCESS_KEY:-}' # 火山端到端实时语音Access Token；不下发到App。
+      XIAOYOU_VOICE_ROOM_MODEL: '${XIAOYOU_VOICE_ROOM_MODEL:-1.2.1.1}' # O2.0固定模型版本，其他值会拒绝启动语音房。
+      XIAOYOU_VOICE_ROOM_SPEAKER: '${XIAOYOU_VOICE_ROOM_SPEAKER:-zh_female_xiaohe_jupiter_bigtts}' # O2.0支持的音色。
+      XIAOYOU_VOICE_ROOM_LOUDNESS_RATE: '${XIAOYOU_VOICE_ROOM_LOUDNESS_RATE:-100}' # O2.0输出音量，范围-50到100。
+      XIAOYOU_VOICE_ROOM_IDLE_TIMEOUT: '${XIAOYOU_VOICE_ROOM_IDLE_TIMEOUT:-300}' # App异常退出后，空闲语音房5分钟自动收束并保留记录。
+      XIAOYOU_VOICE_ROOM_DB_PATH: '${XIAOYOU_VOICE_ROOM_DB_PATH:-/app/data/app_channel/voice_rooms.db}' # 每个语音房和逐轮转写独立持久化。
       XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别或合成最多等待45秒。
       XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED: 'true' # App文字回合由模型结合语境决定本轮发送文字还是语音；不使用关键词路由。
       XIAOYOU_APP_VOICE_ROUTE_MODEL: 'qwen3.7-plus' # 只做回复媒介判断，不改写小悠已经生成的内容。

@@ -15,7 +15,7 @@ Flutter App ── HTTPS ── AppChannel ─┐
                                            └─ 按来源通道发送
 ```
 
-App 的文字和语音转写都会进入现有连续输入、记忆治理和模型回复链路。
+App 的文字和普通语音转写都会进入现有连续输入、记忆治理和模型回复链路。
 协议层只校验身份、大小、消息 ID 和送达状态，不使用关键词、正则或硬编码
 替代模型的语义判断。
 
@@ -44,6 +44,13 @@ XIAOYOU_APP_VOICE_ENABLED=true
 XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED=true
 XIAOYOU_APP_TTS_API_KEY=火山语音控制台的API_Key
 XIAOYOU_APP_TTS_LOUDNESS_RATE=100
+XIAOYOU_VOICE_ROOM_ENABLED=true
+XIAOYOU_VOICE_ROOM_APP_ID=火山端到端实时语音App_ID
+XIAOYOU_VOICE_ROOM_ACCESS_KEY=火山端到端实时语音Access_Token
+XIAOYOU_VOICE_ROOM_MODEL=1.2.1.1
+XIAOYOU_VOICE_ROOM_SPEAKER=zh_female_xiaohe_jupiter_bigtts
+XIAOYOU_VOICE_ROOM_LOUDNESS_RATE=100
+XIAOYOU_VOICE_ROOM_IDLE_TIMEOUT=300
 XIAOYOU_VIVO_PUSH_APP_ID=vivo开放平台应用ID
 XIAOYOU_VIVO_PUSH_APP_KEY=vivo开放平台AppKey
 XIAOYOU_VIVO_PUSH_APP_SECRET=vivo开放平台AppSecret
@@ -75,6 +82,35 @@ XIAOYOU_APP_VOICE_ROUTE_ENABLE_THINKING=false
 `[-50, 100]`，默认 `100`；其中 `100` 代表 2 倍音量、`0` 代表默认音量、
 `-50` 代表 0.5 倍音量。凭证只放服务器 `.env`，不要写入 APK 或提交 Git。
 App 播放端不再额外增加 Android 响度，避免双重放大和跨平台音量不一致。
+
+### O2.0 端到端语音房
+
+语音房不再把每句话伪装成普通 App 语音消息。服务器会为每次进入语音房创建
+一个独立的火山 WebSocket 会话，固定使用 O2.0 规范模型
+`dialog.extra.model=1.2.1.1`：
+
+- App 录制 `16 kHz / 单声道 / PCM16 WAV`，服务端按 20 ms 音频帧发送。
+- O2.0 在同一连接中完成识别、对话和 `24 kHz / PCM16` 语音生成。
+- 建立会话前，从 ShortMemory 读取当前本来就会注入模型的原生
+  `user/assistant` 消息，并作为结构化 `dialog_context` 传给 O2.0。
+- 同一语音房复用一个 WebSocket；下一次进入时再用服务端 `dialog_id` 和最新
+  短期记忆续接，因此不会依靠客户端拼接提示词。
+- 每个完整问答终态写入 `data/app_channel/voice_rooms.db`，随后由后台 FIFO
+  异步写入 ShortMemory、ConversationArchive 和 LongTermMemory；记忆写入不
+  占用主聊天线程，失败记录会持久化并在启动后重放。
+- 语音房逐句记录只从 `/v1/voice-rooms` 读取，绝不写入
+  `data/app_channel/app.db` 的主聊天消息表，所以主聊天页面不显示这些气泡；
+  常规聊天的后续模型上下文仍能记得这段语音对话。
+- App 被系统杀掉而没有发送结束请求时，房间空闲 300 秒后会自动关闭并保留
+  已完成的逐轮记录；服务重启会把失去 WebSocket 的旧活动房标为中断。
+
+O2.0 与普通消息的 Seed-TTS 是两套产品凭证。这里使用火山端到端实时语音
+控制台的 App ID 和 Access Token，不使用 `XIAOYOU_APP_TTS_API_KEY`。默认
+音色 `zh_female_xiaohe_jupiter_bigtts` 是 O2.0 支持音色；现有
+`ICL_uranus_zh_female_rouguhunshi_tob` 不支持 O2.0，仍只用于普通 App
+语音回复。字段与版本号以
+[火山端到端实时语音大模型 API 文档](https://docs.volcengine.com/docs/6561/1594356?lang=zh)
+为准。
 
 ### vivo 系统级推送
 
@@ -134,8 +170,8 @@ location /xiaoyou-app/ {
     proxy_pass http://127.0.0.1:8787/;
     proxy_http_version 1.1;
     proxy_buffering off;
-    proxy_read_timeout 90s;
-    proxy_send_timeout 90s;
+    proxy_read_timeout 150s;
+    proxy_send_timeout 120s;
     client_max_body_size 8m;
 
     proxy_set_header Host $host;
@@ -268,6 +304,34 @@ POST /v1/relationship/capsules
 POST /v1/relationship/capsules/<entry_id>/open
 POST /v1/relationship/voice-memories
 ```
+
+### 独立 O2.0 语音房
+
+```text
+POST /v1/voice-rooms
+Content-Type: application/json
+
+{"device_id":"yoyo-phone","title":"耳边的一会儿"}
+
+POST /v1/voice-rooms/<room_id>/turns
+Content-Type: audio/wav
+X-Device-Id: yoyo-phone
+X-Turn-Id: room-turn-唯一ID
+X-Audio-Duration-Ms: 1800
+
+POST /v1/voice-rooms/<room_id>/finish
+Content-Type: application/json
+
+{"device_id":"yoyo-phone"}
+
+GET /v1/voice-rooms?device_id=yoyo-phone&limit=30
+GET /v1/voice-rooms/<room_id>?device_id=yoyo-phone
+```
+
+`turns` 请求会等待这一轮 O2.0 的识别、回复与音频全部结束再返回，但由独立
+HTTP 工作线程处理，不阻塞主聊天消费线程。返回的 `audio_media_id` 继续通过
+`/v1/media/<media_id>` 下载。每个房间的逐轮转写、音频引用和异步记忆状态
+都只存在独立语音房数据库中。
 
 “我们今天”先以当天真实对话生成草稿。代表原话必须逐字存在于当天聊天中，
 代表照片必须来自当天已有 `media_id`；模型结果无法通过事实校验时退回本地

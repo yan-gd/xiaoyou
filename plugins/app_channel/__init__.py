@@ -50,6 +50,11 @@ from plugins.xiaoyou_common.trace_service import (
     attach_input_trace,
     trace_event,
 )
+from plugins.xiaoyou_common.voice_room_service import (
+    VoiceRoomError,
+    VoiceRoomProviderError,
+    VoiceRoomService,
+)
 
 
 DATABASE_PATH = runtime_path(
@@ -1666,6 +1671,38 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             )
             self._json(200, {"entries": entries})
             return
+        if parsed.path == "/v1/voice-rooms":
+            rooms = self.plugin.voice_rooms.list_rooms(
+                device_id,
+                limit=self._integer((query.get("limit") or [30])[0], 30),
+            )
+            self._json(
+                200,
+                {
+                    "rooms": [
+                        self.plugin.voice_rooms.response_payload(room)
+                        for room in rooms
+                    ],
+                },
+            )
+            return
+        voice_room_prefix = "/v1/voice-rooms/"
+        if parsed.path.startswith(voice_room_prefix):
+            room_id = parsed.path[len(voice_room_prefix):].strip("/")
+            if room_id and "/" not in room_id:
+                room = self.plugin.voice_rooms.get_room(room_id, device_id)
+                if room is None:
+                    self._json(404, {"error": "voice_room_not_found"})
+                else:
+                    self._json(
+                        200,
+                        {
+                            "room": self.plugin.voice_rooms.response_payload(
+                                room
+                            ),
+                        },
+                    )
+                return
         if parsed.path == "/v1/events":
             after = self._integer((query.get("after") or [0])[0], 0)
             limit = self._integer((query.get("limit") or [50])[0], 50)
@@ -1767,7 +1804,67 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._json(202, result)
                 return
+            voice_room_prefix = "/v1/voice-rooms/"
+            if (
+                parsed.path.startswith(voice_room_prefix)
+                and parsed.path.endswith("/turns")
+            ):
+                room_id = parsed.path[
+                    len(voice_room_prefix):-len("/turns")
+                ].strip("/")
+                audio_bytes = self._voice_body()
+                result = self.plugin.voice_rooms.process_turn(
+                    room_id=room_id,
+                    device_id=self.headers.get("X-Device-Id"),
+                    turn_id=self.headers.get("X-Turn-Id"),
+                    audio_bytes=audio_bytes,
+                    mime_type=self.headers.get(
+                        "Content-Type", "application/octet-stream"
+                    ),
+                    duration_ms=self._integer(
+                        self.headers.get("X-Audio-Duration-Ms"), 0
+                    ),
+                )
+                self._json(200, result)
+                return
             payload = self._body()
+            if parsed.path == "/v1/voice-rooms":
+                device_id = _safe_device_id(payload.get("device_id"))
+                if not device_id:
+                    raise ValueError("invalid_device_id")
+                room = self.plugin.voice_rooms.create_room(
+                    session_id=self.plugin.canonical_session_id,
+                    device_id=device_id,
+                    title=payload.get("title", "耳边的一会儿"),
+                )
+                self._json(
+                    201,
+                    {
+                        "room": self.plugin.voice_rooms.response_payload(room),
+                    },
+                )
+                return
+            if (
+                parsed.path.startswith(voice_room_prefix)
+                and parsed.path.endswith("/finish")
+            ):
+                room_id = parsed.path[
+                    len(voice_room_prefix):-len("/finish")
+                ].strip("/")
+                device_id = _safe_device_id(payload.get("device_id"))
+                if not device_id:
+                    raise ValueError("invalid_device_id")
+                room = self.plugin.voice_rooms.finish_room(
+                    room_id,
+                    device_id,
+                )
+                self._json(
+                    200,
+                    {
+                        "room": self.plugin.voice_rooms.response_payload(room),
+                    },
+                )
+                return
             if parsed.path == "/v1/devices":
                 device_id = _safe_device_id(payload.get("device_id"))
                 if not device_id:
@@ -1904,6 +2001,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._json(400, {"error": str(exc)})
         except AppVoiceError as exc:
             self._json(502, {"error": str(exc)})
+        except VoiceRoomProviderError as exc:
+            self._json(502, {"error": str(exc)})
+        except VoiceRoomError as exc:
+            self._json(400, {"error": str(exc)})
         except Exception:
             logger.exception("[AppChannel] request failed path=%s", parsed.path)
             self._json(500, {"error": "internal_error"})
@@ -2039,7 +2140,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.4-relationship-universe",
+    version="1.5-o2-voice-rooms",
     author="yoyo",
     desire_priority=10001,
 )
@@ -2056,6 +2157,7 @@ class AppChannel(Plugin):
         self.runtime = None
         self.httpd = None
         self.relationship = None
+        self.voice_rooms = None
         if not self.enabled:
             logger.info("[AppChannel] disabled")
             return
@@ -2081,6 +2183,13 @@ class AppChannel(Plugin):
             self.runtime.voice_reply_decision = (
                 AppVoiceReplyDecisionService()
             )
+            old_voice_rooms = getattr(existing, "voice_rooms", None)
+            if old_voice_rooms is not None:
+                old_voice_rooms.close_all()
+            self.voice_rooms = VoiceRoomService(
+                media_store=self.store,
+                relationship_service=self.relationship,
+            )
             self.httpd = existing.httpd
             AppRequestHandler.plugin = self
             register_app_service(self)
@@ -2091,6 +2200,10 @@ class AppChannel(Plugin):
 
         self.store = AppInboxStore(
             push_dispatcher=SystemPushDispatcher(),
+        )
+        self.voice_rooms = VoiceRoomService(
+            media_store=self.store,
+            relationship_service=self.relationship,
         )
         register_app_store(self.store)
         self.runtime = AppRuntimeChannel(
@@ -2112,7 +2225,7 @@ class AppChannel(Plugin):
         logger.info(
             "[AppChannel] inited bind=%s:%s database=%s session=%s voice=%s "
             "asr=%s tts=%s provider=%s tts_ready=%s "
-            "text_voice_decision=%s voice_route=%s",
+            "text_voice_decision=%s voice_route=%s o2_voice_room=%s",
             host,
             port,
             DATABASE_PATH,
@@ -2140,6 +2253,7 @@ class AppChannel(Plugin):
                 "model",
                 "unknown",
             ),
+            self.voice_rooms.available,
         )
 
     def on_send_reply(self, e_context):

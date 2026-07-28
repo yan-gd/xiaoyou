@@ -106,6 +106,61 @@ void main() {
     }
   });
 
+  test('O2 voice-room turn stays on its independent WAV endpoint', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    late Uint8List received;
+    final subscription = server.listen((request) async {
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in request) {
+        bytes.add(chunk);
+      }
+      received = bytes.takeBytes();
+      expect(request.uri.path, '/v1/voice-rooms/room-1/turns');
+      expect(request.headers.value('X-Turn-Id'), 'turn-1');
+      expect(request.headers.value('X-Device-Id'), 'test-device');
+      expect(request.headers.value('X-Audio-Duration-Ms'), '1800');
+      expect(request.headers.contentType?.mimeType, 'audio/wav');
+      const responseBody = '{"accepted":true,"duplicate":false,"turn":{'
+          '"turn_id":"turn-1","turn_index":1,'
+          '"user_text":"我回来了","assistant_text":"欢迎回来。",'
+          '"user_duration_ms":1800,"assistant_duration_ms":1200,'
+          '"audio_media_id":"voice-wav-1","audio_mime_type":"audio/wav",'
+          '"created_at":100,"memory_status":"pending"}}';
+      final encoded = utf8.encode(responseBody);
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..headers.contentType = ContentType.json
+        ..contentLength = encoded.length
+        ..add(encoded);
+      await request.response.close();
+    });
+    final api = XiaoyouApi(
+      baseUrl: 'http://${server.address.address}:${server.port}',
+      token: 'test-token-with-at-least-24-characters',
+      deviceId: 'test-device',
+    );
+
+    try {
+      final result = await api.sendVoiceRoomTurn(
+        roomId: 'room-1',
+        turnId: 'turn-1',
+        audioBytes: Uint8List.fromList([82, 73, 70, 70]),
+        mimeType: 'audio/wav',
+        durationMs: 1800,
+      );
+      expect(received, [82, 73, 70, 70]);
+      expect(result.accepted, isTrue);
+      expect(result.turn.userText, '我回来了');
+      expect(result.turn.assistantText, '欢迎回来。');
+      expect(result.turn.audioMediaId, 'voice-wav-1');
+      expect(result.turn.memoryStatus, 'pending');
+    } finally {
+      api.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('image upload carries identity, kind and raw image bytes', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     late Uint8List received;
