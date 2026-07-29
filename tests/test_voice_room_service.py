@@ -142,6 +142,77 @@ def test_o2_protocol_frame_and_context_pairs(monkeypatch, tmp_path):
     ]
 
 
+def test_o2_steady_state_has_no_read_deadline_and_interrupts_before_truncate(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_service(monkeypatch, tmp_path)
+
+    class _Socket:
+        def __init__(self):
+            self.frames = []
+            self.timeouts = []
+            self.responses = [
+                _server_frame(module.CONNECTION_STARTED, {}),
+                _server_frame(
+                    module.SESSION_STARTED,
+                    {"dialog_id": "dialog-live"},
+                ),
+            ]
+
+        def send_binary(self, frame):
+            self.frames.append(frame)
+
+        def recv(self):
+            return self.responses.pop(0)
+
+        def settimeout(self, value):
+            self.timeouts.append(value)
+
+    socket = _Socket()
+    session = module.VolcO2RealtimeSession(
+        app_id="app-id",
+        access_key="access-key",
+        session_id="session-id",
+        start_payload={"dialog": {}},
+        websocket_factory=lambda *_args, **_kwargs: socket,
+    )
+
+    assert session.start() == "dialog-live"
+    assert socket.timeouts == [None]
+
+    socket.frames.clear()
+    assert session.truncate("reply-1", 320) is True
+    assert [
+        struct.unpack(">I", frame[4:8])[0]
+        for frame in socket.frames
+    ] == [
+        module.CLIENT_INTERRUPT,
+        module.CONVERSATION_TRUNCATE,
+    ]
+
+
+def test_late_truncate_cannot_mark_the_next_turn_partial(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_service(monkeypatch, tmp_path)
+    live = module._VoiceRoomLiveRuntime(
+        {"room_id": "room-1"},
+        provider=object(),
+        finalize_callback=lambda _snapshot: None,
+    )
+    live.reply_id = "reply-1"
+    live.user_text = "第一轮"
+    live.assistant_text = "第一轮回复"
+
+    live._snapshot_turn()
+
+    assert live.mark_truncated("reply-1", 400) is False
+    assert live.barge_in is False
+    assert live.played_ms == 0
+
+
 def test_realtime_pcm_is_forwarded_at_twenty_millisecond_cadence(
     monkeypatch,
     tmp_path,

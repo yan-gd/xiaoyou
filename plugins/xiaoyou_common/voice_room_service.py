@@ -845,6 +845,7 @@ class VolcO2RealtimeSession:
         self.stop_event = threading.Event()
         self.receive_thread = None
         self.audio_sender_thread = None
+        self.heartbeat_thread = None
         self.audio_condition = threading.Condition(threading.RLock())
         self.audio_queue = deque()
         self.audio_queue_bytes = 0
@@ -938,6 +939,14 @@ class VolcO2RealtimeSession:
             payload = frame.get("payload") or {}
             if isinstance(payload, dict):
                 self.dialog_id = str(payload.get("dialog_id") or "").strip()
+            # The provider timeout is useful while establishing the session,
+            # but keeping it as a socket read deadline makes an otherwise
+            # healthy long-lived room fail after repeated quiet intervals.
+            # Once the O2 session is ready, recv must remain blocking. The
+            # heartbeat below is responsible for detecting a dead connection.
+            set_timeout = getattr(self.socket, "settimeout", None)
+            if callable(set_timeout):
+                set_timeout(None)
             return self.dialog_id
 
     @staticmethod
@@ -1032,7 +1041,48 @@ class VolcO2RealtimeSession:
                 name="XiaoyouVolcO2Receive-" + self.session_id[:12],
             )
             self.receive_thread.start()
+            self.heartbeat_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                daemon=True,
+                name="XiaoyouVolcO2Heartbeat-" + self.session_id[:12],
+            )
+            self.heartbeat_thread.start()
         self._ensure_audio_sender()
+
+    def _heartbeat_loop(self):
+        # The microphone stream is usually sufficient traffic, but muted or
+        # quiet rooms still need an application-level heartbeat so NAT/proxy
+        # idle timers cannot silently discard the WebSocket.
+        while not self.stop_event.wait(20.0):
+            try:
+                with self.send_lock:
+                    socket = self.socket
+                    if socket is None:
+                        return
+                    ping = getattr(socket, "ping", None)
+                    if callable(ping):
+                        ping()
+                    else:
+                        # Test doubles may not expose the WebSocket ping API.
+                        # Do not manufacture microphone audio as a keepalive.
+                        continue
+            except Exception:
+                if self.stop_event.is_set():
+                    return
+                logger.warning(
+                    "[VoiceRoom] O2 heartbeat failed session=%s",
+                    self.session_id[:48],
+                    exc_info=True,
+                )
+                # Closing the socket wakes the receive loop, which publishes a
+                # single error event. The App then recreates the room while
+                # preserving the provider dialog id for conversational
+                # continuity.
+                try:
+                    socket.close()
+                except Exception:
+                    pass
+                return
 
     def _receive_loop(self):
         while not self.stop_event.is_set():
@@ -1215,6 +1265,15 @@ class VolcO2RealtimeSession:
         reply_id = _clean_text(reply_id, 128)
         if not reply_id:
             return False
+        # Stop the provider's currently generating turn first. Truncating only
+        # the conversation history does not guarantee that already scheduled
+        # TTS frames stop arriving, which is why barge-in could appear to
+        # resume the old answer after the local player had been stopped.
+        self._send(
+            CLIENT_INTERRUPT,
+            {},
+            session=True,
+        )
         self._send(
             CONVERSATION_TRUNCATE,
             {
@@ -1236,6 +1295,8 @@ class VolcO2RealtimeSession:
             self.receive_thread = None
             audio_sender_thread = self.audio_sender_thread
             self.audio_sender_thread = None
+            heartbeat_thread = self.heartbeat_thread
+            self.heartbeat_thread = None
             self.event_handler = None
             if socket is not None:
                 try:
@@ -1267,6 +1328,11 @@ class VolcO2RealtimeSession:
             and audio_sender_thread is not threading.current_thread()
         ):
             audio_sender_thread.join(timeout=1.0)
+        if (
+            heartbeat_thread is not None
+            and heartbeat_thread is not threading.current_thread()
+        ):
+            heartbeat_thread.join(timeout=1.0)
 
 
 class _VoiceRoomLiveRuntime:
@@ -1342,10 +1408,15 @@ class _VoiceRoomLiveRuntime:
 
     def mark_truncated(self, reply_id, audio_end_ms):
         with self.condition:
-            if reply_id and self.reply_id and reply_id != self.reply_id:
-                return
+            if (
+                not reply_id
+                or not self.reply_id
+                or reply_id != self.reply_id
+            ):
+                return False
             self.played_ms = max(0, int(audio_end_ms or 0))
             self.barge_in = True
+            return True
 
     def _snapshot_turn(self):
         with self.condition:
@@ -1868,12 +1939,12 @@ class VoiceRoomService:
             raise VoiceRoomError("voice_room_truncate_unavailable")
         accepted = bool(truncator(reply_id, audio_end_ms))
         if live is not None:
-            live.mark_truncated(reply_id, audio_end_ms)
-            live.publish(
-                "interrupted",
-                reply_id=reply_id,
-                audio_end_ms=max(0, int(audio_end_ms or 0)),
-            )
+            if live.mark_truncated(reply_id, audio_end_ms):
+                live.publish(
+                    "interrupted",
+                    reply_id=reply_id,
+                    audio_end_ms=max(0, int(audio_end_ms or 0)),
+                )
         return {"accepted": accepted}
 
     def _complete_live_turn(self, room_id, snapshot):

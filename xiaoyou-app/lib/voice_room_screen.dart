@@ -70,7 +70,10 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   String _roomId = '';
   String _currentReplyId = '';
   String _playbackReplyId = '';
+  String _suppressedReplyId = '';
   int _replyPlaybackBaseMs = 0;
+  int _replyAudioDurationMs = 0;
+  Timer? _playbackDrain;
   String _moodAsset = 'assets/moods/平静.png';
   String _moodLabel = '平静';
   String _liveCaption = '';
@@ -78,6 +81,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   bool _sendingAudio = false;
   int _audioUploadFailures = 0;
   bool _initializing = true;
+  bool _recovering = false;
   bool _closed = false;
 
   @override
@@ -96,6 +100,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   void dispose() {
     _closed = true;
     _clock?.cancel();
+    _playbackDrain?.cancel();
     _pcmSubscription?.cancel();
     _amplitude?.cancel();
     _breath.dispose();
@@ -133,6 +138,75 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           content: Text('语音房暂时没有连上，请检查火山 O2.0 配置后重试'),
         ),
       );
+    }
+  }
+
+  Future<void> _recoverRoom() async {
+    if (_recovering || _closed || _phase == _RoomPhase.ending) {
+      return;
+    }
+    _recovering = true;
+    final previousRoomId = _roomId;
+    _audioQueue.clear();
+    _queuedAudioBytes = 0;
+    _playbackDrain?.cancel();
+    await _player.stop();
+    _playbackReplyId = '';
+    _replyPlaybackBaseMs = 0;
+    _replyAudioDurationMs = 0;
+    _suppressedReplyId = '';
+    if (mounted) {
+      setState(() {
+        _phase = _RoomPhase.connecting;
+        _liveCaption = '正在重新连上小悠…';
+      });
+    }
+
+    if (previousRoomId.isNotEmpty) {
+      try {
+        await widget.api.finishVoiceRoom(previousRoomId);
+      } catch (_) {
+        // A broken provider socket must not prevent creation of its successor.
+      }
+    }
+
+    Object? lastError;
+    for (var attempt = 0; attempt < 3 && !_closed; attempt += 1) {
+      try {
+        final room = await widget.api.createVoiceRoom();
+        if (_closed || !mounted) {
+          if (room.roomId.isNotEmpty) {
+            unawaited(widget.api.finishVoiceRoom(room.roomId));
+          }
+          _recovering = false;
+          return;
+        }
+        setState(() {
+          _roomId = room.roomId;
+          _liveSequence = 0;
+          _audioUploadFailures = 0;
+          _recovering = false;
+          _phase = _RoomPhase.listening;
+          _liveCaption = '重新连上了，继续说吧';
+        });
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 2) {
+          await Future<void>.delayed(
+            Duration(milliseconds: 420 * (attempt + 1)),
+          );
+        }
+      }
+    }
+
+    debugPrint('[VoiceRoom] reconnect failed: $lastError');
+    _recovering = false;
+    if (mounted && !_closed) {
+      setState(() {
+        _phase = _RoomPhase.connecting;
+        _liveCaption = '暂时没能重新连上，请结束后再试一次';
+      });
     }
   }
 
@@ -177,7 +251,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     await _pcmSubscription?.cancel();
     _pcmSubscription = stream.listen(
       (pcm) {
-        if (_closed || pcm.isEmpty) {
+        if (_closed || _recovering || pcm.isEmpty) {
           return;
         }
         // O2.0 keep_alive keeps the session open while muted.  It explicitly
@@ -213,13 +287,18 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   }
 
   Future<void> _pumpAudioQueue() async {
-    if (_sendingAudio || _roomId.isEmpty || _closed) {
+    if (_sendingAudio || _recovering || _roomId.isEmpty || _closed) {
       return;
     }
     _sendingAudio = true;
     Uint8List? inFlightPacket;
+    String inFlightRoomId = '';
     try {
-      while (_queuedAudioBytes >= _realtimeUploadBytes && !_closed) {
+      while (_queuedAudioBytes >= _realtimeUploadBytes &&
+          !_closed &&
+          !_recovering) {
+        final targetRoomId = _roomId;
+        inFlightRoomId = targetRoomId;
         final packet = BytesBuilder(copy: false);
         while (_audioQueue.isNotEmpty && packet.length < _realtimeUploadBytes) {
           final chunk = _audioQueue.removeFirst();
@@ -236,9 +315,13 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         }
         inFlightPacket = packet.takeBytes();
         await widget.api.sendVoiceRoomAudio(
-          roomId: _roomId,
+          roomId: targetRoomId,
           pcm: inFlightPacket,
         );
+        if (targetRoomId != _roomId) {
+          inFlightPacket = null;
+          continue;
+        }
         inFlightPacket = null;
         _audioUploadFailures = 0;
       }
@@ -246,7 +329,10 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       debugPrint('[VoiceRoom] realtime audio upload failed: $error');
       _audioUploadFailures += 1;
       final failedPacket = inFlightPacket;
-      if (failedPacket != null && failedPacket.isNotEmpty) {
+      if (failedPacket != null &&
+          failedPacket.isNotEmpty &&
+          !_recovering &&
+          inFlightRoomId == _roomId) {
         _audioQueue.addFirst(failedPacket);
         _queuedAudioBytes += failedPacket.length;
       }
@@ -261,10 +347,15 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
               _audioUploadFailures >= 3 ? '声音还没送到小悠，正在重新连接…' : '声音连接晃了一下，正在恢复…';
         });
       }
+      if (_audioUploadFailures >= 3) {
+        unawaited(_recoverRoom());
+      }
       await Future<void>.delayed(const Duration(milliseconds: 260));
     } finally {
       _sendingAudio = false;
-      if (_queuedAudioBytes >= _realtimeUploadBytes && !_closed) {
+      if (_queuedAudioBytes >= _realtimeUploadBytes &&
+          !_closed &&
+          !_recovering) {
         unawaited(_pumpAudioQueue());
       }
     }
@@ -273,11 +364,19 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   Future<void> _pollLiveEvents() async {
     while (!_closed && _roomId.isNotEmpty) {
       try {
+        final targetRoomId = _roomId;
+        final targetSequence = _liveSequence;
         final events = await widget.api.voiceRoomEvents(
-          roomId: _roomId,
-          after: _liveSequence,
+          roomId: targetRoomId,
+          after: targetSequence,
         );
+        if (targetRoomId != _roomId) {
+          continue;
+        }
         for (final event in events) {
+          if (targetRoomId != _roomId) {
+            break;
+          }
           _liveSequence = max(_liveSequence, event.sequence);
           await _handleLiveEvent(event);
         }
@@ -287,6 +386,43 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         }
       }
     }
+  }
+
+  void _finishPlaybackAfterDrain(String replyId) {
+    if (_closed ||
+        _playbackReplyId != replyId ||
+        _phase == _RoomPhase.userSpeaking) {
+      return;
+    }
+    _playbackReplyId = '';
+    _replyPlaybackBaseMs = 0;
+    _replyAudioDurationMs = 0;
+    _level.value = 0.08;
+    if (mounted) {
+      setState(() => _phase = _RoomPhase.listening);
+    }
+  }
+
+  Future<void> _schedulePlaybackDrain(String replyId) async {
+    _playbackDrain?.cancel();
+    if (replyId.isEmpty || replyId != _playbackReplyId) {
+      if (mounted && _phase != _RoomPhase.userSpeaking) {
+        setState(() => _phase = _RoomPhase.listening);
+        _level.value = 0.08;
+      }
+      return;
+    }
+    final absolutePositionMs = await _player.positionMs();
+    final playedMs = max(0, absolutePositionMs - _replyPlaybackBaseMs);
+    final remainingMs = max(0, _replyAudioDurationMs - playedMs);
+    if (remainingMs <= 45) {
+      _finishPlaybackAfterDrain(replyId);
+      return;
+    }
+    _playbackDrain = Timer(
+      Duration(milliseconds: remainingMs + 55),
+      () => _finishPlaybackAfterDrain(replyId),
+    );
   }
 
   Future<void> _handleLiveEvent(VoiceRoomLiveEvent event) async {
@@ -300,16 +436,22 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         return;
       case 'user_speech_started':
         final interrupted = payload['interrupted'] == true;
-        if (interrupted || _phase == _RoomPhase.speaking) {
-          final replyId = '${payload['reply_id'] ?? _currentReplyId}'.trim();
-          final playbackPositionMs = await _player.positionMs();
-          final playedMs = max(
-            0,
-            playbackPositionMs - _replyPlaybackBaseMs,
-          );
+        final playbackPositionMs = await _player.positionMs();
+        final playedMs = max(0, playbackPositionMs - _replyPlaybackBaseMs);
+        final playbackStillActive = _playbackReplyId.isNotEmpty &&
+            playedMs + 80 < _replyAudioDurationMs;
+        if (interrupted ||
+            _phase == _RoomPhase.speaking ||
+            playbackStillActive) {
+          final replyId = _playbackReplyId.isNotEmpty
+              ? _playbackReplyId
+              : '${payload['reply_id'] ?? _currentReplyId}'.trim();
+          _playbackDrain?.cancel();
+          _suppressedReplyId = replyId;
           await _player.stop();
           _playbackReplyId = '';
           _replyPlaybackBaseMs = 0;
+          _replyAudioDurationMs = 0;
           if (replyId.isNotEmpty) {
             unawaited(
               widget.api.truncateVoiceRoomReply(
@@ -320,7 +462,6 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
             );
           }
           setState(() => _phase = _RoomPhase.interrupted);
-          await Future<void>.delayed(const Duration(milliseconds: 120));
         }
         if (mounted) {
           setState(() {
@@ -353,6 +494,9 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         }
         final replyId = '${payload['reply_id'] ?? ''}'.trim();
         if (replyId.isNotEmpty) {
+          if (_suppressedReplyId.isNotEmpty && replyId != _suppressedReplyId) {
+            _suppressedReplyId = '';
+          }
           _currentReplyId = replyId;
         }
         return;
@@ -362,14 +506,28 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           return;
         }
         final replyId = '${payload['reply_id'] ?? ''}'.trim();
+        if (_suppressedReplyId.isNotEmpty &&
+            (replyId.isEmpty || replyId == _suppressedReplyId)) {
+          // Frames already queued before CLIENT_INTERRUPT can arrive after
+          // the local player has stopped. Never let those stale frames restart
+          // the interrupted answer.
+          return;
+        }
         if (replyId.isNotEmpty) {
+          if (_suppressedReplyId.isNotEmpty && replyId != _suppressedReplyId) {
+            _suppressedReplyId = '';
+          }
           _currentReplyId = replyId;
           if (_playbackReplyId != replyId) {
+            _playbackDrain?.cancel();
             _replyPlaybackBaseMs = await _player.positionMs();
             _playbackReplyId = replyId;
+            _replyAudioDurationMs = 0;
           }
         }
-        await _player.write(base64Decode(encoded));
+        final decoded = base64Decode(encoded);
+        _replyAudioDurationMs += decoded.length * 1000 ~/ (24000 * 2);
+        await _player.write(decoded);
         _level.value = 0.72;
         if (mounted && _phase != _RoomPhase.speaking) {
           setState(() => _phase = _RoomPhase.speaking);
@@ -380,18 +538,26 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         // arrive while the final PCM frames are still buffered; stopping here
         // used to flush that tail and recreate the track for every reply,
         // producing audible gaps and visible UI stalls.
-        if (mounted && _phase != _RoomPhase.userSpeaking) {
-          setState(() {
-            _phase = _RoomPhase.listening;
-          });
-          _level.value = 0.08;
+        final endedReplyId =
+            '${payload['reply_id'] ?? _playbackReplyId}'.trim();
+        if (_suppressedReplyId.isNotEmpty &&
+            endedReplyId == _suppressedReplyId) {
+          return;
         }
+        await _schedulePlaybackDrain(endedReplyId);
         return;
       case 'interrupted':
+        final interruptedReplyId =
+            '${payload['reply_id'] ?? _currentReplyId}'.trim();
+        if (interruptedReplyId.isNotEmpty) {
+          _suppressedReplyId = interruptedReplyId;
+        }
+        _playbackDrain?.cancel();
         await _player.stop();
         _playbackReplyId = '';
         _replyPlaybackBaseMs = 0;
-        if (mounted) {
+        _replyAudioDurationMs = 0;
+        if (mounted && _phase != _RoomPhase.userSpeaking) {
           setState(() => _phase = _RoomPhase.interrupted);
         }
         return;
@@ -399,7 +565,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         unawaited(_refreshMood());
         return;
       case 'error':
-        setState(() => _liveCaption = '连接晃了一下，正在恢复…');
+        await _recoverRoom();
         return;
     }
   }
@@ -421,6 +587,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       return;
     }
     setState(() => _phase = _RoomPhase.ending);
+    _playbackDrain?.cancel();
     await _pcmSubscription?.cancel();
     _pcmSubscription = null;
     await _amplitude?.cancel();
