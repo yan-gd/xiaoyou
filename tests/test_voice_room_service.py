@@ -3,6 +3,7 @@ import io
 import json
 import struct
 import sys
+import threading
 import time
 import types
 import wave
@@ -159,9 +160,12 @@ def test_realtime_pcm_is_forwarded_at_twenty_millisecond_cadence(
     class _Socket:
         def __init__(self):
             self.frames = []
+            self.complete = threading.Event()
 
         def send_binary(self, frame):
             self.frames.append(frame)
+            if len(self.frames) == 5:
+                self.complete.set()
 
     monkeypatch.setattr(module.time, "monotonic", _monotonic)
     monkeypatch.setattr(module.time, "sleep", _sleep)
@@ -171,14 +175,17 @@ def test_realtime_pcm_is_forwarded_at_twenty_millisecond_cadence(
         session_id="session-id",
         start_payload={},
     )
-    session.socket = _Socket()
+    socket = _Socket()
+    session.socket = socket
 
     session.send_audio(b"\x01\x00" * 1600)
 
-    assert len(session.socket.frames) == 5
+    assert socket.complete.wait(timeout=1)
+    assert len(socket.frames) == 5
     assert len(sleeps) == 4
     assert all(abs(value - 0.02) < 0.000001 for value in sleeps)
     assert session.audio_bytes_sent == 3200
+    session.close()
 
 
 def test_voice_rooms_are_separate_and_project_memory_async(

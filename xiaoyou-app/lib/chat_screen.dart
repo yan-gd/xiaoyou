@@ -15,6 +15,7 @@ import 'notification_service.dart';
 import 'relationship_universe_screen.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
+import 'voice_room_screen.dart';
 import 'xiaoyou_api.dart';
 
 const _rose = Color(0xff9f4f79);
@@ -1803,10 +1804,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           api: api,
           messages: List<ChatMessage>.unmodifiable(_messages),
           favoriteMessageIds: Set<String>.unmodifiable(_favoriteMessageIds),
-          lastEventSequence: _lastEventSequence,
         ),
       ),
     );
+  }
+
+  Future<void> _openVoiceRoom() async {
+    final api = _api;
+    if (api == null) {
+      _showSnack('先连接小悠，就能进入语音房间');
+      return;
+    }
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => VoiceRoomScreen(
+          api: api,
+          initialEventSequence: _lastEventSequence,
+        ),
+      ),
+    );
+    if (mounted) {
+      unawaited(_refreshMoodProfile(api));
+    }
   }
 
   void _openConversationTools() {
@@ -2093,6 +2112,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         connected: connected,
                         responding: _awaitingReply,
                         onAvatarTap: _openProfile,
+                        onVoiceRoom: _openVoiceRoom,
                         onSearch: _openSearch,
                         onSettings: _openConversationTools,
                       ),
@@ -3652,6 +3672,7 @@ class _ConversationHeader extends StatefulWidget {
     required this.connected,
     required this.responding,
     required this.onAvatarTap,
+    required this.onVoiceRoom,
     required this.onSearch,
     required this.onSettings,
   });
@@ -3660,6 +3681,7 @@ class _ConversationHeader extends StatefulWidget {
   final bool connected;
   final bool responding;
   final VoidCallback onAvatarTap;
+  final VoidCallback onVoiceRoom;
   final VoidCallback onSearch;
   final VoidCallback onSettings;
 
@@ -3821,6 +3843,12 @@ class _ConversationHeaderState extends State<_ConversationHeader>
                           ),
                         ),
                       ),
+                      _HeaderIconButton(
+                        onPressed: widget.onVoiceRoom,
+                        tooltip: '和小悠语音聊一会儿',
+                        icon: Icons.graphic_eq_rounded,
+                      ),
+                      const SizedBox(width: 6),
                       _HeaderIconButton(
                         onPressed: widget.onSearch,
                         tooltip: '搜索聊天记录',

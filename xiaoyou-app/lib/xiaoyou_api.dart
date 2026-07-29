@@ -15,12 +15,16 @@ class XiaoyouApi {
     _client.connectionTimeout = const Duration(seconds: 12);
     _client.idleTimeout = const Duration(seconds: 30);
     _client.maxConnectionsPerHost = 4;
+    _audioClient.connectionTimeout = const Duration(seconds: 8);
+    _audioClient.idleTimeout = const Duration(seconds: 20);
+    _audioClient.maxConnectionsPerHost = 2;
   }
 
   final Uri baseUri;
   final String token;
   final String deviceId;
   final HttpClient _client = HttpClient();
+  final HttpClient _audioClient = HttpClient();
 
   Future<void> health() async {
     await _request('GET', '/v1/health', authenticated: false);
@@ -278,13 +282,10 @@ class XiaoyouApi {
       return;
     }
     final uri = _uri('/v1/voice-rooms/$roomId/audio');
-    final request = await _client.openUrl('POST', uri);
-    // Audio uploads run alongside the voice-room long poll.  Some reverse
-    // proxies leave unread binary bytes on a reused HTTP/1.1 connection,
-    // which makes the following JSON response look like PCM to Dart.  A
-    // short-lived upload connection keeps request/response framing isolated;
-    // the actual O2.0 session remains a persistent WebSocket on the server.
-    request.persistentConnection = false;
+    // Keep realtime microphone traffic on its own persistent connection pool.
+    // Reusing TLS removes a handshake from every audio batch while isolating
+    // uploads from the long-poll event connection.
+    final request = await _audioClient.openUrl('POST', uri);
     request.headers
       ..set(HttpHeaders.acceptHeader, 'application/json')
       ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
@@ -518,6 +519,7 @@ class XiaoyouApi {
 
   void close() {
     _client.close(force: true);
+    _audioClient.close(force: true);
   }
 
   static String _dateKey(DateTime value) =>

@@ -844,6 +844,11 @@ class VolcO2RealtimeSession:
         self.turn_lock = threading.RLock()
         self.stop_event = threading.Event()
         self.receive_thread = None
+        self.audio_sender_thread = None
+        self.audio_condition = threading.Condition(threading.RLock())
+        self.audio_queue = deque()
+        self.audio_queue_bytes = 0
+        self.audio_sender_error = None
         self.event_handler = None
         self.audio_next_send_at = 0.0
         self.audio_bytes_sent = 0
@@ -1027,6 +1032,7 @@ class VolcO2RealtimeSession:
                 name="XiaoyouVolcO2Receive-" + self.session_id[:12],
             )
             self.receive_thread.start()
+        self._ensure_audio_sender()
 
     def _receive_loop(self):
         while not self.stop_event.is_set():
@@ -1073,6 +1079,98 @@ class VolcO2RealtimeSession:
                         self.session_id[:48],
                     )
 
+    def _ensure_audio_sender(self):
+        with self.audio_condition:
+            if self.stop_event.is_set():
+                raise VoiceRoomProviderError("volc_connection_closed")
+            if (
+                self.audio_sender_thread is not None
+                and self.audio_sender_thread.is_alive()
+            ):
+                return
+            if self.socket is None:
+                raise VoiceRoomProviderError("volc_session_not_started")
+            self.audio_sender_error = None
+            self.audio_sender_thread = threading.Thread(
+                target=self._audio_send_loop,
+                daemon=True,
+                name="XiaoyouVolcO2Audio-" + self.session_id[:12],
+            )
+            self.audio_sender_thread.start()
+
+    def _audio_send_loop(self):
+        pending = bytearray()
+        while not self.stop_event.is_set():
+            with self.audio_condition:
+                while (
+                    not self.audio_queue
+                    and not self.stop_event.is_set()
+                ):
+                    self.audio_condition.wait(timeout=0.5)
+                if self.stop_event.is_set():
+                    return
+                while self.audio_queue:
+                    chunk = self.audio_queue.popleft()
+                    self.audio_queue_bytes -= len(chunk)
+                    pending.extend(chunk)
+
+            while len(pending) >= 640 and not self.stop_event.is_set():
+                chunk = bytes(pending[:640])
+                del pending[:640]
+                now = time.monotonic()
+                if (
+                    self.audio_next_send_at <= 0
+                    or self.audio_next_send_at < now - 0.25
+                ):
+                    self.audio_next_send_at = now
+                wait_seconds = self.audio_next_send_at - now
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                try:
+                    self._send(
+                        TASK_REQUEST,
+                        chunk,
+                        audio=True,
+                        session=True,
+                    )
+                except Exception as exc:
+                    with self.audio_condition:
+                        self.audio_sender_error = exc
+                    handler = self.event_handler
+                    if callable(handler):
+                        try:
+                            handler(
+                                {
+                                    "event": SERVER_ERROR,
+                                    "payload": {
+                                        "error": (
+                                            "volc_audio_sender_failed:"
+                                            + _clean_text(exc, 300)
+                                        ),
+                                    },
+                                    "payload_bytes": b"",
+                                }
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[VoiceRoom] microphone error callback failed"
+                            )
+                    logger.exception(
+                        "[VoiceRoom] realtime microphone sender stopped "
+                        "session=%s",
+                        self.session_id[:48],
+                    )
+                    return
+                first_packet = self.audio_bytes_sent == 0
+                self.audio_bytes_sent += len(chunk)
+                self.audio_next_send_at += len(chunk) / (16000 * 2)
+                if first_packet:
+                    logger.info(
+                        "[VoiceRoom] realtime microphone stream started "
+                        "session=%s",
+                        self.session_id[:48],
+                    )
+
     def send_audio(self, pcm_bytes):
         pcm = bytes(pcm_bytes or b"")
         if not pcm:
@@ -1082,42 +1180,36 @@ class VolcO2RealtimeSession:
         if not pcm:
             return
 
-        # O2.0 expects microphone PCM at its real capture cadence.  The App
-        # deliberately batches a few 20 ms frames into one HTTP request to
-        # avoid 50 requests/second, so restore the 640-byte/20 ms cadence here
-        # before forwarding TaskRequest frames to Volcengine.  Without this,
-        # a delayed HTTP request becomes a burst and server-side VAD may never
-        # observe a natural utterance boundary.
-        with self.send_lock:
-            now = time.monotonic()
-            if (
-                self.audio_next_send_at <= 0
-                or self.audio_next_send_at < now - 0.25
+        # The HTTP handler must return immediately. A dedicated sender restores
+        # O2.0's 640-byte/20 ms cadence independently, so network round trips
+        # never accumulate behind the microphone capture stream.
+        self._ensure_audio_sender()
+        with self.audio_condition:
+            if self.audio_sender_error is not None:
+                raise VoiceRoomProviderError(
+                    "volc_audio_sender_failed:"
+                    + _clean_text(self.audio_sender_error, 300)
+                )
+            maximum_queue_bytes = 16000 * 2 * 4
+            dropped = 0
+            while (
+                self.audio_queue
+                and self.audio_queue_bytes + len(pcm)
+                > maximum_queue_bytes
             ):
-                self.audio_next_send_at = now
-            first_packet = self.audio_bytes_sent == 0
-            for offset in range(0, len(pcm), 640):
-                chunk = pcm[offset:offset + 640]
-                if not chunk:
-                    continue
-                wait_seconds = self.audio_next_send_at - time.monotonic()
-                if wait_seconds > 0:
-                    time.sleep(wait_seconds)
-                self._send(
-                    TASK_REQUEST,
-                    chunk,
-                    audio=True,
-                    session=True,
-                )
-                self.audio_bytes_sent += len(chunk)
-                self.audio_next_send_at += len(chunk) / (16000 * 2)
-            if first_packet:
-                logger.info(
-                    "[VoiceRoom] realtime microphone stream started "
-                    "session=%s packet_bytes=%s",
+                dropped_chunk = self.audio_queue.popleft()
+                self.audio_queue_bytes -= len(dropped_chunk)
+                dropped += len(dropped_chunk)
+            if dropped:
+                logger.warning(
+                    "[VoiceRoom] realtime microphone backlog trimmed "
+                    "session=%s dropped_bytes=%s",
                     self.session_id[:48],
-                    len(pcm),
+                    dropped,
                 )
+            self.audio_queue.append(pcm)
+            self.audio_queue_bytes += len(pcm)
+            self.audio_condition.notify()
 
     def truncate(self, reply_id, audio_end_ms):
         reply_id = _clean_text(reply_id, 128)
@@ -1136,10 +1228,14 @@ class VolcO2RealtimeSession:
     def close(self):
         with self.lock:
             self.stop_event.set()
+            with self.audio_condition:
+                self.audio_condition.notify_all()
             socket = self.socket
             self.socket = None
             receive_thread = self.receive_thread
             self.receive_thread = None
+            audio_sender_thread = self.audio_sender_thread
+            self.audio_sender_thread = None
             self.event_handler = None
             if socket is not None:
                 try:
@@ -1166,6 +1262,11 @@ class VolcO2RealtimeSession:
             and receive_thread is not threading.current_thread()
         ):
             receive_thread.join(timeout=1.0)
+        if (
+            audio_sender_thread is not None
+            and audio_sender_thread is not threading.current_thread()
+        ):
+            audio_sender_thread.join(timeout=1.0)
 
 
 class _VoiceRoomLiveRuntime:

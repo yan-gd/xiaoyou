@@ -11,6 +11,9 @@ class RealtimeVoicePlayer {
   );
 
   bool _started = false;
+  final double gain;
+
+  RealtimeVoicePlayer({this.gain = 2.0});
 
   Future<void> start({int sampleRate = 24000}) async {
     if (_started) {
@@ -18,7 +21,10 @@ class RealtimeVoicePlayer {
     }
     await _channel.invokeMethod<void>(
       'start',
-      <String, Object>{'sampleRate': sampleRate},
+      <String, Object>{
+        'sampleRate': sampleRate,
+        'gain': gain,
+      },
     );
     _started = true;
   }

@@ -10,7 +10,6 @@ import 'chat_models.dart';
 import 'daily_journal_screen.dart';
 import 'relationship_models.dart';
 import 'time_capsule_screen.dart';
-import 'voice_room_screen.dart';
 import 'xiaoyou_api.dart';
 
 const _orbitInk = Color(0xff3d2b36);
@@ -25,13 +24,11 @@ class RelationshipUniverseScreen extends StatefulWidget {
     required this.api,
     required this.messages,
     required this.favoriteMessageIds,
-    required this.lastEventSequence,
   });
 
   final XiaoyouApi api;
   final List<ChatMessage> messages;
   final Set<String> favoriteMessageIds;
-  final int lastEventSequence;
 
   @override
   State<RelationshipUniverseScreen> createState() =>
@@ -234,18 +231,6 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
     await _refresh();
   }
 
-  Future<void> _openVoiceRoom() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => VoiceRoomScreen(
-          api: widget.api,
-          initialEventSequence: widget.lastEventSequence,
-        ),
-      ),
-    );
-    await _refresh();
-  }
-
   Future<void> _openAchievements() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
@@ -272,11 +257,6 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
     }
     if (event.kind == RelationshipEventKind.achievement) {
       await _openAchievements();
-      return;
-    }
-    if (event.kind == RelationshipEventKind.voiceMemory &&
-        event.id == 'portal-voice-room') {
-      await _openVoiceRoom();
       return;
     }
     await showModalBottomSheet<void>(
@@ -583,14 +563,6 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
               icon: Icons.edit_note_rounded,
               title: '写一封信',
               onTap: _openCapsules,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: _PosterPillButton(
-              icon: Icons.mic_none_rounded,
-              title: '进入语音房间',
-              onTap: _openVoiceRoom,
             ),
           ),
         ],

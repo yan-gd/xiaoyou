@@ -180,7 +180,7 @@ void main() {
         expect(bytes.takeBytes(), [1, 0, 2, 0]);
         expect(request.headers.value('X-Device-Id'), 'test-device');
         expect(request.headers.contentType?.mimeType, 'audio/pcm');
-        expect(request.persistentConnection, isFalse);
+        expect(request.persistentConnection, isTrue);
         request.response.statusCode = HttpStatus.accepted;
         request.response.headers.contentType = ContentType.binary;
         request.response.add([0xff, 0xfe, 0xfd]);

@@ -23,6 +23,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.util.concurrent.Executors
+import kotlin.math.roundToInt
 
 class MainActivity : FlutterFragmentActivity() {
     private data class PendingImageSave(
@@ -38,6 +39,7 @@ class MainActivity : FlutterFragmentActivity() {
     private val realtimeAudioLock = Any()
     private var realtimeAudioTrack: AudioTrack? = null
     private var realtimeAudioSampleRate = 24000
+    private var realtimeAudioGain = 2.0f
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -136,6 +138,7 @@ class MainActivity : FlutterFragmentActivity() {
                     try {
                         startRealtimeAudio(
                             call.argument<Number>("sampleRate")?.toInt() ?: 24000,
+                            call.argument<Number>("gain")?.toFloat() ?: 2.0f,
                         )
                         result.success(null)
                     } catch (error: Throwable) {
@@ -152,13 +155,19 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(null)
                     } else {
                         realtimeAudioExecutor.execute {
+                            val amplified = amplifyPcm16(
+                                pcm,
+                                synchronized(realtimeAudioLock) {
+                                    realtimeAudioGain
+                                },
+                            )
                             synchronized(realtimeAudioLock) {
                                 val track = realtimeAudioTrack
                                 if (track != null) {
                                     track.write(
-                                        pcm,
+                                        amplified,
                                         0,
-                                        pcm.size,
+                                        amplified.size,
                                         AudioTrack.WRITE_BLOCKING,
                                     )
                                 }
@@ -186,7 +195,7 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    private fun startRealtimeAudio(sampleRate: Int) {
+    private fun startRealtimeAudio(sampleRate: Int, gain: Float) {
         stopRealtimeAudio()
         val safeRate = sampleRate.coerceIn(8000, 48000)
         val minimum = AudioTrack.getMinBufferSize(
@@ -198,7 +207,9 @@ class MainActivity : FlutterFragmentActivity() {
         val builder = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    // Use the media stream so voice-room playback follows the
+                    // phone's media volume instead of the quieter call stream.
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build(),
             )
@@ -219,8 +230,29 @@ class MainActivity : FlutterFragmentActivity() {
         track.play()
         synchronized(realtimeAudioLock) {
             realtimeAudioSampleRate = safeRate
+            realtimeAudioGain = gain.coerceIn(1.0f, 4.0f)
             realtimeAudioTrack = track
         }
+    }
+
+    private fun amplifyPcm16(pcm: ByteArray, gain: Float): ByteArray {
+        if (gain <= 1.001f) {
+            return pcm
+        }
+        val output = pcm.copyOf()
+        var index = 0
+        while (index + 1 < output.size) {
+            val low = output[index].toInt() and 0xff
+            val high = output[index + 1].toInt()
+            val sample = ((high shl 8) or low).toShort().toInt()
+            val amplified = (sample * gain)
+                .roundToInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+            output[index] = (amplified and 0xff).toByte()
+            output[index + 1] = ((amplified shr 8) and 0xff).toByte()
+            index += 2
+        }
+        return output
     }
 
     private fun stopRealtimeAudio() {
