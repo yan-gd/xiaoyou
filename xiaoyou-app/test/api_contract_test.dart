@@ -161,6 +161,88 @@ void main() {
     }
   });
 
+  test('O2 realtime room streams PCM, events, and playback truncation',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final paths = <String>[];
+    final subscription = server.listen((request) async {
+      paths.add(request.uri.path);
+      expect(
+        request.headers.value(HttpHeaders.authorizationHeader),
+        'Bearer test-token-with-at-least-24-characters',
+      );
+      late String responseBody;
+      if (request.uri.path.endsWith('/audio')) {
+        final bytes = BytesBuilder(copy: false);
+        await for (final chunk in request) {
+          bytes.add(chunk);
+        }
+        expect(bytes.takeBytes(), [1, 0, 2, 0]);
+        expect(request.headers.value('X-Device-Id'), 'test-device');
+        expect(request.headers.contentType?.mimeType, 'audio/pcm');
+        expect(request.persistentConnection, isFalse);
+        request.response.statusCode = HttpStatus.accepted;
+        request.response.headers.contentType = ContentType.binary;
+        request.response.add([0xff, 0xfe, 0xfd]);
+        await request.response.close();
+        return;
+      } else if (request.uri.path.endsWith('/events')) {
+        expect(request.uri.queryParameters['after'], '7');
+        expect(request.uri.queryParameters['device_id'], 'test-device');
+        responseBody = '{"events":[{"sequence":8,'
+            '"type":"user_speech_started","interrupted":true,'
+            '"reply_id":"reply-1"}]}';
+      } else {
+        final body = jsonDecode(await utf8.decoder.bind(request).join())
+            as Map<String, dynamic>;
+        expect(body['device_id'], 'test-device');
+        expect(body['reply_id'], 'reply-1');
+        expect(body['audio_end_ms'], 640);
+        responseBody = '{"accepted":true}';
+      }
+      final encoded = utf8.encode(responseBody);
+      request.response
+        ..headers.contentType = ContentType.json
+        ..contentLength = encoded.length
+        ..add(encoded);
+      await request.response.close();
+    });
+    final api = XiaoyouApi(
+      baseUrl: 'http://${server.address.address}:${server.port}',
+      token: 'test-token-with-at-least-24-characters',
+      deviceId: 'test-device',
+    );
+
+    try {
+      await api.sendVoiceRoomAudio(
+        roomId: 'room-live',
+        pcm: Uint8List.fromList([1, 0, 2, 0]),
+      );
+      final events = await api.voiceRoomEvents(
+        roomId: 'room-live',
+        after: 7,
+      );
+      final truncated = await api.truncateVoiceRoomReply(
+        roomId: 'room-live',
+        replyId: 'reply-1',
+        audioEndMs: 640,
+      );
+      expect(events.single.sequence, 8);
+      expect(events.single.type, 'user_speech_started');
+      expect(events.single.payload['interrupted'], isTrue);
+      expect(truncated, isTrue);
+      expect(paths, [
+        '/v1/voice-rooms/room-live/audio',
+        '/v1/voice-rooms/room-live/events',
+        '/v1/voice-rooms/room-live/truncate',
+      ]);
+    } finally {
+      api.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('image upload carries identity, kind and raw image bytes', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     late Uint8List received;

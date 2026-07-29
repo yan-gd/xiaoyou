@@ -1688,7 +1688,34 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         voice_room_prefix = "/v1/voice-rooms/"
         if parsed.path.startswith(voice_room_prefix):
-            room_id = parsed.path[len(voice_room_prefix):].strip("/")
+            voice_room_tail = parsed.path[len(voice_room_prefix):].strip("/")
+            if voice_room_tail.endswith("/events"):
+                room_id = voice_room_tail[:-len("/events")].strip("/")
+                safe_device_id = _safe_device_id(device_id)
+                if not room_id or not safe_device_id:
+                    self._json(400, {"error": "invalid_voice_room_request"})
+                    return
+                events = self.plugin.voice_rooms.wait_events(
+                    room_id=room_id,
+                    device_id=safe_device_id,
+                    after=self._integer(
+                        (query.get("after") or [0])[0],
+                        0,
+                    ),
+                    timeout=min(
+                        25,
+                        max(
+                            1,
+                            self._integer(
+                                (query.get("timeout") or [20])[0],
+                                20,
+                            ),
+                        ),
+                    ),
+                )
+                self._json(200, {"events": events})
+                return
+            room_id = voice_room_tail
             if room_id and "/" not in room_id:
                 room = self.plugin.voice_rooms.get_room(room_id, device_id)
                 if room is None:
@@ -1807,6 +1834,30 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             voice_room_prefix = "/v1/voice-rooms/"
             if (
                 parsed.path.startswith(voice_room_prefix)
+                and parsed.path.endswith("/audio")
+            ):
+                room_id = parsed.path[
+                    len(voice_room_prefix):-len("/audio")
+                ].strip("/")
+                device_id = _safe_device_id(
+                    self.headers.get("X-Device-Id")
+                )
+                if not room_id or not device_id:
+                    raise ValueError("invalid_voice_room_request")
+                audio_bytes = self._voice_body()
+                result = self.plugin.voice_rooms.send_audio(
+                    room_id=room_id,
+                    device_id=device_id,
+                    audio_bytes=audio_bytes,
+                    mime_type=self.headers.get(
+                        "Content-Type",
+                        "application/octet-stream",
+                    ),
+                )
+                self._json(202, result)
+                return
+            if (
+                parsed.path.startswith(voice_room_prefix)
                 and parsed.path.endswith("/turns")
             ):
                 room_id = parsed.path[
@@ -1843,6 +1894,27 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         "room": self.plugin.voice_rooms.response_payload(room),
                     },
                 )
+                return
+            if (
+                parsed.path.startswith(voice_room_prefix)
+                and parsed.path.endswith("/truncate")
+            ):
+                room_id = parsed.path[
+                    len(voice_room_prefix):-len("/truncate")
+                ].strip("/")
+                device_id = _safe_device_id(payload.get("device_id"))
+                if not room_id or not device_id:
+                    raise ValueError("invalid_voice_room_request")
+                result = self.plugin.voice_rooms.truncate(
+                    room_id=room_id,
+                    device_id=device_id,
+                    reply_id=payload.get("reply_id"),
+                    audio_end_ms=self._integer(
+                        payload.get("audio_end_ms"),
+                        0,
+                    ),
+                )
+                self._json(200, result)
                 return
             if (
                 parsed.path.startswith(voice_room_prefix)
@@ -2002,8 +2074,18 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         except AppVoiceError as exc:
             self._json(502, {"error": str(exc)})
         except VoiceRoomProviderError as exc:
+            logger.warning(
+                "[AppChannel] voice room provider rejected path=%s error=%s",
+                parsed.path,
+                str(exc),
+            )
             self._json(502, {"error": str(exc)})
         except VoiceRoomError as exc:
+            logger.warning(
+                "[AppChannel] voice room request rejected path=%s error=%s",
+                parsed.path,
+                str(exc),
+            )
             self._json(400, {"error": str(exc)})
         except Exception:
             logger.exception("[AppChannel] request failed path=%s", parsed.path)
@@ -2140,7 +2222,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.5-o2-voice-rooms",
+    version="1.6-continuous-o2-voice",
     author="yoyo",
     desire_priority=10001,
 )

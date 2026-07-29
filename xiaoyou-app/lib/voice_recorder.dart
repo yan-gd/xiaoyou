@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -21,6 +23,7 @@ class VoiceRecorderController {
   Directory? _temporaryDirectory;
   String? _path;
   String _mimeType = 'audio/mp4';
+  bool _streaming = false;
 
   Stream<double> amplitudeStream() {
     return _recorder
@@ -60,6 +63,39 @@ class VoiceRecorderController {
     return true;
   }
 
+  Future<Stream<Uint8List>?> startPcmStream() async {
+    if (!await prepare()) {
+      return null;
+    }
+    if (_streaming) {
+      await _recorder.stop();
+    }
+    final stream = await _recorder.startStream(
+      const RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        bitRate: 256000,
+        sampleRate: 16000,
+        numChannels: 1,
+        autoGain: true,
+        echoCancel: true,
+        noiseSuppress: true,
+        streamBufferSize: 3200,
+      ),
+    );
+    _streaming = true;
+    _startedAt = DateTime.now();
+    return stream;
+  }
+
+  Future<void> stopPcmStream() async {
+    if (!_streaming) {
+      return;
+    }
+    await _recorder.stop();
+    _streaming = false;
+    _startedAt = null;
+  }
+
   Future<RecordedVoice?> stop() async {
     final startedAt = _startedAt;
     final recordedPath = await _recorder.stop() ?? _path;
@@ -85,6 +121,7 @@ class VoiceRecorderController {
     _startedAt = null;
     _path = null;
     _mimeType = 'audio/mp4';
+    _streaming = false;
     if (path != null) {
       final file = File(path);
       if (await file.exists()) {
@@ -94,6 +131,10 @@ class VoiceRecorderController {
   }
 
   Future<void> dispose() async {
+    if (_streaming) {
+      await _recorder.stop();
+      _streaming = false;
+    }
     await _recorder.dispose();
   }
 }

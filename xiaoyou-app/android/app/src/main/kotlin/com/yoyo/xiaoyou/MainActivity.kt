@@ -4,6 +4,9 @@ import android.Manifest
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
@@ -19,6 +22,7 @@ import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
+import java.util.concurrent.Executors
 
 class MainActivity : FlutterFragmentActivity() {
     private data class PendingImageSave(
@@ -30,6 +34,10 @@ class MainActivity : FlutterFragmentActivity() {
 
     private var pendingNotificationResult: MethodChannel.Result? = null
     private var pendingImageSave: PendingImageSave? = null
+    private val realtimeAudioExecutor = Executors.newSingleThreadExecutor()
+    private val realtimeAudioLock = Any()
+    private var realtimeAudioTrack: AudioTrack? = null
+    private var realtimeAudioSampleRate = 24000
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -119,6 +127,123 @@ class MainActivity : FlutterFragmentActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "com.yoyo.xiaoyou/realtime_audio",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "start" -> {
+                    try {
+                        startRealtimeAudio(
+                            call.argument<Number>("sampleRate")?.toInt() ?: 24000,
+                        )
+                        result.success(null)
+                    } catch (error: Throwable) {
+                        result.error(
+                            "realtime_audio_start_failed",
+                            error.message,
+                            null,
+                        )
+                    }
+                }
+                "write" -> {
+                    val pcm = call.argument<ByteArray>("pcm")
+                    if (pcm == null || pcm.isEmpty()) {
+                        result.success(null)
+                    } else {
+                        realtimeAudioExecutor.execute {
+                            synchronized(realtimeAudioLock) {
+                                val track = realtimeAudioTrack
+                                if (track != null) {
+                                    track.write(
+                                        pcm,
+                                        0,
+                                        pcm.size,
+                                        AudioTrack.WRITE_BLOCKING,
+                                    )
+                                }
+                            }
+                        }
+                        result.success(null)
+                    }
+                }
+                "positionMs" -> {
+                    val position = synchronized(realtimeAudioLock) {
+                        val frames =
+                            realtimeAudioTrack?.playbackHeadPosition?.toLong()
+                                ?.and(0xffffffffL)
+                                ?: 0L
+                        (frames * 1000L / realtimeAudioSampleRate).toInt()
+                    }
+                    result.success(position)
+                }
+                "stop" -> {
+                    stopRealtimeAudio()
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
+    }
+
+    private fun startRealtimeAudio(sampleRate: Int) {
+        stopRealtimeAudio()
+        val safeRate = sampleRate.coerceIn(8000, 48000)
+        val minimum = AudioTrack.getMinBufferSize(
+            safeRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+        val bufferSize = maxOf(minimum, safeRate / 2)
+        val builder = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(safeRate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build(),
+            )
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .setBufferSizeInBytes(bufferSize)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
+        }
+        val track = builder.build()
+        track.setVolume(1.0f)
+        track.play()
+        synchronized(realtimeAudioLock) {
+            realtimeAudioSampleRate = safeRate
+            realtimeAudioTrack = track
+        }
+    }
+
+    private fun stopRealtimeAudio() {
+        val track = synchronized(realtimeAudioLock) {
+            val current = realtimeAudioTrack
+            realtimeAudioTrack = null
+            current
+        } ?: return
+        try {
+            track.pause()
+            track.flush()
+            track.stop()
+        } catch (_: Throwable) {
+            // AudioTrack may already have stopped after an audio-route change.
+        } finally {
+            track.release()
+        }
+    }
+
+    override fun onDestroy() {
+        stopRealtimeAudio()
+        realtimeAudioExecutor.shutdownNow()
+        super.onDestroy()
     }
 
     private fun notificationsEnabled(): Boolean {

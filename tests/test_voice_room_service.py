@@ -65,6 +65,19 @@ def _wav(duration_ms=240, sample_rate=16000):
     return target.getvalue()
 
 
+def _stereo_wav(duration_ms=240, sample_rate=48000):
+    target = io.BytesIO()
+    with wave.open(target, "wb") as output:
+        output.setnchannels(2)
+        output.setsampwidth(2)
+        output.setframerate(sample_rate)
+        output.writeframes(
+            b"\x20\x00\xe0\xff"
+            * int(sample_rate * duration_ms / 1000)
+        )
+    return target.getvalue()
+
+
 def _server_frame(event, payload, session_id="session-1"):
     encoded = json.dumps(
         payload,
@@ -80,6 +93,17 @@ def _server_frame(event, payload, session_id="session-1"):
         + struct.pack(">I", len(encoded))
         + encoded
     )
+
+
+def test_android_wav_is_normalized_to_o2_audio(monkeypatch, tmp_path):
+    module = _load_service(monkeypatch, tmp_path)
+
+    pcm = module.wav_to_pcm16(
+        _stereo_wav(duration_ms=250, sample_rate=48000)
+    )
+
+    assert len(pcm) == 16000 * 2 // 4
+    assert pcm == b"\x00\x00" * 4000
 
 
 def test_o2_protocol_frame_and_context_pairs(monkeypatch, tmp_path):
@@ -115,6 +139,46 @@ def test_o2_protocol_frame_and_context_pairs(monkeypatch, tmp_path):
             "timestamp": 0,
         },
     ]
+
+
+def test_realtime_pcm_is_forwarded_at_twenty_millisecond_cadence(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_service(monkeypatch, tmp_path)
+    clock = [100.0]
+    sleeps = []
+
+    def _monotonic():
+        return clock[0]
+
+    def _sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    class _Socket:
+        def __init__(self):
+            self.frames = []
+
+        def send_binary(self, frame):
+            self.frames.append(frame)
+
+    monkeypatch.setattr(module.time, "monotonic", _monotonic)
+    monkeypatch.setattr(module.time, "sleep", _sleep)
+    session = module.VolcO2RealtimeSession(
+        app_id="app-id",
+        access_key="access-key",
+        session_id="session-id",
+        start_payload={},
+    )
+    session.socket = _Socket()
+
+    session.send_audio(b"\x01\x00" * 1600)
+
+    assert len(session.socket.frames) == 5
+    assert len(sleeps) == 4
+    assert all(abs(value - 0.02) < 0.000001 for value in sleeps)
+    assert session.audio_bytes_sent == 3200
 
 
 def test_voice_rooms_are_separate_and_project_memory_async(
@@ -225,3 +289,207 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     assert finished["turn_count"] == 1
     assert _Provider.latest.closed is True
     assert service.list_rooms("phone")[0]["room_id"] == room["room_id"]
+
+
+def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_service(monkeypatch, tmp_path)
+    monkeypatch.setenv("XIAOYOU_VOICE_ROOM_APP_ID", "app-id")
+    monkeypatch.setenv("XIAOYOU_VOICE_ROOM_ACCESS_KEY", "access-token")
+
+    memory_calls = []
+
+    class _ShortMemory:
+        def build_dialog_context_for_external_consumer(self, _session_id):
+            return []
+
+        def append_external_user_message(self, *args, **kwargs):
+            memory_calls.append(("short_user", args, kwargs))
+
+        def append_external_assistant_message(self, *args, **kwargs):
+            memory_calls.append(("short_assistant", args, kwargs))
+
+    class _LongMemory:
+        def append_delivered_assistant_message(self, *args, **kwargs):
+            memory_calls.append(("long_assistant", args, kwargs))
+
+        def append_external_user_message(self, *args, **kwargs):
+            memory_calls.append(("long_user", args, kwargs))
+
+    class _Provider:
+        latest = None
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.handler = None
+            self.audio = bytearray()
+            self.truncations = []
+            self.closed = False
+            _Provider.latest = self
+
+        def start(self):
+            return "dialog-live"
+
+        def start_receiving(self, handler):
+            self.handler = handler
+
+        def send_audio(self, pcm):
+            self.audio.extend(pcm)
+
+        def truncate(self, reply_id, audio_end_ms):
+            self.truncations.append((reply_id, audio_end_ms))
+            return True
+
+        def close(self):
+            self.closed = True
+
+    class _MediaStore:
+        def save_media_bytes(self, payload, device_id, mime_type):
+            assert payload[:4] == b"RIFF"
+            assert device_id == "phone"
+            assert mime_type == "audio/wav"
+            return {
+                "media_id": "voice-" + str(len(payload)),
+                "mime_type": mime_type,
+            }
+
+    store = module.VoiceRoomStore(tmp_path / "live-rooms.db")
+    service = module.VoiceRoomService(
+        store=store,
+        media_store=_MediaStore(),
+        instances_provider=lambda: {
+            "SHORTMEMORY": _ShortMemory(),
+            "LONGTERMMEMORY": _LongMemory(),
+        },
+        session_factory=_Provider,
+    )
+    room = service.create_room(session_id="yoyo", device_id="phone")
+    provider = _Provider.latest
+    assert provider.handler is not None
+    assert (
+        provider.kwargs["start_payload"]["dialog"]["extra"]["input_mod"]
+        == "keep_alive"
+    )
+
+    service.send_audio(
+        room_id=room["room_id"],
+        device_id="phone",
+        audio_bytes=b"\x01\x00" * 320,
+        mime_type="audio/pcm",
+    )
+    assert bytes(provider.audio) == b"\x01\x00" * 320
+
+    provider.handler({"event": module.ASR_INFO, "payload": {}})
+    provider.handler(
+        {
+            "event": module.ASR_RESPONSE,
+            "payload": {"results": [{"text": "我回来了"}]},
+        }
+    )
+    provider.handler(
+        {
+            "event": module.ASR_ENDED,
+            "payload": {"results": [{"text": "我回来了"}]},
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_SENTENCE_START,
+            "payload": {
+                "text": "先抱抱你。",
+                "question_id": "question-1",
+                "reply_id": "reply-1",
+            },
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_RESPONSE,
+            "payload_bytes": b"\x02\x00" * 1200,
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_SENTENCE_END,
+            "payload": {
+                "text": "先抱抱你。",
+                "question_id": "question-1",
+                "reply_id": "reply-1",
+            },
+        }
+    )
+    service.truncate(
+        room_id=room["room_id"],
+        device_id="phone",
+        reply_id="reply-1",
+        audio_end_ms=50,
+    )
+    provider.handler(
+        {
+            "event": module.TTS_SENTENCE_START,
+            "payload": {
+                "text": "后面这句没有播放完。",
+                "question_id": "question-1",
+                "reply_id": "reply-1",
+            },
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_RESPONSE,
+            "payload_bytes": b"\x03\x00" * 2400,
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_ENDED,
+            "payload": {
+                "question_id": "question-1",
+                "reply_id": "reply-1",
+            },
+        }
+    )
+
+    deadline = time.monotonic() + 3
+    saved = None
+    while time.monotonic() < deadline:
+        saved = store.get_room(
+            room["room_id"],
+            "phone",
+            include_turns=True,
+        )
+        if saved["turns"]:
+            break
+        time.sleep(0.02)
+    assert saved is not None
+    assert saved["turns"][0]["assistant_text"] == "先抱抱你。"
+    assert saved["turns"][0]["delivery_complete"] is False
+    assert saved["turns"][0]["terminal_status"] == "partial"
+    assert provider.truncations == [("reply-1", 50)]
+
+    events = service.wait_events(
+        room_id=room["room_id"],
+        device_id="phone",
+        after=0,
+        timeout=1,
+    )
+    event_types = [item["type"] for item in events]
+    assert "user_speech_started" in event_types
+    assert "assistant_audio" in event_types
+    assert "interrupted" in event_types
+    assert "turn_complete" in event_types
+
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        delivered = [
+            item
+            for item in memory_calls
+            if item[0] == "long_assistant"
+        ]
+        if delivered:
+            break
+        time.sleep(0.02)
+    assert delivered[0][2]["delivery_complete"] is False
+    assert delivered[0][2]["terminal_status"] == "partial"

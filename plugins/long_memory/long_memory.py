@@ -523,6 +523,46 @@ class LongTermMemory(Plugin):
             session_id=session_id,
         )
 
+    def append_external_user_message(
+        self,
+        session_id,
+        user_text,
+        *,
+        source="",
+        action_id="",
+        trace_id="",
+        input_id="",
+        completed_at=0,
+    ):
+        """Queue a committed user utterance received outside the chat channel."""
+        session_id = str(session_id or "").strip()
+        user_text = str(user_text or "").strip()
+        action_id = str(action_id or "").strip()
+        if not self.enabled or not session_id or not user_text:
+            return 0
+        committed_input_id = (
+            "user:" + action_id
+            if action_id
+            else "user:%s:%s" % (
+                str(input_id or "")[:80],
+                hashlib.sha256(
+                    user_text.encode("utf-8")
+                ).hexdigest()[:24],
+            )
+        )
+        return self._enqueue_memory_turn(
+            user_text=user_text,
+            source_mode="user",
+            delivery_complete=False,
+            terminal_status="user_committed",
+            completed_at=int(completed_at or 0),
+            action_id=action_id,
+            source=str(source or "external"),
+            trace_id=str(trace_id or ""),
+            input_id=committed_input_id,
+            session_id=session_id,
+        )
+
     @staticmethod
     def _on_memory_job_error(session_id, sequence, payload, error):
         del payload

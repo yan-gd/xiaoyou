@@ -1,12 +1,14 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:collection';
+import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'realtime_voice_player.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
 
@@ -14,8 +16,19 @@ const _voiceInk = Color(0xff3d2b36);
 const _voiceMuted = Color(0xff9c8792);
 const _voiceRose = Color(0xffb35282);
 const _voiceLavender = Color(0xff8d71bd);
+// Keep the public HTTP hop to roughly three requests per second.  The server
+// re-times each 300 ms batch into O2.0's required 640-byte/20 ms frames.
+const _realtimeUploadBytes = 9600;
 
-enum _RoomPhase { listening, recording, waiting, speaking, ending }
+enum _RoomPhase {
+  connecting,
+  listening,
+  userSpeaking,
+  thinking,
+  speaking,
+  interrupted,
+  ending,
+}
 
 class VoiceRoomScreen extends StatefulWidget {
   const VoiceRoomScreen({
@@ -34,10 +47,11 @@ class VoiceRoomScreen extends StatefulWidget {
 class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     with TickerProviderStateMixin {
   final _recorder = VoiceRecorderController();
-  final _player = AudioPlayer();
-  final _lines = <_VoiceRoomLine>[];
+  final _player = RealtimeVoicePlayer();
+  final _audioQueue = Queue<Uint8List>();
+  int _queuedAudioBytes = 0;
+  StreamSubscription<Uint8List>? _pcmSubscription;
   StreamSubscription<double>? _amplitude;
-  StreamSubscription<void>? _playbackCompleted;
   Timer? _clock;
   late final AnimationController _breath = AnimationController(
     vsync: this,
@@ -48,10 +62,18 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     duration: const Duration(seconds: 12),
   )..repeat();
 
-  _RoomPhase _phase = _RoomPhase.listening;
+  _RoomPhase _phase = _RoomPhase.connecting;
   double _level = 0.08;
   int _elapsedSeconds = 0;
+  int _liveSequence = 0;
   String _roomId = '';
+  String _currentReplyId = '';
+  String _moodAsset = 'assets/moods/平静.png';
+  String _moodLabel = '平静';
+  String _liveCaption = '';
+  bool _muted = false;
+  bool _sendingAudio = false;
+  int _audioUploadFailures = 0;
   bool _initializing = true;
   bool _closed = false;
 
@@ -63,14 +85,6 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         setState(() => _elapsedSeconds += 1);
       }
     });
-    _playbackCompleted = _player.onPlayerComplete.listen((_) {
-      if (mounted && _phase == _RoomPhase.speaking) {
-        setState(() {
-          _phase = _RoomPhase.listening;
-          _level = 0.08;
-        });
-      }
-    });
     unawaited(_recorder.prepare());
     unawaited(_initializeRoom());
   }
@@ -79,8 +93,8 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   void dispose() {
     _closed = true;
     _clock?.cancel();
+    _pcmSubscription?.cancel();
     _amplitude?.cancel();
-    _playbackCompleted?.cancel();
     _breath.dispose();
     _particles.dispose();
     unawaited(_player.dispose());
@@ -100,7 +114,11 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       setState(() {
         _roomId = room.roomId;
         _initializing = false;
+        _phase = _RoomPhase.listening;
       });
+      await _refreshMood();
+      await _startRealtimeMicrophone();
+      unawaited(_pollLiveEvents());
     } catch (_) {
       if (!mounted) {
         return;
@@ -114,157 +132,283 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     }
   }
 
-  Future<void> _toggleTalk() async {
-    if (_phase == _RoomPhase.ending || _initializing) {
-      return;
-    }
-    if (_roomId.isEmpty) {
-      await _initializeRoom();
-      if (_roomId.isEmpty) {
+  Future<void> _refreshMood() async {
+    try {
+      final profile = await widget.api.profile();
+      final mood = profile['mood'];
+      if (mood is! Map || !mounted) {
         return;
       }
-    }
-    if (_phase == _RoomPhase.recording) {
-      await _finishTurn();
-      return;
-    }
-    if (_phase == _RoomPhase.speaking) {
-      await _player.stop();
-    }
-    final started = await _recorder.start(pcm16Wav: true);
-    if (!mounted) {
-      return;
-    }
-    if (!started) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('需要麦克风权限才能进入语音房间')),
-      );
-      return;
-    }
-    await _amplitude?.cancel();
-    _amplitude = _recorder.amplitudeStream().listen((decibels) {
-      if (!mounted || _phase != _RoomPhase.recording) {
+      const assets = {
+        '平静.png': 'assets/moods/平静.png',
+        '开心.png': 'assets/moods/开心.png',
+        '惊讶.png': 'assets/moods/惊讶.png',
+        '愤怒.png': 'assets/moods/愤怒.png',
+        '无语.png': 'assets/moods/无语.png',
+        '难过.png': 'assets/moods/难过.png',
+      };
+      final asset = assets['${mood['asset'] ?? ''}'];
+      if (asset == null) {
         return;
       }
-      setState(() => _level = ((decibels + 55) / 55).clamp(0.08, 1));
-    });
-    setState(() {
-      _phase = _RoomPhase.recording;
-      _level = 0.12;
-    });
-    HapticFeedback.mediumImpact();
+      setState(() {
+        _moodAsset = asset;
+        _moodLabel = '${mood['label'] ?? '平静'}';
+      });
+    } catch (_) {
+      // The call remains usable when the decorative mood profile is offline.
+    }
   }
 
-  Future<void> _finishTurn() async {
-    await _amplitude?.cancel();
-    _amplitude = null;
-    final recorded = await _recorder.stop();
-    if (recorded == null || recorded.durationMs < 550) {
+  Future<void> _startRealtimeMicrophone() async {
+    final stream = await _recorder.startPcmStream();
+    if (stream == null) {
       if (mounted) {
-        setState(() {
-          _phase = _RoomPhase.listening;
-          _level = 0.08;
-        });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('再多说一点点，小悠才听得清')),
+          const SnackBar(content: Text('需要麦克风权限才能进入语音房间')),
         );
       }
       return;
     }
-    setState(() {
-      _phase = _RoomPhase.waiting;
-      _level = 0.18;
-    });
-    final file = File(recorded.path);
-    late final VoiceRoomTurnResult result;
-    try {
-      result = await widget.api.sendVoiceRoomTurn(
-        roomId: _roomId,
-        turnId: 'room-${DateTime.now().microsecondsSinceEpoch}',
-        audioBytes: await file.readAsBytes(),
-        mimeType: recorded.mimeType,
-        durationMs: recorded.durationMs,
-      );
-      if (!result.accepted && !result.duplicate) {
-        throw const HttpException('voice_not_accepted');
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() => _phase = _RoomPhase.listening);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('刚才那句话没有送到，再说一次好吗')),
-        );
-      }
-      return;
-    } finally {
-      if (await file.exists()) {
-        await file.delete();
-      }
-    }
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _lines
-        ..add(
-          _VoiceRoomLine(
-            fromXiaoyou: false,
-            text: result.turn.userText,
-          ),
-        )
-        ..add(
-          _VoiceRoomLine(
-            fromXiaoyou: true,
-            text: result.turn.assistantText,
-          ),
-        );
-    });
-    if (result.turn.audioMediaId.isNotEmpty) {
-      try {
-        final media = await widget.api.downloadMedia(
-          result.turn.audioMediaId,
-        );
-        if (_closed) {
+    await _pcmSubscription?.cancel();
+    _pcmSubscription = stream.listen(
+      (pcm) {
+        if (_closed || pcm.isEmpty) {
           return;
         }
-        await _player.play(
-          BytesSource(media.bytes, mimeType: media.mimeType),
+        // O2.0 keep_alive keeps the session open while muted.  It explicitly
+        // does not require fabricated silence, so muted microphone data is
+        // discarded instead of being uploaded as zero-filled PCM.
+        if (_muted) {
+          return;
+        }
+        final chunk = Uint8List.fromList(pcm);
+        if (_audioQueue.length >= 24) {
+          _queuedAudioBytes -= _audioQueue.removeFirst().length;
+        }
+        _audioQueue.add(chunk);
+        _queuedAudioBytes += chunk.length;
+        if (_queuedAudioBytes >= _realtimeUploadBytes) {
+          unawaited(_pumpAudioQueue());
+        }
+      },
+      onError: (_) {
+        if (mounted && !_closed) {
+          setState(() => _liveCaption = '麦克风连接正在恢复…');
+        }
+      },
+    );
+    await _amplitude?.cancel();
+    _amplitude = _recorder.amplitudeStream().listen((decibels) {
+      if (!mounted || _muted) {
+        return;
+      }
+      final next = ((decibels + 55) / 55).clamp(0.06, 1.0);
+      setState(() => _level = _level * 0.58 + next * 0.42);
+    });
+  }
+
+  Future<void> _pumpAudioQueue() async {
+    if (_sendingAudio || _roomId.isEmpty || _closed) {
+      return;
+    }
+    _sendingAudio = true;
+    Uint8List? inFlightPacket;
+    try {
+      while (_queuedAudioBytes >= _realtimeUploadBytes && !_closed) {
+        final packet = BytesBuilder(copy: false);
+        while (_audioQueue.isNotEmpty && packet.length < _realtimeUploadBytes) {
+          final chunk = _audioQueue.removeFirst();
+          _queuedAudioBytes -= chunk.length;
+          final remaining = _realtimeUploadBytes - packet.length;
+          if (chunk.length <= remaining) {
+            packet.add(chunk);
+          } else {
+            packet.add(Uint8List.sublistView(chunk, 0, remaining));
+            final remainder = Uint8List.sublistView(chunk, remaining);
+            _audioQueue.addFirst(remainder);
+            _queuedAudioBytes += remainder.length;
+          }
+        }
+        inFlightPacket = packet.takeBytes();
+        await widget.api.sendVoiceRoomAudio(
+          roomId: _roomId,
+          pcm: inFlightPacket,
         );
+        inFlightPacket = null;
+        _audioUploadFailures = 0;
+      }
+    } catch (error) {
+      debugPrint('[VoiceRoom] realtime audio upload failed: $error');
+      _audioUploadFailures += 1;
+      final failedPacket = inFlightPacket;
+      if (failedPacket != null && failedPacket.isNotEmpty) {
+        _audioQueue.addFirst(failedPacket);
+        _queuedAudioBytes += failedPacket.length;
+      }
+      if (_audioQueue.length > 8) {
+        while (_audioQueue.length > 8) {
+          _queuedAudioBytes -= _audioQueue.removeFirst().length;
+        }
+      }
+      if (mounted && !_closed) {
+        setState(() {
+          _liveCaption =
+              _audioUploadFailures >= 3 ? '声音还没送到小悠，正在重新连接…' : '声音连接晃了一下，正在恢复…';
+        });
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 260));
+    } finally {
+      _sendingAudio = false;
+      if (_queuedAudioBytes >= _realtimeUploadBytes && !_closed) {
+        unawaited(_pumpAudioQueue());
+      }
+    }
+  }
+
+  Future<void> _pollLiveEvents() async {
+    while (!_closed && _roomId.isNotEmpty) {
+      try {
+        final events = await widget.api.voiceRoomEvents(
+          roomId: _roomId,
+          after: _liveSequence,
+        );
+        for (final event in events) {
+          _liveSequence = max(_liveSequence, event.sequence);
+          await _handleLiveEvent(event);
+        }
+      } catch (_) {
+        if (!_closed) {
+          await Future<void>.delayed(const Duration(milliseconds: 450));
+        }
+      }
+    }
+  }
+
+  Future<void> _handleLiveEvent(VoiceRoomLiveEvent event) async {
+    if (_closed || !mounted) {
+      return;
+    }
+    final payload = event.payload;
+    switch (event.type) {
+      case 'listening':
+        setState(() => _phase = _RoomPhase.listening);
+        return;
+      case 'user_speech_started':
+        final interrupted = payload['interrupted'] == true;
+        if (interrupted || _phase == _RoomPhase.speaking) {
+          final replyId = '${payload['reply_id'] ?? _currentReplyId}'.trim();
+          final playedMs = await _player.positionMs();
+          await _player.stop();
+          if (replyId.isNotEmpty) {
+            unawaited(
+              widget.api.truncateVoiceRoomReply(
+                roomId: _roomId,
+                replyId: replyId,
+                audioEndMs: playedMs,
+              ),
+            );
+          }
+          setState(() => _phase = _RoomPhase.interrupted);
+          await Future<void>.delayed(const Duration(milliseconds: 120));
+        }
+        if (mounted) {
+          setState(() {
+            _phase = _RoomPhase.userSpeaking;
+            _liveCaption = '我在听';
+          });
+        }
+        return;
+      case 'user_transcript':
+        final text = '${payload['text'] ?? ''}'.trim();
+        if (text.isNotEmpty) {
+          setState(() {
+            _liveCaption = text;
+            if (payload['final'] == true) {
+              _phase = _RoomPhase.thinking;
+            }
+          });
+        }
+        return;
+      case 'thinking':
+        setState(() {
+          _phase = _RoomPhase.thinking;
+          _liveCaption = '让我想想…';
+        });
+        return;
+      case 'assistant_transcript':
+        final text = '${payload['text'] ?? ''}'.trim();
+        if (text.isNotEmpty) {
+          setState(() => _liveCaption = text);
+        }
+        final replyId = '${payload['reply_id'] ?? ''}'.trim();
+        if (replyId.isNotEmpty) {
+          _currentReplyId = replyId;
+        }
+        return;
+      case 'assistant_audio':
+        final encoded = '${payload['audio'] ?? ''}';
+        if (encoded.isEmpty) {
+          return;
+        }
+        final replyId = '${payload['reply_id'] ?? ''}'.trim();
+        if (replyId.isNotEmpty) {
+          _currentReplyId = replyId;
+        }
+        await _player.write(base64Decode(encoded));
         if (mounted) {
           setState(() {
             _phase = _RoomPhase.speaking;
-            _level = 0.58;
+            _level = 0.72;
           });
         }
-      } catch (_) {
-        if (!mounted) {
-          return;
+        return;
+      case 'assistant_audio_ended':
+        await _player.stop();
+        if (mounted && _phase != _RoomPhase.userSpeaking) {
+          setState(() {
+            _phase = _RoomPhase.listening;
+            _level = 0.08;
+          });
         }
-        setState(() {
-          _phase = _RoomPhase.listening;
-          _level = 0.08;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('小悠的回复已保存，但这次音频没有播放出来')),
-        );
-      }
-    } else if (mounted) {
-      setState(() {
-        _phase = _RoomPhase.listening;
-        _level = 0.08;
-      });
+        return;
+      case 'interrupted':
+        await _player.stop();
+        if (mounted) {
+          setState(() => _phase = _RoomPhase.interrupted);
+        }
+        return;
+      case 'turn_complete':
+        unawaited(_refreshMood());
+        return;
+      case 'error':
+        setState(() => _liveCaption = '连接晃了一下，正在恢复…');
+        return;
     }
+  }
+
+  void _toggleMute() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _muted = !_muted;
+      if (_muted) {
+        _audioQueue.clear();
+        _queuedAudioBytes = 0;
+        _level = 0.04;
+      }
+    });
   }
 
   Future<void> _endRoom() async {
     if (_phase == _RoomPhase.ending) {
       return;
     }
-    final wasRecording = _phase == _RoomPhase.recording;
     setState(() => _phase = _RoomPhase.ending);
-    if (wasRecording) {
-      await _recorder.cancel();
-    }
+    await _pcmSubscription?.cancel();
+    _pcmSubscription = null;
+    await _amplitude?.cancel();
+    _amplitude = null;
+    await _recorder.stopPcmStream();
     await _player.stop();
     if (_roomId.isNotEmpty) {
       try {
@@ -368,87 +512,97 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
                         AnimatedBuilder(
                           animation: Listenable.merge([_breath, _particles]),
                           builder: (_, __) => _VoiceOrb(
-                            phase: _phase,
+                            phase:
+                                _initializing ? _RoomPhase.connecting : _phase,
                             level: _level,
                             progress: _particles.value,
                             breath: Curves.easeInOutSine.transform(
                               _breath.value,
                             ),
-                            onTap: _toggleTalk,
+                            moodAsset: _moodAsset,
                           ),
                         ),
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 24),
                         AnimatedSwitcher(
-                          duration: const Duration(milliseconds: 320),
+                          duration: const Duration(milliseconds: 360),
+                          transitionBuilder: (child, animation) =>
+                              FadeTransition(
+                            opacity: animation,
+                            child: SlideTransition(
+                              position: Tween<Offset>(
+                                begin: const Offset(0, 0.12),
+                                end: Offset.zero,
+                              ).animate(animation),
+                              child: child,
+                            ),
+                          ),
                           child: Text(
                             _initializing ? '正在连接小悠…' : _phaseLabel(_phase),
                             key: ValueKey('$_phase-$_initializing'),
                             style: const TextStyle(
                               color: _voiceInk,
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.2,
                             ),
                           ),
                         ),
                         const SizedBox(height: 8),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 34),
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 260),
+                            child: Text(
+                              _muted
+                                  ? '麦克风已静音'
+                                  : (_liveCaption.isEmpty
+                                      ? '直接开口即可，我会一直听着'
+                                      : _liveCaption),
+                              key: ValueKey('$_muted-$_liveCaption'),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: _voiceMuted,
+                                fontSize: 12,
+                                height: 1.45,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
                         Text(
-                          _phase == _RoomPhase.recording
-                              ? '轻触结束这一句话'
-                              : '轻触光球开始说话',
+                          '此刻 · $_moodLabel',
                           style: const TextStyle(
-                            color: _voiceMuted,
-                            fontSize: 12,
+                            color: Color(0xffb06c91),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
                       ],
                     ),
                   ),
-                  if (_lines.isNotEmpty)
-                    Container(
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      margin: const EdgeInsets.fromLTRB(18, 0, 18, 14),
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xd9ffffff),
-                        borderRadius: BorderRadius.circular(26),
-                        border: Border.all(color: const Color(0xb3ffffff)),
-                      ),
-                      child: ListView(
-                        reverse: true,
-                        shrinkWrap: true,
-                        children: _lines.reversed
-                            .take(4)
-                            .map(
-                              (line) => Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 5),
-                                child: Text(
-                                  '${line.fromXiaoyou ? '小悠' : 'YoYo'} · ${line.text}',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: line.fromXiaoyou
-                                        ? _voiceInk
-                                        : _voiceLavender,
-                                    height: 1.35,
-                                  ),
-                                ),
-                              ),
-                            )
-                            .toList(),
-                      ),
-                    ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(18, 0, 18, 20),
-                    child: OutlinedButton.icon(
-                      onPressed: _endRoom,
-                      icon: const Icon(Icons.stop_circle_outlined),
-                      label: const Text('结束并留下纪念卡'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                        foregroundColor: _voiceRose,
-                        side: const BorderSide(color: Color(0x55b35282)),
-                      ),
+                    padding: const EdgeInsets.fromLTRB(22, 6, 22, 22),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _VoiceControlButton(
+                          icon: _muted
+                              ? Icons.mic_off_rounded
+                              : Icons.mic_rounded,
+                          label: _muted ? '取消静音' : '静音',
+                          onTap: _toggleMute,
+                          dark: false,
+                        ),
+                        const SizedBox(width: 26),
+                        _VoiceControlButton(
+                          icon: Icons.close_rounded,
+                          label: '结束',
+                          onTap: _endRoom,
+                          dark: true,
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -456,6 +610,58 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _VoiceControlButton extends StatelessWidget {
+  const _VoiceControlButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    required this.dark,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool dark;
+
+  @override
+  Widget build(BuildContext context) {
+    final background = dark ? const Color(0xff241c21) : Colors.white;
+    final foreground = dark ? Colors.white : _voiceInk;
+    return Semantics(
+      button: true,
+      label: label,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Material(
+            color: background,
+            shape: const CircleBorder(),
+            elevation: dark ? 8 : 3,
+            shadowColor: const Color(0x30331a27),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: onTap,
+              child: SizedBox.square(
+                dimension: 60,
+                child: Icon(icon, color: foreground, size: 25),
+              ),
+            ),
+          ),
+          const SizedBox(height: 7),
+          Text(
+            label,
+            style: const TextStyle(
+              color: _voiceMuted,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -735,12 +941,18 @@ class _VoiceRoomTranscript extends StatelessWidget {
                               label: 'YoYo',
                               text: turn.userText,
                             ),
-                            const SizedBox(height: 8),
-                            _TranscriptBubble(
-                              mine: false,
-                              label: '小悠',
-                              text: turn.assistantText,
-                            ),
+                            if (turn.assistantText.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              _TranscriptBubble(
+                                mine: false,
+                                label:
+                                    turn.deliveryComplete ? '小悠' : '小悠 · 被打断',
+                                text: turn.assistantText,
+                              ),
+                            ] else if (!turn.deliveryComplete) ...[
+                              const SizedBox(height: 8),
+                              const _InterruptedTurnNote(),
+                            ],
                           ],
                         ),
                       );
@@ -748,6 +960,33 @@ class _VoiceRoomTranscript extends StatelessWidget {
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _InterruptedTurnNote extends StatelessWidget {
+  const _InterruptedTurnNote();
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+        decoration: BoxDecoration(
+          color: const Color(0x80ffffff),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0x1fb35282)),
+        ),
+        child: const Text(
+          '这句回复被你自然地接了过去',
+          style: TextStyle(
+            color: _voiceMuted,
+            fontSize: 12,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
       ),
     );
   }
@@ -814,8 +1053,337 @@ String _roomDate(DateTime value) => '${value.month.toString().padLeft(2, '0')}-'
     '${value.hour.toString().padLeft(2, '0')}:'
     '${value.minute.toString().padLeft(2, '0')}';
 
-class _VoiceOrb extends StatefulWidget {
+class _VoiceOrb extends StatelessWidget {
   const _VoiceOrb({
+    required this.phase,
+    required this.level,
+    required this.progress,
+    required this.breath,
+    required this.moodAsset,
+  });
+
+  final _RoomPhase phase;
+  final double level;
+  final double progress;
+  final double breath;
+  final String moodAsset;
+
+  double get _diameter => switch (phase) {
+        _RoomPhase.connecting => 34,
+        _RoomPhase.listening => 248,
+        _RoomPhase.userSpeaking => 286,
+        _RoomPhase.thinking => 228,
+        _RoomPhase.speaking => 294,
+        _RoomPhase.interrupted => 212,
+        _RoomPhase.ending => 42,
+      };
+
+  double get _activity => switch (phase) {
+        _RoomPhase.connecting => 0.18,
+        _RoomPhase.listening => 0.30,
+        _RoomPhase.userSpeaking => 0.82,
+        _RoomPhase.thinking => 0.58,
+        _RoomPhase.speaking => 1.0,
+        _RoomPhase.interrupted => 0.48,
+        _RoomPhase.ending => 0.08,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final pulse = 1 + (breath - 0.5) * (0.018 + level * 0.025);
+    return SizedBox.square(
+      dimension: 330,
+      child: Center(
+        child: TweenAnimationBuilder<double>(
+          tween: Tween<double>(end: _diameter),
+          duration: const Duration(milliseconds: 520),
+          curve: Curves.easeInOutCubicEmphasized,
+          builder: (context, diameter, _) => Transform.scale(
+            scale: pulse,
+            child: SizedBox.square(
+              dimension: diameter,
+              child: Stack(
+                fit: StackFit.expand,
+                clipBehavior: Clip.none,
+                children: [
+                  CustomPaint(
+                    painter: _MoodOrbGlowPainter(
+                      phase: phase,
+                      progress: progress,
+                      activity: _activity,
+                      level: level,
+                    ),
+                  ),
+                  Padding(
+                    padding: EdgeInsets.all(max(3, diameter * 0.018)),
+                    child: ClipOval(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 760),
+                            switchInCurve: Curves.easeOutCubic,
+                            switchOutCurve: Curves.easeInCubic,
+                            child: Transform.scale(
+                              key: ValueKey(moodAsset),
+                              scale: 1.12 +
+                                  sin(progress * pi * 2.0) * 0.016 +
+                                  level * 0.018,
+                              child: Image.asset(
+                                moodAsset,
+                                fit: BoxFit.cover,
+                                filterQuality: FilterQuality.high,
+                              ),
+                            ),
+                          ),
+                          CustomPaint(
+                            painter: _MoodOrbSurfacePainter(
+                              phase: phase,
+                              progress: progress,
+                              activity: _activity,
+                              level: level,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MoodOrbGlowPainter extends CustomPainter {
+  const _MoodOrbGlowPainter({
+    required this.phase,
+    required this.progress,
+    required this.activity,
+    required this.level,
+  });
+
+  final _RoomPhase phase;
+  final double progress;
+  final double activity;
+  final double level;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide * 0.48;
+    final wave = sin(progress * pi * 4.0) * 0.5 + 0.5;
+    final accent = phase == _RoomPhase.userSpeaking
+        ? const Color(0xff83e9ff)
+        : phase == _RoomPhase.speaking
+            ? const Color(0xffff6eaf)
+            : const Color(0xffb69af4);
+    canvas.drawCircle(
+      center + Offset(0, radius * 0.94),
+      radius * 0.78,
+      Paint()
+        ..shader = RadialGradient(
+          colors: [
+            const Color(0xff331e35).withValues(alpha: 0.25),
+            Colors.transparent,
+          ],
+        ).createShader(
+          Rect.fromCircle(
+            center: center + Offset(0, radius),
+            radius: radius,
+          ),
+        )
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+    );
+    for (var index = 0; index < 3; index++) {
+      final spread =
+          radius * (1.05 + index * 0.09 + wave * 0.015 + level * 0.025);
+      canvas.drawCircle(
+        center,
+        spread,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3.2 - index * 0.7
+          ..color = accent.withValues(
+            alpha: (0.22 - index * 0.045) * activity,
+          )
+          ..maskFilter = MaskFilter.blur(
+            BlurStyle.normal,
+            8 + index * 5,
+          ),
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _MoodOrbGlowPainter oldDelegate) =>
+      oldDelegate.phase != phase ||
+      oldDelegate.progress != progress ||
+      oldDelegate.activity != activity ||
+      oldDelegate.level != level;
+}
+
+class _MoodOrbSurfacePainter extends CustomPainter {
+  const _MoodOrbSurfacePainter({
+    required this.phase,
+    required this.progress,
+    required this.activity,
+    required this.level,
+  });
+
+  final _RoomPhase phase;
+  final double progress;
+  final double activity;
+  final double level;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide / 2;
+    final t = progress * pi * 2;
+    final rect = Offset.zero & size;
+
+    canvas.drawRect(
+      rect,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-0.48, -0.58),
+          focal: const Alignment(-0.62, -0.7),
+          focalRadius: 0.03,
+          radius: 1.24,
+          colors: [
+            Colors.white.withValues(alpha: 0.42),
+            Colors.transparent,
+            const Color(0xff342142).withValues(alpha: 0.13),
+            const Color(0xff160d22).withValues(alpha: 0.38),
+          ],
+          stops: const [0, 0.27, 0.7, 1],
+        ).createShader(rect),
+    );
+
+    final ribbons = [
+      (
+        const Color(0xff73e8ff),
+        sin(t * 1.0) * radius * 0.30,
+        cos(t * 1.7) * radius * 0.22,
+        0.72,
+      ),
+      (
+        const Color(0xffff74ae),
+        cos(t * 1.3 + 1.2) * radius * 0.32,
+        sin(t * 0.8 + 0.4) * radius * 0.28,
+        0.62,
+      ),
+      (
+        const Color(0xffaa8cff),
+        sin(t * 0.7 + 2.4) * radius * 0.26,
+        cos(t * 1.1 + 0.8) * radius * 0.32,
+        0.58,
+      ),
+    ];
+    for (var index = 0; index < ribbons.length; index++) {
+      final ribbon = ribbons[index];
+      final movingCenter = center + Offset(ribbon.$2, ribbon.$3);
+      final width = radius * (1.22 + sin(t * 1.9 + index) * 0.18);
+      final height = radius * (0.48 + cos(t * 1.4 + index * 1.7) * 0.11);
+      canvas.save();
+      canvas.translate(movingCenter.dx, movingCenter.dy);
+      canvas.rotate(
+        sin(t * (0.8 + index * 0.17) + index) * 0.72,
+      );
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: Offset.zero,
+          width: width,
+          height: height,
+        ),
+        Paint()
+          ..shader = RadialGradient(
+            colors: [
+              Colors.white.withValues(alpha: 0.34 * activity),
+              ribbon.$1.withValues(alpha: ribbon.$4 * activity),
+              ribbon.$1.withValues(alpha: 0.04),
+              Colors.transparent,
+            ],
+            stops: const [0, 0.28, 0.72, 1],
+          ).createShader(
+            Rect.fromCenter(
+              center: Offset.zero,
+              width: width,
+              height: height,
+            ),
+          )
+          ..blendMode = BlendMode.screen
+          ..maskFilter = MaskFilter.blur(
+            BlurStyle.normal,
+            8 + level * 6,
+          ),
+      );
+      canvas.restore();
+    }
+
+    final highlightCenter = Offset(
+      size.width * (0.31 + sin(t * 0.7) * 0.018),
+      size.height * (0.24 + cos(t * 0.9) * 0.015),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: highlightCenter,
+        width: radius * 0.74,
+        height: radius * 0.25,
+      ),
+      Paint()
+        ..shader = LinearGradient(
+          colors: [
+            Colors.white.withValues(alpha: 0.04),
+            Colors.white.withValues(alpha: 0.56),
+            Colors.white.withValues(alpha: 0.02),
+          ],
+        ).createShader(rect)
+        ..blendMode = BlendMode.screen
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+
+    canvas.drawCircle(
+      center,
+      radius - 2,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.4
+        ..shader = SweepGradient(
+          transform: GradientRotation(sin(t * 0.65) * 0.9),
+          colors: const [
+            Color(0xfff9f7ff),
+            Color(0xff7eefff),
+            Color(0xffff72ad),
+            Color(0xffaf98ff),
+            Color(0xfff9f7ff),
+          ],
+        ).createShader(rect),
+    );
+    canvas.drawCircle(
+      center,
+      radius - 5.2,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.8
+        ..color = Colors.white.withValues(alpha: 0.76),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _MoodOrbSurfacePainter oldDelegate) =>
+      oldDelegate.phase != phase ||
+      oldDelegate.progress != progress ||
+      oldDelegate.activity != activity ||
+      oldDelegate.level != level;
+}
+
+class _LegacyVoiceOrb extends StatefulWidget {
+  const _LegacyVoiceOrb({
     required this.phase,
     required this.level,
     required this.progress,
@@ -830,10 +1398,10 @@ class _VoiceOrb extends StatefulWidget {
   final VoidCallback onTap;
 
   @override
-  State<_VoiceOrb> createState() => _VoiceOrbState();
+  State<_LegacyVoiceOrb> createState() => _LegacyVoiceOrbState();
 }
 
-class _VoiceOrbState extends State<_VoiceOrb> {
+class _LegacyVoiceOrbState extends State<_LegacyVoiceOrb> {
   ui.FragmentShader? _shader;
 
   _RoomPhase get phase => widget.phase;
@@ -843,10 +1411,12 @@ class _VoiceOrbState extends State<_VoiceOrb> {
   VoidCallback get onTap => widget.onTap;
 
   double get _targetActivity => switch (widget.phase) {
+        _RoomPhase.connecting => 0.12,
         _RoomPhase.listening => 0.28,
-        _RoomPhase.recording => 0.74,
-        _RoomPhase.waiting => 0.62,
+        _RoomPhase.userSpeaking => 0.74,
+        _RoomPhase.thinking => 0.62,
         _RoomPhase.speaking => 0.92,
+        _RoomPhase.interrupted => 0.42,
         _RoomPhase.ending => 0.1,
       };
 
@@ -878,14 +1448,14 @@ class _VoiceOrbState extends State<_VoiceOrb> {
         curve: Curves.easeOutCubic,
         builder: (context, smoothedLevel, _) => Semantics(
           button: true,
-          label: phase == _RoomPhase.recording ? '结束这句话' : '开始说话',
+          label: phase == _RoomPhase.userSpeaking ? '正在听你说' : '语音状态',
           child: GestureDetector(
             onTap: onTap,
             child: RepaintBoundary(
               child: SizedBox.square(
                 dimension: 300,
                 child: CustomPaint(
-                  painter: _VoiceOrbPainter(
+                  painter: _LegacyVoiceOrbPainter(
                     activity: activity,
                     level: smoothedLevel,
                     progress: progress,
@@ -902,8 +1472,8 @@ class _VoiceOrbState extends State<_VoiceOrb> {
   }
 }
 
-class _VoiceOrbPainter extends CustomPainter {
-  const _VoiceOrbPainter({
+class _LegacyVoiceOrbPainter extends CustomPainter {
+  const _LegacyVoiceOrbPainter({
     required this.activity,
     required this.level,
     required this.progress,
@@ -1260,7 +1830,7 @@ class _VoiceOrbPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _VoiceOrbPainter oldDelegate) =>
+  bool shouldRepaint(covariant _LegacyVoiceOrbPainter oldDelegate) =>
       oldDelegate.activity != activity ||
       oldDelegate.level != level ||
       oldDelegate.progress != progress ||
@@ -1305,18 +1875,13 @@ class _VoiceRoomBackgroundPainter extends CustomPainter {
       oldDelegate.progress != progress;
 }
 
-class _VoiceRoomLine {
-  const _VoiceRoomLine({required this.fromXiaoyou, required this.text});
-
-  final bool fromXiaoyou;
-  final String text;
-}
-
 String _phaseLabel(_RoomPhase phase) => switch (phase) {
+      _RoomPhase.connecting => '正在靠近小悠…',
       _RoomPhase.listening => '小悠在听',
-      _RoomPhase.recording => '正在听你说',
-      _RoomPhase.waiting => '小悠想一想…',
+      _RoomPhase.userSpeaking => '正在听你说',
+      _RoomPhase.thinking => '小悠想一想…',
       _RoomPhase.speaking => '小悠正在你耳边说话',
+      _RoomPhase.interrupted => '我在听，继续说',
       _RoomPhase.ending => '正在收藏这一会儿…',
     };
 

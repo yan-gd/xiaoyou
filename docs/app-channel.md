@@ -89,15 +89,21 @@ App 播放端不再额外增加 Android 响度，避免双重放大和跨平台�
 一个独立的火山 WebSocket 会话，固定使用 O2.0 规范模型
 `dialog.extra.model=1.2.1.1`：
 
-- App 录制 `16 kHz / 单声道 / PCM16 WAV`，服务端按 20 ms 音频帧发送。
+- App 进入房间后立即打开连续 `16 kHz / 单声道 / PCM16` 麦克风流；无需点击
+  圆球开始下一轮。静音时客户端持续发送静音帧以维持 O2.0 会话，服务端按
+  20 ms 音频帧转发。
 - O2.0 在同一连接中完成识别、对话和 `24 kHz / PCM16` 语音生成。
+- 服务端收到 O2.0 `ASRInfo` 首字事件后，客户端立即停止当前播放，并用实际
+  已播放毫秒数发送 `ConversationTruncate`。因此用户可以在小悠说话时直接
+  插嘴，下一轮模型上下文只保留真正听到的回复部分。
 - 建立会话前，从 ShortMemory 读取当前本来就会注入模型的原生
   `user/assistant` 消息，并作为结构化 `dialog_context` 传给 O2.0。
 - 同一语音房复用一个 WebSocket；下一次进入时再用服务端 `dialog_id` 和最新
   短期记忆续接，因此不会依靠客户端拼接提示词。
-- 每个完整问答终态写入 `data/app_channel/voice_rooms.db`，随后由后台 FIFO
+- 每个完整或被打断的问答终态写入 `data/app_channel/voice_rooms.db`，随后由后台 FIFO
   异步写入 ShortMemory、ConversationArchive 和 LongTermMemory；记忆写入不
-  占用主聊天线程，失败记录会持久化并在启动后重放。
+  占用主聊天线程，失败记录会持久化并在启动后重放。被打断时，用户原话仍会
+  独立进入记忆；助手侧只投影已经完整播放完毕的句子，并标记为 `partial`。
 - 语音房逐句记录只从 `/v1/voice-rooms` 读取，绝不写入
   `data/app_channel/app.db` 的主聊天消息表，所以主聊天页面不显示这些气泡；
   常规聊天的后续模型上下文仍能记得这段语音对话。
@@ -313,11 +319,18 @@ Content-Type: application/json
 
 {"device_id":"yoyo-phone","title":"耳边的一会儿"}
 
-POST /v1/voice-rooms/<room_id>/turns
-Content-Type: audio/wav
+POST /v1/voice-rooms/<room_id>/audio
+Content-Type: audio/pcm
 X-Device-Id: yoyo-phone
-X-Turn-Id: room-turn-唯一ID
-X-Audio-Duration-Ms: 1800
+
+<持续发送 16 kHz / 单声道 / PCM16；推荐每包 20 ms>
+
+GET /v1/voice-rooms/<room_id>/events?device_id=yoyo-phone&after=0&timeout=25
+
+POST /v1/voice-rooms/<room_id>/truncate
+Content-Type: application/json
+
+{"device_id":"yoyo-phone","reply_id":"火山返回的item_id","audio_end_ms":860}
 
 POST /v1/voice-rooms/<room_id>/finish
 Content-Type: application/json
@@ -328,10 +341,10 @@ GET /v1/voice-rooms?device_id=yoyo-phone&limit=30
 GET /v1/voice-rooms/<room_id>?device_id=yoyo-phone
 ```
 
-`turns` 请求会等待这一轮 O2.0 的识别、回复与音频全部结束再返回，但由独立
-HTTP 工作线程处理，不阻塞主聊天消费线程。返回的 `audio_media_id` 继续通过
-`/v1/media/<media_id>` 下载。每个房间的逐轮转写、音频引用和异步记忆状态
-都只存在独立语音房数据库中。
+客户端在同一个房间内并行上传连续音频流和长轮询事件。`events` 会依次返回
+识别开始、用户转写、小悠思考、回复转写、PCM 音频、被打断和轮次结束事件；
+音频由 Android 原生 `AudioTrack` 边收边播。每个房间的逐轮转写、送达终态和
+异步记忆状态都只存在独立语音房数据库中。
 
 “我们今天”先以当天真实对话生成草稿。代表原话必须逐字存在于当天聊天中，
 代表照片必须来自当天已有 `media_id`；模型结果无法通过事实校验时退回本地

@@ -6,6 +6,7 @@ They are persisted in their own SQLite store and projected into Xiaoyou's
 existing memory providers by a background FIFO after a complete turn exists.
 """
 
+import base64
 import io
 import json
 import os
@@ -16,6 +17,7 @@ import threading
 import time
 import uuid
 import wave
+from collections import deque
 from pathlib import Path
 
 from common.log import logger
@@ -48,10 +50,14 @@ SESSION_STARTED = 150
 SESSION_FINISHED = 152
 SESSION_FAILED = 153
 TTS_SENTENCE_START = 350
+TTS_SENTENCE_END = 351
 TTS_RESPONSE = 352
 TTS_ENDED = 359
+ASR_INFO = 450
 ASR_RESPONSE = 451
 ASR_ENDED = 459
+CONVERSATION_TRUNCATE = 513
+CLIENT_INTERRUPT = 515
 CHAT_RESPONSE = 550
 CHAT_ENDED = 559
 SERVER_ERROR = 599
@@ -235,19 +241,59 @@ def normalize_dialog_context(records, *, max_items=20, max_chars=7000):
 
 
 def wav_to_pcm16(audio_bytes):
-    """Validate and unpack the App's 16 kHz mono PCM WAV recording."""
+    """Unpack Android PCM WAV and normalize it to 16 kHz mono PCM16.
+
+    Android audio devices are allowed to replace the requested sample rate or
+    channel count with a supported value.  The record plugin writes that
+    negotiated format into the WAV header, so rejecting anything other than
+    exact 16 kHz mono makes otherwise valid recordings device-dependent.
+    """
     try:
         with wave.open(io.BytesIO(bytes(audio_bytes or b"")), "rb") as source:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            sample_rate = source.getframerate()
             if (
-                source.getnchannels() != 1
-                or source.getsampwidth() != 2
-                or source.getframerate() != 16000
+                channels not in (1, 2)
+                or sample_width != 2
+                or sample_rate < 8000
+                or sample_rate > 96000
                 or source.getcomptype() != "NONE"
             ):
                 raise VoiceRoomError("voice_room_audio_must_be_pcm16_16k_mono")
-            return source.readframes(source.getnframes())
+            frames = source.readframes(source.getnframes())
     except (wave.Error, EOFError) as exc:
         raise VoiceRoomError("invalid_voice_room_wav") from exc
+
+    if len(frames) < sample_width * channels:
+        raise VoiceRoomError("empty_voice_room_audio")
+    sample_count = len(frames) // 2
+    samples = list(struct.unpack("<%dh" % sample_count, frames))
+    if channels == 2:
+        samples = [
+            (samples[index] + samples[index + 1]) // 2
+            for index in range(0, len(samples) - 1, 2)
+        ]
+    if sample_rate != 16000 and samples:
+        target_count = max(1, round(len(samples) * 16000 / sample_rate))
+        if target_count == 1 or len(samples) == 1:
+            samples = [samples[0]]
+        else:
+            source_span = len(samples) - 1
+            target_span = target_count - 1
+            normalized = []
+            for index in range(target_count):
+                position = index * source_span / target_span
+                left = int(position)
+                right = min(left + 1, source_span)
+                fraction = position - left
+                value = round(
+                    samples[left] * (1.0 - fraction)
+                    + samples[right] * fraction
+                )
+                normalized.append(max(-32768, min(32767, value)))
+            samples = normalized
+    return struct.pack("<%dh" % len(samples), *samples)
 
 
 def pcm16_to_wav(pcm_bytes, *, sample_rate=24000):
@@ -323,6 +369,8 @@ class VoiceRoomStore:
                     audio_mime_type TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL,
                     memory_status TEXT NOT NULL DEFAULT 'pending',
+                    delivery_complete INTEGER NOT NULL DEFAULT 1,
+                    terminal_status TEXT NOT NULL DEFAULT 'complete',
                     FOREIGN KEY(room_id) REFERENCES voice_rooms(room_id)
                         ON DELETE CASCADE,
                     UNIQUE(room_id, turn_index)
@@ -337,6 +385,22 @@ class VoiceRoomStore:
                 );
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(voice_room_turns)"
+                ).fetchall()
+            }
+            if "delivery_complete" not in columns:
+                connection.execute(
+                    "ALTER TABLE voice_room_turns ADD COLUMN "
+                    "delivery_complete INTEGER NOT NULL DEFAULT 1"
+                )
+            if "terminal_status" not in columns:
+                connection.execute(
+                    "ALTER TABLE voice_room_turns ADD COLUMN "
+                    "terminal_status TEXT NOT NULL DEFAULT 'complete'"
+                )
 
     @staticmethod
     def _room(row):
@@ -360,6 +424,12 @@ class VoiceRoomStore:
             "created_at",
         ):
             value[key] = int(value.get(key) or 0)
+        value["delivery_complete"] = bool(
+            value.get("delivery_complete", 1)
+        )
+        value["terminal_status"] = str(
+            value.get("terminal_status") or "complete"
+        )
         return value
 
     def create_room(self, session_id, device_id, *, title="耳边的一会儿"):
@@ -442,6 +512,8 @@ class VoiceRoomStore:
         assistant_duration_ms=0,
         audio_media_id="",
         audio_mime_type="",
+        delivery_complete=True,
+        terminal_status="complete",
     ):
         now = int(time.time())
         with self.lock, self._connect() as connection:
@@ -462,8 +534,9 @@ class VoiceRoomStore:
                 INSERT INTO voice_room_turns(
                     turn_id, room_id, turn_index, user_text, assistant_text,
                     user_duration_ms, assistant_duration_ms, audio_media_id,
-                    audio_mime_type, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    audio_mime_type, created_at, delivery_complete,
+                    terminal_status
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(turn_id),
@@ -476,6 +549,8 @@ class VoiceRoomStore:
                     str(audio_media_id or ""),
                     str(audio_mime_type or ""),
                     now,
+                    1 if delivery_complete else 0,
+                    str(terminal_status or "complete"),
                 ),
             )
             connection.execute(
@@ -647,7 +722,7 @@ class VoiceRoomMemoryProjector:
         user_text = _clean_text(turn.get("user_text"))
         assistant_text = _clean_text(turn.get("assistant_text"))
         turn_id = _clean_text(turn.get("turn_id"), 128)
-        if not session_id or not user_text or not assistant_text or not turn_id:
+        if not session_id or not user_text or not turn_id:
             raise VoiceRoomError("voice_room_memory_payload_invalid")
         instances = self._instances()
         short_memory = instances.get("SHORTMEMORY")
@@ -668,33 +743,54 @@ class VoiceRoomMemoryProjector:
             input_id=input_id,
             action_id=turn_id,
         )
-        append_assistant(
-            session_id,
-            assistant_text,
-            source="voice_room",
-            input_id=input_id,
-            action_id=turn_id,
-        )
-
         long_memory = instances.get("LONGTERMMEMORY")
-        append_long = getattr(
-            long_memory,
-            "append_delivered_assistant_message",
-            None,
+        delivery_complete = bool(turn.get("delivery_complete", True))
+        terminal_status = str(
+            turn.get("terminal_status")
+            or ("complete" if delivery_complete else "partial")
         )
-        if not callable(append_long):
-            raise VoiceRoomError("long_memory_unavailable")
-        append_long(
-            session_id,
-            assistant_text,
-            user_text=user_text,
-            source="voice_room",
-            action_id=turn_id,
-            input_id=input_id,
-            delivery_complete=True,
-            terminal_status="complete",
-            completed_at=int(turn.get("created_at") or time.time()),
-        )
+        if assistant_text:
+            append_assistant(
+                session_id,
+                assistant_text,
+                source="voice_room",
+                input_id=input_id,
+                action_id=turn_id,
+            )
+            append_long = getattr(
+                long_memory,
+                "append_delivered_assistant_message",
+                None,
+            )
+            if not callable(append_long):
+                raise VoiceRoomError("long_memory_unavailable")
+            append_long(
+                session_id,
+                assistant_text,
+                user_text=user_text,
+                source="voice_room",
+                action_id=turn_id,
+                input_id=input_id,
+                delivery_complete=delivery_complete,
+                terminal_status=terminal_status,
+                completed_at=int(turn.get("created_at") or time.time()),
+            )
+        else:
+            append_long_user = getattr(
+                long_memory,
+                "append_external_user_message",
+                None,
+            )
+            if not callable(append_long_user):
+                raise VoiceRoomError("long_memory_unavailable")
+            append_long_user(
+                session_id,
+                user_text,
+                source="voice_room",
+                action_id=turn_id,
+                input_id=input_id,
+                completed_at=int(turn.get("created_at") or time.time()),
+            )
         try:
             from plugins.xiaoyou_common.recent_state_service import (
                 get_recent_state_service,
@@ -744,6 +840,13 @@ class VolcO2RealtimeSession:
         self.socket = None
         self.dialog_id = ""
         self.lock = threading.RLock()
+        self.send_lock = threading.RLock()
+        self.turn_lock = threading.RLock()
+        self.stop_event = threading.Event()
+        self.receive_thread = None
+        self.event_handler = None
+        self.audio_next_send_at = 0.0
+        self.audio_bytes_sent = 0
 
     def _connect_socket(self):
         headers = [
@@ -779,7 +882,11 @@ class VolcO2RealtimeSession:
             session_id=self.session_id if session else "",
             audio=audio,
         )
-        self.socket.send_binary(frame)
+        with self.send_lock:
+            socket = self.socket
+            if socket is None:
+                raise VoiceRoomProviderError("volc_session_not_started")
+            socket.send_binary(frame)
 
     def _receive(self):
         value = self.socket.recv()
@@ -842,7 +949,9 @@ class VolcO2RealtimeSession:
     def process_turn(self, pcm_bytes):
         if not self.socket:
             raise VoiceRoomProviderError("volc_session_not_started")
-        with self.lock:
+        if self.event_handler is not None:
+            raise VoiceRoomProviderError("volc_session_is_streaming")
+        with self.turn_lock:
             pcm = bytes(pcm_bytes or b"")
             if not pcm:
                 raise VoiceRoomError("empty_voice_room_audio")
@@ -902,29 +1011,469 @@ class VolcO2RealtimeSession:
                 "audio_pcm": bytes(audio),
             }
 
+    def start_receiving(self, event_handler):
+        if not callable(event_handler):
+            raise VoiceRoomProviderError("volc_event_handler_missing")
+        with self.lock:
+            if not self.socket:
+                raise VoiceRoomProviderError("volc_session_not_started")
+            if self.receive_thread and self.receive_thread.is_alive():
+                return
+            self.event_handler = event_handler
+            self.stop_event.clear()
+            self.receive_thread = threading.Thread(
+                target=self._receive_loop,
+                daemon=True,
+                name="XiaoyouVolcO2Receive-" + self.session_id[:12],
+            )
+            self.receive_thread.start()
+
+    def _receive_loop(self):
+        while not self.stop_event.is_set():
+            try:
+                frame = self._receive()
+            except Exception as exc:
+                if self.stop_event.is_set():
+                    return
+                if exc.__class__.__name__ in (
+                    "WebSocketTimeoutException",
+                    "TimeoutError",
+                ):
+                    continue
+                handler = self.event_handler
+                if callable(handler):
+                    try:
+                        handler(
+                            {
+                                "event": SERVER_ERROR,
+                                "payload": {
+                                    "error": _clean_text(exc, 500),
+                                },
+                                "payload_bytes": b"",
+                            }
+                        )
+                    except Exception:
+                        logger.exception(
+                            "[VoiceRoom] realtime error callback failed"
+                        )
+                logger.exception(
+                    "[VoiceRoom] O2 receive loop stopped session=%s",
+                    self.session_id[:48],
+                )
+                return
+            handler = self.event_handler
+            if callable(handler):
+                try:
+                    handler(frame)
+                except Exception:
+                    logger.exception(
+                        "[VoiceRoom] realtime event callback failed "
+                        "event=%s session=%s",
+                        frame.get("event"),
+                        self.session_id[:48],
+                    )
+
+    def send_audio(self, pcm_bytes):
+        pcm = bytes(pcm_bytes or b"")
+        if not pcm:
+            return
+        if len(pcm) % 2:
+            pcm = pcm[:-1]
+        if not pcm:
+            return
+
+        # O2.0 expects microphone PCM at its real capture cadence.  The App
+        # deliberately batches a few 20 ms frames into one HTTP request to
+        # avoid 50 requests/second, so restore the 640-byte/20 ms cadence here
+        # before forwarding TaskRequest frames to Volcengine.  Without this,
+        # a delayed HTTP request becomes a burst and server-side VAD may never
+        # observe a natural utterance boundary.
+        with self.send_lock:
+            now = time.monotonic()
+            if (
+                self.audio_next_send_at <= 0
+                or self.audio_next_send_at < now - 0.25
+            ):
+                self.audio_next_send_at = now
+            first_packet = self.audio_bytes_sent == 0
+            for offset in range(0, len(pcm), 640):
+                chunk = pcm[offset:offset + 640]
+                if not chunk:
+                    continue
+                wait_seconds = self.audio_next_send_at - time.monotonic()
+                if wait_seconds > 0:
+                    time.sleep(wait_seconds)
+                self._send(
+                    TASK_REQUEST,
+                    chunk,
+                    audio=True,
+                    session=True,
+                )
+                self.audio_bytes_sent += len(chunk)
+                self.audio_next_send_at += len(chunk) / (16000 * 2)
+            if first_packet:
+                logger.info(
+                    "[VoiceRoom] realtime microphone stream started "
+                    "session=%s packet_bytes=%s",
+                    self.session_id[:48],
+                    len(pcm),
+                )
+
+    def truncate(self, reply_id, audio_end_ms):
+        reply_id = _clean_text(reply_id, 128)
+        if not reply_id:
+            return False
+        self._send(
+            CONVERSATION_TRUNCATE,
+            {
+                "item_id": reply_id,
+                "audio_end_ms": max(0, int(audio_end_ms or 0)),
+            },
+            session=True,
+        )
+        return True
+
     def close(self):
         with self.lock:
+            self.stop_event.set()
             socket = self.socket
             self.socket = None
-            if socket is None:
+            receive_thread = self.receive_thread
+            self.receive_thread = None
+            self.event_handler = None
+            if socket is not None:
+                try:
+                    frame = build_client_frame(
+                        FINISH_SESSION,
+                        {},
+                        session_id=self.session_id,
+                    )
+                    socket.send_binary(frame)
+                except Exception:
+                    pass
+                try:
+                    socket.send_binary(
+                        build_client_frame(FINISH_CONNECTION, {})
+                    )
+                except Exception:
+                    pass
+                try:
+                    socket.close()
+                except Exception:
+                    pass
+        if (
+            receive_thread is not None
+            and receive_thread is not threading.current_thread()
+        ):
+            receive_thread.join(timeout=1.0)
+
+
+class _VoiceRoomLiveRuntime:
+    """Bridges one O2 socket to ordered, long-polled App events."""
+
+    def __init__(self, room, provider, finalize_callback):
+        self.room = dict(room)
+        self.provider = provider
+        self.finalize_callback = finalize_callback
+        self.condition = threading.Condition(threading.RLock())
+        self.events = deque(maxlen=4096)
+        self.sequence = 0
+        self.closed = False
+        self.user_text = ""
+        self.next_user_text = ""
+        self.assistant_text = ""
+        self.audio = bytearray()
+        self.question_id = ""
+        self.reply_id = ""
+        self.speech_started_at = 0.0
+        self.user_duration_ms = 0
+        self.played_ms = 0
+        self.speaking = False
+        self.barge_in = False
+        self.sentences = []
+        self.active_sentence = None
+
+    @staticmethod
+    def _payload_text(payload):
+        if not isinstance(payload, dict):
+            return ""
+        direct = _clean_text(payload.get("text") or payload.get("content"))
+        if direct:
+            return direct
+        for item in payload.get("results") or []:
+            if isinstance(item, dict):
+                text = _clean_text(item.get("text"))
+                if text:
+                    return text
+        return ""
+
+    def publish(self, event_type, **payload):
+        with self.condition:
+            if self.closed:
                 return
-            try:
-                frame = build_client_frame(
-                    FINISH_SESSION,
-                    {},
-                    session_id=self.session_id,
+            self.sequence += 1
+            event = {
+                "sequence": self.sequence,
+                "type": str(event_type),
+                "created_at": int(time.time() * 1000),
+            }
+            event.update(payload)
+            self.events.append(event)
+            self.condition.notify_all()
+
+    def wait(self, after, timeout=20):
+        after = max(0, int(after or 0))
+        deadline = time.monotonic() + max(0.1, float(timeout or 20))
+        with self.condition:
+            while not self.closed:
+                values = [
+                    dict(item)
+                    for item in self.events
+                    if int(item.get("sequence") or 0) > after
+                ]
+                if values:
+                    return values
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.condition.wait(min(remaining, 1.0))
+        return []
+
+    def mark_truncated(self, reply_id, audio_end_ms):
+        with self.condition:
+            if reply_id and self.reply_id and reply_id != self.reply_id:
+                return
+            self.played_ms = max(0, int(audio_end_ms or 0))
+            self.barge_in = True
+
+    def _snapshot_turn(self):
+        with self.condition:
+            user_text = _clean_text(self.user_text)
+            assistant_text = _clean_text(self.assistant_text)
+            audio = bytes(self.audio)
+            played_ms = max(0, int(self.played_ms or 0))
+            delivery_complete = not self.barge_in
+            if played_ms and audio:
+                maximum_bytes = played_ms * 24000 * 2 // 1000
+                audio = audio[:maximum_bytes]
+            if delivery_complete:
+                delivered_assistant_text = assistant_text
+            else:
+                played_bytes = len(audio)
+                delivered_fragments = []
+                for sentence in self.sentences:
+                    if not isinstance(sentence, dict):
+                        continue
+                    end_byte = sentence.get("end_byte")
+                    text = _clean_text(sentence.get("text"))
+                    if (
+                        text
+                        and end_byte is not None
+                        and int(end_byte) <= played_bytes
+                    ):
+                        delivered_fragments.append(text)
+                delivered_assistant_text = _clean_text(
+                    "".join(delivered_fragments)
                 )
-                socket.send_binary(frame)
-            except Exception:
-                pass
-            try:
-                socket.send_binary(build_client_frame(FINISH_CONNECTION, {}))
-            except Exception:
-                pass
-            try:
-                socket.close()
-            except Exception:
-                pass
+            snapshot = {
+                "turn_id": (
+                    _clean_text(self.question_id, 100)
+                    or uuid.uuid4().hex
+                ),
+                "user_text": user_text,
+                "assistant_text": delivered_assistant_text,
+                "audio_pcm": audio,
+                "user_duration_ms": max(0, int(self.user_duration_ms or 0)),
+                "reply_id": _clean_text(self.reply_id, 128),
+                "delivery_complete": delivery_complete,
+                "terminal_status": (
+                    "complete" if delivery_complete else "partial"
+                ),
+            }
+            carried_user_text = self.next_user_text
+            self.user_text = carried_user_text
+            self.next_user_text = ""
+            self.assistant_text = ""
+            self.audio = bytearray()
+            self.question_id = ""
+            self.reply_id = ""
+            self.user_duration_ms = 0
+            self.played_ms = 0
+            self.speaking = False
+            self.barge_in = False
+            self.sentences = []
+            self.active_sentence = None
+            return snapshot
+
+    def handle_frame(self, frame):
+        event = int(frame.get("event") or 0)
+        payload = frame.get("payload")
+        if event == SERVER_ERROR:
+            detail = payload if isinstance(payload, dict) else {}
+            self.publish(
+                "error",
+                error=_clean_text(detail.get("error") or payload, 500),
+            )
+            return
+
+        if event == ASR_INFO:
+            with self.condition:
+                interrupted = self.speaking
+                if not interrupted:
+                    self.user_text = ""
+                    self.next_user_text = ""
+                self.speech_started_at = time.monotonic()
+                self.barge_in = self.barge_in or interrupted
+                reply_id = self.reply_id
+            self.publish(
+                "user_speech_started",
+                interrupted=interrupted,
+                reply_id=reply_id,
+            )
+            return
+
+        if event == ASR_RESPONSE:
+            text = self._payload_text(payload)
+            if text:
+                with self.condition:
+                    if self.speaking:
+                        self.next_user_text = text
+                    else:
+                        self.user_text = text
+                self.publish("user_transcript", text=text, final=False)
+            return
+
+        if event == ASR_ENDED:
+            text = self._payload_text(payload)
+            with self.condition:
+                if text:
+                    if self.speaking:
+                        self.next_user_text = text
+                    else:
+                        self.user_text = text
+                if self.speech_started_at:
+                    self.user_duration_ms = int(
+                        (time.monotonic() - self.speech_started_at) * 1000
+                    )
+                self.speech_started_at = 0.0
+                final_text = text or (
+                    self.next_user_text if self.speaking else self.user_text
+                )
+            self.publish("user_transcript", text=final_text, final=True)
+            self.publish("thinking")
+            return
+
+        if event == CHAT_RESPONSE and isinstance(payload, dict):
+            text = self._payload_text(payload)
+            with self.condition:
+                self.assistant_text = VolcO2RealtimeSession._merge_stream_text(
+                    self.assistant_text,
+                    text,
+                )
+                self.question_id = _clean_text(
+                    payload.get("question_id") or self.question_id,
+                    128,
+                )
+                self.reply_id = _clean_text(
+                    payload.get("reply_id") or self.reply_id,
+                    128,
+                )
+            if text:
+                self.publish("assistant_transcript", text=self.assistant_text)
+            return
+
+        if event in (TTS_SENTENCE_START, TTS_SENTENCE_END):
+            if isinstance(payload, dict):
+                text = self._payload_text(payload)
+                with self.condition:
+                    self.assistant_text = (
+                        VolcO2RealtimeSession._merge_stream_text(
+                            self.assistant_text,
+                            text,
+                        )
+                    )
+                    self.question_id = _clean_text(
+                        payload.get("question_id") or self.question_id,
+                        128,
+                    )
+                    self.reply_id = _clean_text(
+                        payload.get("reply_id") or self.reply_id,
+                        128,
+                    )
+                    if event == TTS_SENTENCE_START and text:
+                        self.active_sentence = {
+                            "text": text,
+                            "start_byte": len(self.audio),
+                            "end_byte": None,
+                        }
+                        self.sentences.append(self.active_sentence)
+                    elif event == TTS_SENTENCE_END:
+                        if self.active_sentence is None and text:
+                            self.active_sentence = {
+                                "text": text,
+                                "start_byte": 0,
+                                "end_byte": len(self.audio),
+                            }
+                            self.sentences.append(self.active_sentence)
+                        elif self.active_sentence is not None:
+                            if text:
+                                self.active_sentence["text"] = text
+                            self.active_sentence["end_byte"] = len(self.audio)
+                        self.active_sentence = None
+                if text:
+                    self.publish(
+                        "assistant_transcript",
+                        text=self.assistant_text,
+                        reply_id=self.reply_id,
+                    )
+            return
+
+        if event == TTS_RESPONSE:
+            audio = bytes(frame.get("payload_bytes") or b"")
+            if not audio:
+                return
+            with self.condition:
+                self.audio.extend(audio)
+                self.speaking = True
+                reply_id = self.reply_id
+            self.publish(
+                "assistant_audio",
+                audio=base64.b64encode(audio).decode("ascii"),
+                sample_rate=24000,
+                reply_id=reply_id,
+            )
+            return
+
+        if event == TTS_ENDED:
+            if isinstance(payload, dict):
+                with self.condition:
+                    self.question_id = _clean_text(
+                        payload.get("question_id") or self.question_id,
+                        128,
+                    )
+                    self.reply_id = _clean_text(
+                        payload.get("reply_id") or self.reply_id,
+                        128,
+                    )
+            snapshot = self._snapshot_turn()
+            self.publish(
+                "assistant_audio_ended",
+                reply_id=snapshot["reply_id"],
+                delivery_complete=snapshot["delivery_complete"],
+            )
+            if snapshot["user_text"]:
+                threading.Thread(
+                    target=self.finalize_callback,
+                    args=(snapshot,),
+                    daemon=True,
+                    name="XiaoyouVoiceRoomFinalize",
+                ).start()
+            return
+
+    def close(self):
+        with self.condition:
+            self.closed = True
+            self.condition.notify_all()
 
 
 class VoiceRoomService:
@@ -997,6 +1546,7 @@ class VoiceRoomService:
             instances_provider=instances_provider,
         )
         self.sessions = {}
+        self.live_sessions = {}
         self.session_last_used = {}
         self.lock = threading.RLock()
         threading.Thread(
@@ -1065,7 +1615,7 @@ class VoiceRoomService:
             "speaking_style": style,
             "dialog_context": self._dialog_context(session_id),
             "extra": {
-                "input_mod": "push_to_talk",
+                "input_mod": "keep_alive",
                 "enable_loudness_norm": True,
                 "enable_conversation_truncate": True,
                 "model": O2_MODEL_VERSION,
@@ -1115,9 +1665,22 @@ class VoiceRoomService:
             session_id,
             dialog_id,
         )
+        live = _VoiceRoomLiveRuntime(
+            room,
+            provider,
+            lambda snapshot: self._complete_live_turn(
+                room["room_id"],
+                snapshot,
+            ),
+        )
         with self.lock:
             self.sessions[room["room_id"]] = provider
+            self.live_sessions[room["room_id"]] = live
             self.session_last_used[room["room_id"]] = time.monotonic()
+        start_receiving = getattr(provider, "start_receiving", None)
+        if callable(start_receiving):
+            start_receiving(live.handle_frame)
+            live.publish("listening")
         return self.store.get_room(
             room["room_id"],
             device_id,
@@ -1147,6 +1710,142 @@ class VoiceRoomService:
 
     def get_room(self, room_id, device_id):
         return self.store.get_room(room_id, device_id, include_turns=True)
+
+    def _active_runtime(self, room_id, device_id):
+        room = self.store.get_room(room_id, device_id)
+        if room is None:
+            raise VoiceRoomError("voice_room_not_found")
+        if room["status"] != "active":
+            raise VoiceRoomError("voice_room_closed")
+        with self.lock:
+            provider = self.sessions.get(str(room_id))
+            live = self.live_sessions.get(str(room_id))
+            if provider is not None:
+                self.session_last_used[str(room_id)] = time.monotonic()
+        if provider is None:
+            raise VoiceRoomError("voice_room_session_expired")
+        return room, provider, live
+
+    def send_audio(self, *, room_id, device_id, audio_bytes, mime_type):
+        mime_type = (
+            str(mime_type or "").split(";", 1)[0].strip().lower()
+        )
+        if mime_type not in ("audio/pcm", "audio/l16"):
+            raise VoiceRoomError("voice_room_requires_pcm16")
+        pcm = bytes(audio_bytes or b"")
+        if not pcm or len(pcm) > 128 * 1024:
+            raise VoiceRoomError("invalid_voice_room_pcm")
+        if len(pcm) % 2:
+            pcm = pcm[:-1]
+        _, provider, _ = self._active_runtime(room_id, device_id)
+        sender = getattr(provider, "send_audio", None)
+        if not callable(sender):
+            raise VoiceRoomError("voice_room_streaming_unavailable")
+        sender(pcm)
+        return {"accepted": True, "bytes": len(pcm)}
+
+    def wait_events(
+        self,
+        *,
+        room_id,
+        device_id,
+        after=0,
+        timeout=20,
+    ):
+        _, _, live = self._active_runtime(room_id, device_id)
+        if live is None:
+            raise VoiceRoomError("voice_room_streaming_unavailable")
+        return live.wait(after, timeout=timeout)
+
+    def truncate(self, *, room_id, device_id, reply_id, audio_end_ms):
+        _, provider, live = self._active_runtime(room_id, device_id)
+        reply_id = _clean_text(reply_id, 128)
+        if not reply_id:
+            raise VoiceRoomError("voice_room_reply_id_missing")
+        truncator = getattr(provider, "truncate", None)
+        if not callable(truncator):
+            raise VoiceRoomError("voice_room_truncate_unavailable")
+        accepted = bool(truncator(reply_id, audio_end_ms))
+        if live is not None:
+            live.mark_truncated(reply_id, audio_end_ms)
+            live.publish(
+                "interrupted",
+                reply_id=reply_id,
+                audio_end_ms=max(0, int(audio_end_ms or 0)),
+            )
+        return {"accepted": accepted}
+
+    def _complete_live_turn(self, room_id, snapshot):
+        room = self.store.get_room(room_id)
+        if room is None:
+            return
+        live = None
+        with self.lock:
+            live = self.live_sessions.get(str(room_id))
+        try:
+            reply_wav = b""
+            media = None
+            if snapshot["audio_pcm"]:
+                reply_wav = pcm16_to_wav(
+                    snapshot["audio_pcm"],
+                    sample_rate=24000,
+                )
+                if self.media_store is None:
+                    raise VoiceRoomError(
+                        "voice_room_media_store_unavailable"
+                    )
+                media = self.media_store.save_media_bytes(
+                    reply_wav,
+                    room["device_id"],
+                    "audio/wav",
+                )
+                if not media:
+                    raise VoiceRoomError("voice_room_audio_save_failed")
+            turn, inserted = self.store.add_turn(
+                turn_id="%s:%s" % (
+                    str(room_id),
+                    _clean_text(snapshot.get("turn_id"), 100)
+                    or uuid.uuid4().hex,
+                ),
+                room_id=room_id,
+                user_text=snapshot["user_text"],
+                assistant_text=snapshot["assistant_text"],
+                user_duration_ms=snapshot.get("user_duration_ms", 0),
+                assistant_duration_ms=(
+                    wav_duration_ms(reply_wav) if reply_wav else 0
+                ),
+                audio_media_id=media["media_id"] if media else "",
+                audio_mime_type=media["mime_type"] if media else "",
+                delivery_complete=bool(
+                    snapshot.get("delivery_complete", True)
+                ),
+                terminal_status=str(
+                    snapshot.get("terminal_status")
+                    or "complete"
+                ),
+            )
+            if inserted:
+                turn["session_id"] = room["session_id"]
+                self.memory.submit(turn)
+            if live is not None:
+                live.publish(
+                    "turn_complete",
+                    turn=self.response_payload({"turns": [turn]})["turns"][0],
+                    delivery_complete=bool(
+                        snapshot.get("delivery_complete", True)
+                    ),
+                )
+        except Exception as exc:
+            logger.exception(
+                "[VoiceRoom] realtime turn finalization failed room_id=%s",
+                str(room_id)[:48],
+            )
+            if live is not None:
+                live.publish(
+                    "error",
+                    error="voice_room_turn_finalize_failed:"
+                    + _clean_text(exc, 300),
+                )
 
     def process_turn(
         self,
@@ -1218,7 +1917,10 @@ class VoiceRoomService:
             raise VoiceRoomError("voice_room_not_found")
         with self.lock:
             provider = self.sessions.pop(str(room_id), None)
+            live = self.live_sessions.pop(str(room_id), None)
             self.session_last_used.pop(str(room_id), None)
+        if live is not None:
+            live.close()
         if provider is not None:
             provider.close()
         finished = self.store.finish_room(room_id, device_id)
@@ -1249,8 +1951,12 @@ class VoiceRoomService:
     def close_all(self):
         with self.lock:
             sessions = list(self.sessions.values())
+            live_sessions = list(self.live_sessions.values())
             self.sessions.clear()
+            self.live_sessions.clear()
             self.session_last_used.clear()
+        for live in live_sessions:
+            live.close()
         for session in sessions:
             session.close()
 

@@ -270,6 +270,85 @@ class XiaoyouApi {
     );
   }
 
+  Future<void> sendVoiceRoomAudio({
+    required String roomId,
+    required Uint8List pcm,
+  }) async {
+    if (pcm.isEmpty) {
+      return;
+    }
+    final uri = _uri('/v1/voice-rooms/$roomId/audio');
+    final request = await _client.openUrl('POST', uri);
+    // Audio uploads run alongside the voice-room long poll.  Some reverse
+    // proxies leave unread binary bytes on a reused HTTP/1.1 connection,
+    // which makes the following JSON response look like PCM to Dart.  A
+    // short-lived upload connection keeps request/response framing isolated;
+    // the actual O2.0 session remains a persistent WebSocket on the server.
+    request.persistentConnection = false;
+    request.headers
+      ..set(HttpHeaders.acceptHeader, 'application/json')
+      ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
+      ..set(HttpHeaders.contentTypeHeader, 'audio/pcm')
+      ..set('X-Device-Id', deviceId)
+      ..contentLength = pcm.length;
+    request.add(pcm);
+    final response = await request.close().timeout(
+          const Duration(seconds: 12),
+        );
+    await _drainStatusResponse(
+      response,
+      uri,
+      timeout: const Duration(seconds: 12),
+    );
+  }
+
+  Future<List<VoiceRoomLiveEvent>> voiceRoomEvents({
+    required String roomId,
+    required int after,
+  }) async {
+    final payload = await _request(
+      'GET',
+      '/v1/voice-rooms/$roomId/events',
+      query: {
+        'device_id': deviceId,
+        'after': '$after',
+        'timeout': '20',
+      },
+    );
+    final values = payload['events'];
+    if (values is! List) {
+      return const [];
+    }
+    return values
+        .whereType<Map>()
+        .map(
+          (value) => VoiceRoomLiveEvent.fromJson(
+            value.cast<String, dynamic>(),
+          ),
+        )
+        .toList();
+  }
+
+  Future<bool> truncateVoiceRoomReply({
+    required String roomId,
+    required String replyId,
+    required int audioEndMs,
+  }) async {
+    if (replyId.trim().isEmpty) {
+      return false;
+    }
+    final payload = await _request(
+      'POST',
+      '/v1/voice-rooms/$roomId/truncate',
+      body: {
+        'device_id': deviceId,
+        'reply_id': replyId,
+        'audio_end_ms': audioEndMs,
+      },
+    );
+    return payload['accepted'] == true;
+  }
+
   Future<VoiceRoomRecord> finishVoiceRoom(String roomId) async {
     final payload = await _request(
       'POST',
@@ -495,6 +574,39 @@ class XiaoyouApi {
     return payload;
   }
 
+  Future<void> _drainStatusResponse(
+    HttpClientResponse response,
+    Uri uri, {
+    Duration timeout = const Duration(seconds: 35),
+  }) async {
+    final statusCode = response.statusCode;
+    if (statusCode >= 200 && statusCode < 300) {
+      await response.drain<void>().timeout(timeout);
+      return;
+    }
+
+    final bytes = BytesBuilder(copy: false);
+    await for (final chunk in response.timeout(timeout)) {
+      bytes.add(chunk);
+    }
+    final responseText = utf8.decode(
+      bytes.takeBytes(),
+      allowMalformed: true,
+    );
+    var error = 'HTTP $statusCode';
+    if (responseText.trim().isNotEmpty) {
+      try {
+        final decoded = jsonDecode(responseText);
+        if (decoded is Map && decoded['error'] != null) {
+          error = '${decoded['error']}';
+        }
+      } on FormatException {
+        // A proxy-generated error body may be HTML or compressed/binary.
+      }
+    }
+    throw HttpException(error, uri: uri);
+  }
+
   Uri _uri(String path, [Map<String, String>? query]) {
     final normalizedPath = [
       ...baseUri.pathSegments.where((item) => item.isNotEmpty),
@@ -608,6 +720,8 @@ class VoiceRoomTurn {
     required this.audioMimeType,
     required this.createdAt,
     required this.memoryStatus,
+    required this.deliveryComplete,
+    required this.terminalStatus,
   });
 
   factory VoiceRoomTurn.fromJson(Map<String, dynamic> value) {
@@ -624,6 +738,9 @@ class VoiceRoomTurn {
         asInt(value['created_at']) * 1000,
       ),
       memoryStatus: '${value['memory_status'] ?? 'pending'}',
+      deliveryComplete: value['delivery_complete'] != false &&
+          value['delivery_complete'] != 0,
+      terminalStatus: '${value['terminal_status'] ?? 'complete'}',
     );
   }
 
@@ -637,6 +754,8 @@ class VoiceRoomTurn {
   final String audioMimeType;
   final DateTime createdAt;
   final String memoryStatus;
+  final bool deliveryComplete;
+  final String terminalStatus;
 }
 
 class VoiceRoomTurnResult {
@@ -649,4 +768,24 @@ class VoiceRoomTurnResult {
   final bool accepted;
   final bool duplicate;
   final VoiceRoomTurn turn;
+}
+
+class VoiceRoomLiveEvent {
+  const VoiceRoomLiveEvent({
+    required this.sequence,
+    required this.type,
+    required this.payload,
+  });
+
+  factory VoiceRoomLiveEvent.fromJson(Map<String, dynamic> value) {
+    return VoiceRoomLiveEvent(
+      sequence: asInt(value['sequence']),
+      type: '${value['type'] ?? ''}',
+      payload: value,
+    );
+  }
+
+  final int sequence;
+  final String type;
+  final Map<String, dynamic> payload;
 }
