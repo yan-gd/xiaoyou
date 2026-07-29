@@ -74,6 +74,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   int _replyPlaybackBaseMs = 0;
   int _replyAudioDurationMs = 0;
   Timer? _playbackDrain;
+  Timer? _mouthDecay;
   String _moodAsset = 'assets/moods/平静.png';
   String _moodLabel = '平静';
   String _liveCaption = '';
@@ -101,6 +102,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _closed = true;
     _clock?.cancel();
     _playbackDrain?.cancel();
+    _mouthDecay?.cancel();
     _pcmSubscription?.cancel();
     _amplitude?.cancel();
     _breath.dispose();
@@ -278,7 +280,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     );
     await _amplitude?.cancel();
     _amplitude = _recorder.amplitudeStream().listen((decibels) {
-      if (!mounted || _muted) {
+      if (!mounted || _muted || _phase == _RoomPhase.speaking) {
         return;
       }
       final next = ((decibels + 55) / 55).clamp(0.06, 1.0);
@@ -528,7 +530,15 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         final decoded = base64Decode(encoded);
         _replyAudioDurationMs += decoded.length * 1000 ~/ (24000 * 2);
         await _player.write(decoded);
-        _level.value = 0.72;
+        final speechLevel = _pcmSpeechLevel(decoded);
+        _level.value =
+            (_level.value * 0.64 + speechLevel * 0.36).clamp(0.08, 1.0);
+        _mouthDecay?.cancel();
+        _mouthDecay = Timer(const Duration(milliseconds: 170), () {
+          if (!_closed && _phase == _RoomPhase.speaking) {
+            _level.value = max(0.10, _level.value * 0.70);
+          }
+        });
         if (mounted && _phase != _RoomPhase.speaking) {
           setState(() => _phase = _RoomPhase.speaking);
         }
@@ -1241,7 +1251,27 @@ String _roomDate(DateTime value) => '${value.month.toString().padLeft(2, '0')}-'
     '${value.hour.toString().padLeft(2, '0')}:'
     '${value.minute.toString().padLeft(2, '0')}';
 
-class _VoiceOrb extends StatelessWidget {
+double _pcmSpeechLevel(Uint8List pcm) {
+  if (pcm.length < 2) {
+    return 0.08;
+  }
+  var energy = 0.0;
+  var samples = 0;
+  for (var index = 0; index + 1 < pcm.length; index += 4) {
+    final raw = pcm[index] | (pcm[index + 1] << 8);
+    final signed = raw >= 0x8000 ? raw - 0x10000 : raw;
+    final normalized = signed / 32768.0;
+    energy += normalized * normalized;
+    samples += 1;
+  }
+  if (samples == 0) {
+    return 0.08;
+  }
+  final rms = sqrt(energy / samples);
+  return ((rms - 0.006) * 9.5).clamp(0.08, 1.0);
+}
+
+class _VoiceOrb extends StatefulWidget {
   const _VoiceOrb({
     required this.phase,
     required this.level,
@@ -1256,7 +1286,24 @@ class _VoiceOrb extends StatelessWidget {
   final double breath;
   final String moodAsset;
 
-  double get _diameter => switch (phase) {
+  @override
+  State<_VoiceOrb> createState() => _VoiceOrbState();
+}
+
+class _VoiceOrbState extends State<_VoiceOrb>
+    with SingleTickerProviderStateMixin {
+  final _random = Random();
+  late final AnimationController _blink = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 118),
+  );
+  Timer? _nextBlink;
+  ui.FragmentShader? _faceShader;
+  ui.Image? _faceImage;
+  ui.Image? _speechMouthImage;
+  int _imageLoadGeneration = 0;
+
+  double get _diameter => switch (widget.phase) {
         _RoomPhase.connecting => 34,
         _RoomPhase.listening => 248,
         _RoomPhase.userSpeaking => 286,
@@ -1266,7 +1313,7 @@ class _VoiceOrb extends StatelessWidget {
         _RoomPhase.ending => 42,
       };
 
-  double get _activity => switch (phase) {
+  double get _activity => switch (widget.phase) {
         _RoomPhase.connecting => 0.18,
         _RoomPhase.listening => 0.30,
         _RoomPhase.userSpeaking => 0.82,
@@ -1276,69 +1323,231 @@ class _VoiceOrb extends StatelessWidget {
         _RoomPhase.ending => 0.08,
       };
 
+  double get _headTilt {
+    final wave = sin(widget.progress * pi * 2);
+    return switch (widget.phase) {
+      _RoomPhase.connecting => 0,
+      _RoomPhase.listening => wave * 0.016,
+      _RoomPhase.userSpeaking => -0.035 + wave * 0.012,
+      _RoomPhase.thinking => 0.064 + wave * 0.018,
+      _RoomPhase.speaking => wave * (0.020 + widget.level.clamp(0, 1) * 0.020),
+      _RoomPhase.interrupted => -0.052,
+      _RoomPhase.ending => 0,
+    };
+  }
+
+  double get _mouthLevel {
+    if (widget.phase != _RoomPhase.speaking) {
+      return 0;
+    }
+    final normalized = ((widget.level - 0.08) / 0.92).clamp(0.0, 1.0);
+    return Curves.easeOutCubic.transform(normalized);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadFaceShader());
+    unawaited(_loadFaceImage(widget.moodAsset));
+    unawaited(_loadSpeechMouthImage());
+    _scheduleBlink();
+  }
+
+  @override
+  void didUpdateWidget(covariant _VoiceOrb oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.moodAsset != widget.moodAsset) {
+      unawaited(_loadFaceImage(widget.moodAsset));
+    }
+  }
+
+  @override
+  void dispose() {
+    _nextBlink?.cancel();
+    _blink.dispose();
+    _faceImage?.dispose();
+    _speechMouthImage?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadFaceShader() async {
+    try {
+      final program = await ui.FragmentProgram.fromAsset(
+        'shaders/digital_xiaoyou.frag',
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() => _faceShader = program.fragmentShader());
+    } catch (error) {
+      debugPrint('[VoiceRoom] digital avatar shader unavailable: $error');
+    }
+  }
+
+  Future<void> _loadFaceImage(String asset) async {
+    final generation = ++_imageLoadGeneration;
+    try {
+      final bytes = await rootBundle.load(asset);
+      final codec = await ui.instantiateImageCodec(
+        bytes.buffer.asUint8List(),
+        targetWidth: 768,
+        targetHeight: 768,
+      );
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      if (!mounted || generation != _imageLoadGeneration) {
+        frame.image.dispose();
+        return;
+      }
+      final previous = _faceImage;
+      setState(() => _faceImage = frame.image);
+      if (previous != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          previous.dispose();
+        });
+      }
+    } catch (error) {
+      debugPrint('[VoiceRoom] mood portrait unavailable: $error');
+    }
+  }
+
+  Future<void> _loadSpeechMouthImage() async {
+    try {
+      final bytes = await rootBundle.load('assets/moods/无语.png');
+      final codec = await ui.instantiateImageCodec(
+        bytes.buffer.asUint8List(),
+        targetWidth: 768,
+        targetHeight: 768,
+      );
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      if (!mounted) {
+        frame.image.dispose();
+        return;
+      }
+      final previous = _speechMouthImage;
+      setState(() => _speechMouthImage = frame.image);
+      previous?.dispose();
+    } catch (error) {
+      debugPrint('[VoiceRoom] speech mouth portrait unavailable: $error');
+    }
+  }
+
+  void _scheduleBlink() {
+    _nextBlink?.cancel();
+    final delay = Duration(milliseconds: 2100 + _random.nextInt(2800));
+    _nextBlink = Timer(delay, () async {
+      if (!mounted || widget.phase == _RoomPhase.ending) {
+        return;
+      }
+      await _blink.forward(from: 0);
+      await _blink.reverse();
+      if (mounted && _random.nextDouble() < 0.16) {
+        await Future<void>.delayed(const Duration(milliseconds: 95));
+        if (mounted) {
+          await _blink.forward(from: 0);
+          await _blink.reverse();
+        }
+      }
+      if (mounted) {
+        _scheduleBlink();
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
-    final pulse = 1 + (breath - 0.5) * (0.018 + level * 0.025);
-    return RepaintBoundary(
-      child: SizedBox.square(
-        dimension: 330,
-        child: Center(
-          child: TweenAnimationBuilder<double>(
-            tween: Tween<double>(end: _diameter),
-            duration: const Duration(milliseconds: 520),
-            curve: Curves.easeInOutCubicEmphasized,
-            builder: (context, diameter, _) => Transform.scale(
-              scale: pulse,
-              child: SizedBox.square(
-                dimension: diameter,
-                child: Stack(
-                  fit: StackFit.expand,
-                  clipBehavior: Clip.none,
-                  children: [
-                    CustomPaint(
-                      isComplex: true,
-                      willChange: true,
-                      painter: _MoodOrbGlowPainter(
-                        phase: phase,
-                        progress: progress,
-                        activity: _activity,
-                        level: level,
-                      ),
-                    ),
-                    Padding(
-                      padding: EdgeInsets.all(max(3, diameter * 0.018)),
-                      child: ClipOval(
+    final pulse =
+        1 + (widget.breath - 0.5) * (0.018 + widget.level.clamp(0, 1) * 0.025);
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: _mouthLevel),
+      duration: const Duration(milliseconds: 96),
+      curve: Curves.easeOutCubic,
+      builder: (context, smoothedMouth, _) => AnimatedBuilder(
+        animation: _blink,
+        builder: (context, _) => RepaintBoundary(
+          child: SizedBox.square(
+            dimension: 330,
+            child: Center(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(end: _diameter),
+                duration: const Duration(milliseconds: 520),
+                curve: Curves.easeInOutCubicEmphasized,
+                builder: (context, diameter, _) => Transform.translate(
+                  offset: Offset(
+                    sin(widget.progress * pi * 4) *
+                        (widget.phase == _RoomPhase.speaking ? 1.8 : 0.7),
+                    cos(widget.progress * pi * 2) * 2.4,
+                  ),
+                  child: Transform.rotate(
+                    angle: _headTilt,
+                    child: Transform.scale(
+                      scale: pulse,
+                      child: SizedBox.square(
+                        dimension: diameter,
                         child: Stack(
                           fit: StackFit.expand,
+                          clipBehavior: Clip.none,
                           children: [
-                            RepaintBoundary(
-                              child: AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 760),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                child: Image.asset(
-                                  moodAsset,
-                                  key: ValueKey(moodAsset),
-                                  fit: BoxFit.cover,
-                                  filterQuality: FilterQuality.medium,
-                                ),
-                              ),
-                            ),
                             CustomPaint(
                               isComplex: true,
                               willChange: true,
-                              painter: _MoodOrbSurfacePainter(
-                                phase: phase,
-                                progress: progress,
+                              painter: _MoodOrbGlowPainter(
+                                phase: widget.phase,
+                                progress: widget.progress,
                                 activity: _activity,
-                                level: level,
+                                level: widget.level,
+                              ),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.all(max(3, diameter * 0.018)),
+                              child: ClipOval(
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (_faceImage != null &&
+                                        _speechMouthImage != null &&
+                                        _faceShader != null)
+                                      CustomPaint(
+                                        isComplex: true,
+                                        willChange: true,
+                                        painter: _DigitalXiaoyouPainter(
+                                          image: _faceImage!,
+                                          speechMouthImage: _speechMouthImage!,
+                                          fragmentShader: _faceShader!,
+                                          blink: Curves.easeInCubic.transform(
+                                            _blink.value,
+                                          ),
+                                          mouth: smoothedMouth,
+                                          activity: _activity,
+                                          progress: widget.progress,
+                                        ),
+                                      )
+                                    else
+                                      Image.asset(
+                                        widget.moodAsset,
+                                        fit: BoxFit.cover,
+                                        filterQuality: FilterQuality.medium,
+                                      ),
+                                    CustomPaint(
+                                      isComplex: true,
+                                      willChange: true,
+                                      painter: _MoodOrbSurfacePainter(
+                                        phase: widget.phase,
+                                        progress: widget.progress,
+                                        activity: _activity * 0.12,
+                                        level: widget.level,
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ],
                         ),
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -1347,6 +1556,53 @@ class _VoiceOrb extends StatelessWidget {
       ),
     );
   }
+}
+
+class _DigitalXiaoyouPainter extends CustomPainter {
+  const _DigitalXiaoyouPainter({
+    required this.image,
+    required this.speechMouthImage,
+    required this.fragmentShader,
+    required this.blink,
+    required this.mouth,
+    required this.activity,
+    required this.progress,
+  });
+
+  final ui.Image image;
+  final ui.Image speechMouthImage;
+  final ui.FragmentShader fragmentShader;
+  final double blink;
+  final double mouth;
+  final double activity;
+  final double progress;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    fragmentShader
+      ..setFloat(0, size.width)
+      ..setFloat(1, size.height)
+      ..setFloat(2, blink)
+      ..setFloat(3, mouth)
+      ..setFloat(4, activity)
+      ..setFloat(5, progress)
+      ..setImageSampler(0, image)
+      ..setImageSampler(1, speechMouthImage);
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..shader = fragmentShader,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _DigitalXiaoyouPainter oldDelegate) =>
+      oldDelegate.image != image ||
+      oldDelegate.speechMouthImage != speechMouthImage ||
+      oldDelegate.fragmentShader != fragmentShader ||
+      oldDelegate.blink != blink ||
+      oldDelegate.mouth != mouth ||
+      oldDelegate.activity != activity ||
+      oldDelegate.progress != progress;
 }
 
 class _MoodOrbGlowPainter extends CustomPainter {

@@ -240,6 +240,69 @@ def normalize_dialog_context(records, *, max_items=20, max_chars=7000):
     return paired
 
 
+def merge_dialog_context_sources(
+    *record_sets,
+    max_items=20,
+    max_chars=7000,
+):
+    """Merge independently valid dialog histories without duplicating pairs.
+
+    Voice turns are projected into ShortMemory asynchronously.  During that
+    small window the voice continuity ledger is the authoritative source; once
+    projection completes both sources contain the same pair.  Pair-level
+    de-duplication keeps either phase safe without parsing the conversation.
+    """
+    pairs = {}
+    sequence = 0
+    for records in record_sets:
+        normalized = normalize_dialog_context(
+            records,
+            max_items=200,
+            max_chars=100000,
+        )
+        for index in range(0, len(normalized) - 1, 2):
+            user = normalized[index]
+            assistant = normalized[index + 1]
+            key = (user["text"], assistant["text"])
+            timestamp = max(
+                int(user.get("timestamp") or 0),
+                int(assistant.get("timestamp") or 0),
+            )
+            sequence += 1
+            previous = pairs.get(key)
+            if previous is None or timestamp >= previous["timestamp"]:
+                pairs[key] = {
+                    "timestamp": timestamp,
+                    "sequence": sequence,
+                    "messages": (user, assistant),
+                }
+
+    ordered = sorted(
+        pairs.values(),
+        key=lambda item: (item["timestamp"], item["sequence"]),
+    )
+    limit = max(2, int(max_items))
+    if limit % 2:
+        limit -= 1
+    ordered = ordered[-(limit // 2):]
+    budget = max(0, int(max_chars))
+    while (
+        ordered
+        and sum(
+            len(message["text"])
+            for pair in ordered
+            for message in pair["messages"]
+        )
+        > budget
+    ):
+        ordered.pop(0)
+    return [
+        message
+        for pair in ordered
+        for message in pair["messages"]
+    ]
+
+
 def wav_to_pcm16(audio_bytes):
     """Unpack Android PCM WAV and normalize it to 16 kHz mono PCM16.
 
@@ -383,6 +446,20 @@ class VoiceRoomStore:
                     provider_dialog_id TEXT NOT NULL DEFAULT '',
                     updated_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS voice_room_context_turns (
+                    context_id TEXT PRIMARY KEY,
+                    room_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    user_text TEXT NOT NULL,
+                    assistant_text TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    terminal_status TEXT NOT NULL DEFAULT 'complete'
+                );
+                CREATE INDEX IF NOT EXISTS idx_voice_room_context_session
+                    ON voice_room_context_turns(
+                        session_id, created_at DESC, context_id DESC
+                    );
                 """
             )
             columns = {
@@ -401,6 +478,20 @@ class VoiceRoomStore:
                     "ALTER TABLE voice_room_turns ADD COLUMN "
                     "terminal_status TEXT NOT NULL DEFAULT 'complete'"
                 )
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO voice_room_context_turns(
+                    context_id, room_id, session_id, user_text,
+                    assistant_text, created_at, terminal_status
+                )
+                SELECT
+                    t.turn_id, t.room_id, r.session_id, t.user_text,
+                    t.assistant_text, t.created_at, t.terminal_status
+                FROM voice_room_turns t
+                JOIN voice_rooms r ON r.room_id = t.room_id
+                WHERE t.user_text != '' AND t.assistant_text != ''
+                """
+            )
 
     @staticmethod
     def _room(row):
@@ -621,6 +712,85 @@ class VoiceRoomStore:
                 (str(session_id),),
             ).fetchone()
         return str(row["provider_dialog_id"] or "") if row else ""
+
+    def remember_dialog_turn(
+        self,
+        *,
+        context_id,
+        room_id,
+        session_id,
+        user_text,
+        assistant_text,
+        created_at=None,
+        terminal_status="complete",
+    ):
+        context_id = _clean_text(context_id, 220)
+        user_text = _clean_text(user_text)
+        assistant_text = _clean_text(assistant_text)
+        if not context_id or not user_text or not assistant_text:
+            return False
+        created_at = max(0, int(created_at or time.time()))
+        with self.lock, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO voice_room_context_turns(
+                    context_id, room_id, session_id, user_text,
+                    assistant_text, created_at, terminal_status
+                ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(context_id) DO UPDATE SET
+                    user_text=excluded.user_text,
+                    assistant_text=excluded.assistant_text,
+                    created_at=excluded.created_at,
+                    terminal_status=excluded.terminal_status
+                """,
+                (
+                    context_id,
+                    str(room_id or ""),
+                    str(session_id or ""),
+                    user_text,
+                    assistant_text,
+                    created_at,
+                    str(terminal_status or "complete"),
+                ),
+            )
+        return True
+
+    def recent_dialog_context(self, session_id, *, limit_pairs=20):
+        limit_pairs = _clamp_int(limit_pairs, 20, 1, 100)
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT context_id, user_text, assistant_text, created_at
+                FROM voice_room_context_turns
+                WHERE session_id = ?
+                  AND user_text != ''
+                  AND assistant_text != ''
+                ORDER BY created_at DESC, context_id DESC
+                LIMIT ?
+                """,
+                (str(session_id or ""), limit_pairs),
+            ).fetchall()
+        records = []
+        for row in reversed(rows):
+            timestamp = int(row["created_at"] or 0)
+            context_id = str(row["context_id"] or "")
+            records.extend(
+                (
+                    {
+                        "id": context_id + ":user",
+                        "role": "user",
+                        "content": str(row["user_text"] or ""),
+                        "ts": timestamp,
+                    },
+                    {
+                        "id": context_id + ":assistant",
+                        "role": "assistant",
+                        "content": str(row["assistant_text"] or ""),
+                        "ts": timestamp,
+                    },
+                )
+            )
+        return records
 
     def mark_memory(self, turn_id, status):
         with self.lock, self._connect() as connection:
@@ -1338,10 +1508,17 @@ class VolcO2RealtimeSession:
 class _VoiceRoomLiveRuntime:
     """Bridges one O2 socket to ordered, long-polled App events."""
 
-    def __init__(self, room, provider, finalize_callback):
+    def __init__(
+        self,
+        room,
+        provider,
+        finalize_callback,
+        continuity_callback=None,
+    ):
         self.room = dict(room)
         self.provider = provider
         self.finalize_callback = finalize_callback
+        self.continuity_callback = continuity_callback
         self.condition = threading.Condition(threading.RLock())
         self.events = deque(maxlen=4096)
         self.sequence = 0
@@ -1628,6 +1805,19 @@ class _VoiceRoomLiveRuntime:
                         128,
                     )
             snapshot = self._snapshot_turn()
+            if (
+                snapshot["user_text"]
+                and snapshot["assistant_text"]
+                and callable(self.continuity_callback)
+            ):
+                try:
+                    self.continuity_callback(snapshot)
+                except Exception:
+                    logger.exception(
+                        "[VoiceRoom] immediate continuity commit failed "
+                        "room_id=%s",
+                        str(self.room.get("room_id") or "")[:48],
+                    )
             self.publish(
                 "assistant_audio_ended",
                 reply_id=snapshot["reply_id"],
@@ -1748,20 +1938,55 @@ class VoiceRoomService:
             "build_dialog_context_for_external_consumer",
             None,
         )
-        records = builder(session_id) if callable(builder) else []
-        return normalize_dialog_context(
-            records,
-            max_items=_clamp_int(
-                os.getenv("XIAOYOU_VOICE_ROOM_CONTEXT_MESSAGES", "20"),
-                20,
-                2,
-                40,
-            ),
-            max_chars=_clamp_int(
-                os.getenv("XIAOYOU_VOICE_ROOM_CONTEXT_MAX_CHARS", "7000"),
-                7000,
-                500,
-                10000,
+        short_records = builder(session_id) if callable(builder) else []
+        max_items = _clamp_int(
+            os.getenv("XIAOYOU_VOICE_ROOM_CONTEXT_MESSAGES", "20"),
+            20,
+            2,
+            40,
+        )
+        max_chars = _clamp_int(
+            os.getenv("XIAOYOU_VOICE_ROOM_CONTEXT_MAX_CHARS", "7000"),
+            7000,
+            500,
+            10000,
+        )
+        voice_records = self.store.recent_dialog_context(
+            session_id,
+            limit_pairs=max_items // 2,
+        )
+        context = merge_dialog_context_sources(
+            short_records,
+            voice_records,
+            max_items=max_items,
+            max_chars=max_chars,
+        )
+        logger.info(
+            "[VoiceRoom] context prepared session=%s short=%s voice=%s "
+            "injected=%s",
+            str(session_id)[:48],
+            len(short_records or []),
+            len(voice_records),
+            len(context),
+        )
+        return context
+
+    def _remember_dialog_turn(self, room, snapshot):
+        if not isinstance(room, dict) or not isinstance(snapshot, dict):
+            return False
+        turn_id = (
+            _clean_text(snapshot.get("turn_id"), 100)
+            or uuid.uuid4().hex
+        )
+        return self.store.remember_dialog_turn(
+            context_id="%s:%s" % (str(room.get("room_id") or ""), turn_id),
+            room_id=room.get("room_id"),
+            session_id=room.get("session_id"),
+            user_text=snapshot.get("user_text"),
+            assistant_text=snapshot.get("assistant_text"),
+            created_at=int(snapshot.get("created_at") or time.time()),
+            terminal_status=str(
+                snapshot.get("terminal_status") or "complete"
             ),
         )
 
@@ -1842,6 +2067,10 @@ class VoiceRoomService:
             provider,
             lambda snapshot: self._complete_live_turn(
                 room["room_id"],
+                snapshot,
+            ),
+            continuity_callback=lambda snapshot: self._remember_dialog_turn(
+                room,
                 snapshot,
             ),
         )
@@ -1955,6 +2184,7 @@ class VoiceRoomService:
         with self.lock:
             live = self.live_sessions.get(str(room_id))
         try:
+            self._remember_dialog_turn(room, snapshot)
             reply_wav = b""
             media = None
             if snapshot["audio_pcm"]:
@@ -2072,6 +2302,16 @@ class VoiceRoomService:
             audio_mime_type=media["mime_type"],
         )
         if inserted:
+            self._remember_dialog_turn(
+                room,
+                {
+                    "turn_id": turn_id,
+                    "user_text": result["user_text"],
+                    "assistant_text": result["assistant_text"],
+                    "terminal_status": "complete",
+                    "created_at": int(turn.get("created_at") or time.time()),
+                },
+            )
             turn["session_id"] = room["session_id"]
             self.memory.submit(turn)
         with self.lock:

@@ -142,6 +142,52 @@ def test_o2_protocol_frame_and_context_pairs(monkeypatch, tmp_path):
     ]
 
 
+def test_dialog_context_merges_immediate_voice_ledger_without_duplicates(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_service(monkeypatch, tmp_path)
+
+    short_records = [
+        {
+            "role": "user",
+            "content": "你刚才在做什么？",
+            "ts": 100,
+        },
+        {
+            "role": "assistant",
+            "content": "我在沙发上看书。",
+            "ts": 101,
+        },
+    ]
+    voice_records = list(short_records) + [
+        {
+            "role": "user",
+            "content": "我重新连进来了。",
+            "ts": 110,
+        },
+        {
+            "role": "assistant",
+            "content": "嗯，我还在沙发上等你。",
+            "ts": 111,
+        },
+    ]
+
+    merged = module.merge_dialog_context_sources(
+        short_records,
+        voice_records,
+        max_items=20,
+        max_chars=7000,
+    )
+
+    assert [item["text"] for item in merged] == [
+        "你刚才在做什么？",
+        "我在沙发上看书。",
+        "我重新连进来了。",
+        "嗯，我还在沙发上等你。",
+    ]
+
+
 def test_o2_steady_state_has_no_read_deadline_and_interrupts_before_truncate(
     monkeypatch,
     tmp_path,
@@ -347,6 +393,16 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     )
     assert result["accepted"] is True
     assert result["turn"]["audio_media_id"] == "voice-wav-1"
+
+    second_room = service.create_room(session_id="yoyo", device_id="phone")
+    second_context = _Provider.latest.kwargs[
+        "start_payload"
+    ]["dialog"]["dialog_context"]
+    assert [item["text"] for item in second_context[-2:]] == [
+        "我回来了",
+        "欢迎回来，刚才还在想你。",
+    ]
+    service.finish_room(second_room["room_id"], "phone")
 
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
