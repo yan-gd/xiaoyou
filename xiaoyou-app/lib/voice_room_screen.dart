@@ -16,10 +16,52 @@ const _voiceInk = Color(0xff3d2b36);
 const _voiceMuted = Color(0xff9c8792);
 const _voiceRose = Color(0xffb35282);
 const _voiceLavender = Color(0xff8d71bd);
+const _defaultVoiceRoomMoodAsset = 'assets/moods/平静.png';
+const _speechMouthMoodAsset = 'assets/moods/无语.png';
 // Send 160 ms batches over one dedicated keep-alive connection. The server
 // queues and re-times these into O2.0's required 640-byte/20 ms frames without
 // holding the public HTTP request open for the duration of the audio.
 const _realtimeUploadBytes = 5120;
+
+final Map<String, Future<ui.Image>> _voiceRoomImageCache = {};
+Future<ui.FragmentProgram>? _voiceRoomFaceProgram;
+
+Future<ui.Image> _loadVoiceRoomImage(String asset) {
+  return _voiceRoomImageCache.putIfAbsent(asset, () async {
+    final bytes = await rootBundle.load(asset);
+    final codec = await ui.instantiateImageCodec(
+      bytes.buffer.asUint8List(),
+      targetWidth: 768,
+      targetHeight: 768,
+    );
+    try {
+      final frame = await codec.getNextFrame();
+      return frame.image;
+    } finally {
+      codec.dispose();
+    }
+  });
+}
+
+Future<ui.FragmentProgram> _loadVoiceRoomFaceProgram() {
+  return _voiceRoomFaceProgram ??= ui.FragmentProgram.fromAsset(
+    'shaders/digital_xiaoyou.frag',
+  );
+}
+
+Future<void> prewarmVoiceRoomVisuals({
+  String moodAsset = _defaultVoiceRoomMoodAsset,
+}) async {
+  try {
+    await Future.wait<Object>([
+      _loadVoiceRoomFaceProgram(),
+      _loadVoiceRoomImage(moodAsset),
+      _loadVoiceRoomImage(_speechMouthMoodAsset),
+    ]);
+  } catch (error) {
+    debugPrint('[VoiceRoom] visual prewarm unavailable: $error');
+  }
+}
 
 enum _RoomPhase {
   connecting,
@@ -36,10 +78,14 @@ class VoiceRoomScreen extends StatefulWidget {
     super.key,
     required this.api,
     required this.initialEventSequence,
+    this.initialMoodAsset = _defaultVoiceRoomMoodAsset,
+    this.initialMoodLabel = '平静',
   });
 
   final XiaoyouApi api;
   final int initialEventSequence;
+  final String initialMoodAsset;
+  final String initialMoodLabel;
 
   @override
   State<VoiceRoomScreen> createState() => _VoiceRoomScreenState();
@@ -75,7 +121,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   int _replyAudioDurationMs = 0;
   Timer? _playbackDrain;
   Timer? _mouthDecay;
-  String _moodAsset = 'assets/moods/平静.png';
+  String _moodAsset = _defaultVoiceRoomMoodAsset;
   String _moodLabel = '平静';
   String _liveCaption = '';
   bool _muted = false;
@@ -88,11 +134,14 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   @override
   void initState() {
     super.initState();
+    _moodAsset = widget.initialMoodAsset;
+    _moodLabel = widget.initialMoodLabel;
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
         setState(() => _elapsedSeconds += 1);
       }
     });
+    unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
     unawaited(_recorder.prepare());
     unawaited(_initializeRoom());
   }
@@ -127,7 +176,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         _initializing = false;
         _phase = _RoomPhase.listening;
       });
-      await _refreshMood();
+      unawaited(_refreshMood());
       await _startRealtimeMicrophone();
       unawaited(_pollLiveEvents());
     } catch (_) {
@@ -1304,7 +1353,7 @@ class _VoiceOrbState extends State<_VoiceOrb>
   int _imageLoadGeneration = 0;
 
   double get _diameter => switch (widget.phase) {
-        _RoomPhase.connecting => 34,
+        _RoomPhase.connecting => 214,
         _RoomPhase.listening => 248,
         _RoomPhase.userSpeaking => 286,
         _RoomPhase.thinking => 228,
@@ -1347,9 +1396,7 @@ class _VoiceOrbState extends State<_VoiceOrb>
   @override
   void initState() {
     super.initState();
-    unawaited(_loadFaceShader());
-    unawaited(_loadFaceImage(widget.moodAsset));
-    unawaited(_loadSpeechMouthImage());
+    unawaited(_loadVisualBundle(widget.moodAsset));
     _scheduleBlink();
   }
 
@@ -1365,71 +1412,52 @@ class _VoiceOrbState extends State<_VoiceOrb>
   void dispose() {
     _nextBlink?.cancel();
     _blink.dispose();
-    _faceImage?.dispose();
-    _speechMouthImage?.dispose();
     super.dispose();
   }
 
-  Future<void> _loadFaceShader() async {
+  Future<void> _loadVisualBundle(String asset) async {
+    final generation = ++_imageLoadGeneration;
     try {
-      final program = await ui.FragmentProgram.fromAsset(
-        'shaders/digital_xiaoyou.frag',
-      );
-      if (!mounted) {
+      final programFuture = _loadVoiceRoomFaceProgram();
+      final faceFuture = _loadVoiceRoomImage(asset);
+      final mouthFuture = _loadVoiceRoomImage(_speechMouthMoodAsset);
+      await Future.wait<Object>([
+        programFuture,
+        faceFuture,
+        mouthFuture,
+      ]);
+      if (!mounted || generation != _imageLoadGeneration) {
         return;
       }
-      setState(() => _faceShader = program.fragmentShader());
+      final program = await programFuture;
+      final face = await faceFuture;
+      final mouth = await mouthFuture;
+      if (!mounted || generation != _imageLoadGeneration) {
+        return;
+      }
+      setState(() {
+        _faceShader = program.fragmentShader();
+        _faceImage = face;
+        _speechMouthImage = mouth;
+      });
     } catch (error) {
-      debugPrint('[VoiceRoom] digital avatar shader unavailable: $error');
+      debugPrint('[VoiceRoom] digital avatar visuals unavailable: $error');
+      if (mounted && generation == _imageLoadGeneration) {
+        unawaited(_loadFaceImage(asset));
+      }
     }
   }
 
   Future<void> _loadFaceImage(String asset) async {
     final generation = ++_imageLoadGeneration;
     try {
-      final bytes = await rootBundle.load(asset);
-      final codec = await ui.instantiateImageCodec(
-        bytes.buffer.asUint8List(),
-        targetWidth: 768,
-        targetHeight: 768,
-      );
-      final frame = await codec.getNextFrame();
-      codec.dispose();
+      final image = await _loadVoiceRoomImage(asset);
       if (!mounted || generation != _imageLoadGeneration) {
-        frame.image.dispose();
         return;
       }
-      final previous = _faceImage;
-      setState(() => _faceImage = frame.image);
-      if (previous != null) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          previous.dispose();
-        });
-      }
+      setState(() => _faceImage = image);
     } catch (error) {
       debugPrint('[VoiceRoom] mood portrait unavailable: $error');
-    }
-  }
-
-  Future<void> _loadSpeechMouthImage() async {
-    try {
-      final bytes = await rootBundle.load('assets/moods/无语.png');
-      final codec = await ui.instantiateImageCodec(
-        bytes.buffer.asUint8List(),
-        targetWidth: 768,
-        targetHeight: 768,
-      );
-      final frame = await codec.getNextFrame();
-      codec.dispose();
-      if (!mounted) {
-        frame.image.dispose();
-        return;
-      }
-      final previous = _speechMouthImage;
-      setState(() => _speechMouthImage = frame.image);
-      previous?.dispose();
-    } catch (error) {
-      debugPrint('[VoiceRoom] speech mouth portrait unavailable: $error');
     }
   }
 
@@ -1523,11 +1551,25 @@ class _VoiceOrbState extends State<_VoiceOrb>
                                           progress: widget.progress,
                                         ),
                                       )
-                                    else
-                                      Image.asset(
-                                        widget.moodAsset,
+                                    else if (_faceImage != null)
+                                      RawImage(
+                                        image: _faceImage,
                                         fit: BoxFit.cover,
                                         filterQuality: FilterQuality.medium,
+                                      )
+                                    else
+                                      const DecoratedBox(
+                                        decoration: BoxDecoration(
+                                          gradient: RadialGradient(
+                                            center: Alignment(-0.28, -0.34),
+                                            radius: 0.92,
+                                            colors: [
+                                              Color(0xfffff7fb),
+                                              Color(0xffeadfff),
+                                              Color(0xffc8ecf5),
+                                            ],
+                                          ),
+                                        ),
                                       ),
                                     CustomPaint(
                                       isComplex: true,

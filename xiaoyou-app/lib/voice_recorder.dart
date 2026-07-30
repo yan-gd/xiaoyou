@@ -24,6 +24,8 @@ class VoiceRecorderController {
   String? _path;
   String _mimeType = 'audio/mp4';
   bool _streaming = false;
+  bool _prepared = false;
+  Future<bool>? _prepareTask;
 
   Stream<double> amplitudeStream() {
     return _recorder
@@ -32,11 +34,30 @@ class VoiceRecorderController {
   }
 
   Future<bool> prepare() async {
+    if (_prepared) {
+      return true;
+    }
+    final pending = _prepareTask;
+    if (pending != null) {
+      return pending;
+    }
+    late final Future<bool> task;
+    task = _prepare().whenComplete(() {
+      if (identical(_prepareTask, task)) {
+        _prepareTask = null;
+      }
+    });
+    _prepareTask = task;
+    return task;
+  }
+
+  Future<bool> _prepare() async {
     final allowed = await _recorder.hasPermission();
     if (!allowed) {
       return false;
     }
     _temporaryDirectory ??= await getTemporaryDirectory();
+    _prepared = true;
     return true;
   }
 
@@ -135,6 +156,8 @@ class VoiceRecorderController {
       await _recorder.stop();
       _streaming = false;
     }
+    _prepared = false;
+    _prepareTask = null;
     await _recorder.dispose();
   }
 }

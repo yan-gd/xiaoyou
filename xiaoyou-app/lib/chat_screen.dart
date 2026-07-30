@@ -103,6 +103,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _composer.addListener(_handleDraftChanged);
     _scrollController.addListener(_handleScroll);
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
       unawaited(_syncBatteryOptimization());
       _restoreSession();
     });
@@ -1815,11 +1816,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _showSnack('先连接小悠，就能进入语音房间');
       return;
     }
+    unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => VoiceRoomScreen(
           api: api,
           initialEventSequence: _lastEventSequence,
+          initialMoodAsset: _moodAsset,
+          initialMoodLabel: _moodLabel,
         ),
       ),
     );
@@ -1902,6 +1906,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _moodAsset = asset;
         _moodLabel = '${mood['label'] ?? '平静'}';
       });
+      unawaited(prewarmVoiceRoomVisuals(moodAsset: asset));
     } catch (_) {
       // Mood display is optional and must never block the conversation.
     }
