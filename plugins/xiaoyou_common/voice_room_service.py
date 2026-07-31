@@ -61,6 +61,7 @@ CLIENT_INTERRUPT = 515
 CHAT_RESPONSE = 550
 CHAT_ENDED = 559
 SERVER_ERROR = 599
+_AUTO_CAPABILITY_SERVICE = object()
 
 
 def _truthy(value):
@@ -1877,6 +1878,7 @@ class VoiceRoomService:
         relationship_service=None,
         instances_provider=None,
         session_factory=None,
+        capability_service=_AUTO_CAPABILITY_SERVICE,
     ):
         self.enabled = _truthy(
             os.getenv("XIAOYOU_VOICE_ROOM_ENABLED", "true")
@@ -1937,6 +1939,21 @@ class VoiceRoomService:
             self.store,
             instances_provider=instances_provider,
         )
+        if capability_service is _AUTO_CAPABILITY_SERVICE:
+            try:
+                from plugins.xiaoyou_common.voice_room_capability_service import (
+                    VoiceRoomCapabilityService,
+                )
+
+                capability_service = VoiceRoomCapabilityService(
+                    instances_provider=instances_provider,
+                )
+            except Exception:
+                capability_service = None
+                logger.exception(
+                    "[VoiceRoom] capability bridge unavailable"
+                )
+        self.capabilities = capability_service
         self.sessions = {}
         self.live_sessions = {}
         self.session_last_used = {}
@@ -2042,6 +2059,23 @@ class VoiceRoomService:
                 snapshot.get("terminal_status") or "complete"
             ),
         )
+
+    def _submit_capabilities(self, room, turn):
+        submit = getattr(self.capabilities, "submit", None)
+        if not callable(submit):
+            return False
+        exchange = {
+            "turn_id": turn.get("turn_id"),
+            "room_id": room.get("room_id"),
+            "session_id": room.get("session_id"),
+            "device_id": room.get("device_id"),
+            "user_text": turn.get("user_text"),
+            "assistant_text": turn.get("assistant_text"),
+            "created_at": turn.get("created_at"),
+            "delivery_complete": turn.get("delivery_complete", True),
+            "terminal_status": turn.get("terminal_status", "complete"),
+        }
+        return bool(submit(exchange))
 
     def _start_payload(self, session_id):
         character = _clean_text(
@@ -2309,6 +2343,7 @@ class VoiceRoomService:
             if inserted:
                 turn["session_id"] = room["session_id"]
                 self.memory.submit(turn)
+                self._submit_capabilities(room, turn)
                 self._notify_proactive(
                     "observe_voice_exchange",
                     room["session_id"],
@@ -2414,6 +2449,7 @@ class VoiceRoomService:
             )
             turn["session_id"] = room["session_id"]
             self.memory.submit(turn)
+            self._submit_capabilities(room, turn)
             self._notify_proactive(
                 "observe_voice_exchange",
                 room["session_id"],
@@ -2493,6 +2529,9 @@ class VoiceRoomService:
             live.close()
         for session in sessions:
             session.close()
+        close_capabilities = getattr(self.capabilities, "close", None)
+        if callable(close_capabilities):
+            close_capabilities()
 
     def _reap_idle_sessions(self):
         while True:

@@ -2,6 +2,7 @@
 import os
 import re
 import json
+import hashlib
 import time
 import uuid
 import random
@@ -176,6 +177,69 @@ YoYo 当前消息：
 %s
 """ % (reminder.get("due_text", ""), reminder.get("task", ""), text)
             return
+
+    def create_voice_reminder(
+        self,
+        *,
+        session_id,
+        receiver,
+        due_at,
+        task,
+        original="",
+        turn_id="",
+    ):
+        """Persist a model-resolved reminder from one valid voice exchange."""
+        if not self._enabled():
+            return None
+        session_id = str(session_id or "").strip()
+        receiver = str(receiver or "").strip()
+        task = str(task or "").strip()[:600]
+        original = str(original or "").strip()[:2000]
+        turn_id = str(turn_id or "").strip()[:160]
+        if not session_id or not receiver or not task or not turn_id:
+            return None
+        try:
+            if isinstance(due_at, datetime):
+                due_dt = due_at
+            else:
+                value = str(due_at or "").strip()
+                if value.endswith("Z"):
+                    value = value[:-1] + "+00:00"
+                due_dt = datetime.fromisoformat(value)
+            if due_dt.tzinfo is None:
+                due_dt = due_dt.replace(
+                    tzinfo=datetime.now().astimezone().tzinfo
+                )
+            due_ts = int(due_dt.timestamp())
+            if due_ts <= int(time.time()):
+                return None
+            local_due = due_dt.astimezone()
+        except (TypeError, ValueError, OverflowError):
+            logger.warning(
+                "[ReminderLove] invalid voice reminder due_at turn_id=%s",
+                turn_id[:48],
+            )
+            return None
+
+        reminder_id = "vr-" + hashlib.sha256(
+            ("%s|%s|%s" % (turn_id, due_ts, task)).encode("utf-8")
+        ).hexdigest()[:20]
+        reminder = {
+            "id": reminder_id,
+            "session_id": session_id,
+            "receiver": receiver,
+            "task": task,
+            "original": original,
+            "due_ts": due_ts,
+            "due_text": local_due.strftime("%Y-%m-%d %H:%M"),
+            "status": "pending",
+            "created_at": int(time.time()),
+            "sent_at": 0,
+            "trace_id": "",
+            "input_id": "voice-room:" + turn_id,
+            "source": "voice_room",
+        }
+        return reminder if self._add_reminder(session_id, reminder) else None
 
     def _mark_transient_memory_turn(self, context, intent):
         kwargs = getattr(context, "kwargs", {}) or {}
@@ -853,6 +917,23 @@ YoYo 刚刚说：
         with LOCK:
             data = self._load_all()
             items = data.get(session_id, [])
+            reminder_id = str(reminder.get("id") or "")
+            input_id = str(reminder.get("input_id") or "")
+            for existing in items:
+                if (
+                    reminder_id
+                    and str(existing.get("id") or "") == reminder_id
+                ) or (
+                    input_id
+                    and str(existing.get("input_id") or "") == input_id
+                ):
+                    logger.info(
+                        "[ReminderLove] duplicate reminder ignored "
+                        "session=%s id=%s",
+                        session_id,
+                        reminder_id,
+                    )
+                    return True
             items.append(reminder)
             data[session_id] = items
             saved = self._save_all(data)

@@ -24,7 +24,11 @@ from plugins.xiaoyou_common.context_service import (
 )
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
-from plugins.xiaoyou_common.photo_intent_service import classify_photo_semantics
+from plugins.xiaoyou_common.photo_intent_service import (
+    PhotoSemanticRoute,
+    ROUTE_GENERATE,
+    classify_photo_semantics,
+)
 from plugins.xiaoyou_common.outbound_dispatcher import (
     record_assistant_message,
     send_image,
@@ -187,6 +191,61 @@ class XiaoyouLifePhoto(Plugin):
         if not plan or not plan.get("should_generate"):
             return None
         return self._generate_share(session_id, plan, source="proactive")
+
+    def create_voice_share(
+        self,
+        *,
+        session_id,
+        user_text,
+        assistant_text="",
+        subject="unknown",
+    ):
+        """Generate a requested photo for a model-approved voice turn."""
+        session_id = str(session_id or "").strip()
+        user_text = str(user_text or "").strip()
+        if (
+            not self._enabled()
+            or not self._session_allowed(session_id)
+            or not user_text
+        ):
+            return None
+        semantic_route = PhotoSemanticRoute(
+            route=ROUTE_GENERATE,
+            time_scope="now",
+            subject=str(subject or "unknown").strip().lower(),
+            confidence=1.0,
+            reason="model-approved completed voice-room exchange",
+            model_ok=True,
+        )
+        context_text = "\n".join(
+            item
+            for item in (
+                "YoYo：" + user_text,
+                (
+                    "小悠已经在语音中回应：" + str(assistant_text).strip()
+                    if str(assistant_text or "").strip()
+                    else ""
+                ),
+            )
+            if item
+        )
+        plan = self._plan_photo(
+            mode="user_request",
+            session_id=session_id,
+            user_text=user_text,
+            context_text=context_text,
+            semantic_route=semantic_route,
+        )
+        if not plan or not plan.get("should_generate"):
+            return None
+        return self._generate_share(
+            session_id,
+            plan,
+            source="voice_request",
+        )
+
+    def mark_voice_sent(self, session_id, share):
+        self._mark_sent(session_id, share, source="voice_request")
 
     def mark_proactive_sent(self, session_id, share):
         self._mark_sent(session_id, share, source="proactive")

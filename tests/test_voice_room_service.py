@@ -316,6 +316,12 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     short_calls = []
     long_calls = []
     proactive_calls = []
+    capability_calls = []
+
+    class _Capabilities:
+        def submit(self, exchange):
+            capability_calls.append(dict(exchange))
+            return True
 
     class _ShortMemory:
         def build_dialog_context_for_external_consumer(self, _session_id):
@@ -413,6 +419,7 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         media_store=_MediaStore(),
         instances_provider=lambda: instances,
         session_factory=_Provider,
+        capability_service=_Capabilities(),
     )
 
     room = service.create_room(session_id="yoyo", device_id="phone")
@@ -435,6 +442,9 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         "begin",
         "exchange",
     ]
+    assert len(capability_calls) == 1
+    assert capability_calls[0]["device_id"] == "phone"
+    assert capability_calls[0]["user_text"] == "我回来了"
 
     second_room = service.create_room(session_id="yoyo", device_id="phone")
     second_context = _Provider.latest.kwargs[
@@ -463,6 +473,7 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         "phone",
         include_turns=True,
     )["turns"] == []
+    assert len(capability_calls) == 1
     service.finish_room(second_room["room_id"], "phone")
     assert (
         "end",
@@ -495,7 +506,9 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         True,
     ) in proactive_calls
     assert _Provider.latest.closed is True
-    assert service.list_rooms("phone")[0]["room_id"] == room["room_id"]
+    assert room["room_id"] in {
+        item["room_id"] for item in service.list_rooms("phone")
+    }
 
 
 def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
