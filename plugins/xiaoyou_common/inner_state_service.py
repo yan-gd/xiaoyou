@@ -33,6 +33,18 @@ STATE_KEYS = (
     "interruption_caution",
 )
 
+DISPLAY_MOODS = (
+    "calm",
+    "happy",
+    "sad",
+    "angry",
+    "surprised",
+    "speechless",
+    "shy",
+    "crying",
+    "afraid",
+)
+
 BASELINES = {
     "mood_valence": 0.62,
     "energy": 0.55,
@@ -160,6 +172,7 @@ class InnerStateService:
 
 你只输出本轮造成的增量，不输出新的绝对值。每项delta必须在-0.12到0.12之间。没有可靠依据的项写0。状态变化应克制、连续，不能因为一句普通玩笑大幅翻转。
 不要让任何状态因为连续几句相似的亲密聊天不断累加到0或1。普通示爱主要带来轻微愉悦和安心，不等于惦念无限上升。YoYo明确说想继续聊天时，expression_drive应轻微上升而不是下降；小悠已经回复过这一轮，也不代表表达欲必须清零。
+display_mood是小悠完成本轮交流后此刻最贴近的可视情绪，只能从 calm、happy、sad、angry、surprised、speechless、shy、crying、afraid 中选择一个。它必须综合旧状态、本轮完整语义和小悠实际回复判断，不能按单个词匹配。普通交流可以保持calm，但有明确而可信的情绪变化时不要永远选择calm。
 next_evaluation_seconds由你自主决定：表示如果YoYo之后没有新消息，小悠过多久值得重新感受一次并判断要不要主动联系。它不是发送倒计时，可以从几十秒到数天；不要套用固定的4分钟、2小时或6小时。
 
 当前时间：
@@ -183,6 +196,7 @@ YoYo本轮原话：
 只输出合法JSON：
 {
   "deltas": {"mood_valence": 0.0, "energy": 0.0, "security": 0.0, "longing": 0.0, "playfulness": 0.0, "sensitivity": 0.0, "expression_drive": 0.0, "sharing_drive": 0.0, "interruption_caution": 0.0},
+  "display_mood": "calm",
   "confidence": 0.0,
   "emotion_note": "不复述隐私内容的简短状态说明",
   "next_evaluation_seconds": 600,
@@ -251,6 +265,14 @@ YoYo本轮原话：
                 distance = abs(previous - BASELINES[key])
                 delta *= max(0.25, 1.0 - (0.75 * distance))
                 values[key] = _clamp(previous + delta, soft_min, soft_max)
+            display_mood = str(data.get("display_mood") or "").strip().lower()
+            if display_mood in DISPLAY_MOODS and confidence >= 0.35:
+                item["display_mood"] = display_mood
+                item["display_mood_confidence"] = round(confidence, 4)
+                item["display_mood_note"] = str(
+                    data.get("emotion_note") or ""
+                ).strip()[:180]
+                item["display_mood_updated_at"] = int(now)
             item["last_updated_at"] = now
             if last_user_ts:
                 item["last_user_at"] = max(float(item.get("last_user_at") or 0), float(last_user_ts))
@@ -334,6 +356,10 @@ YoYo本轮原话：
         item.setdefault("last_updated_at", time.time())
         item.setdefault("last_user_at", 0)
         item.setdefault("recent_events", [])
+        item.setdefault("display_mood", "calm")
+        item.setdefault("display_mood_confidence", 0.0)
+        item.setdefault("display_mood_note", "")
+        item.setdefault("display_mood_updated_at", 0)
         return item
 
     def _evolve_time(self, item, now):
@@ -362,6 +388,20 @@ YoYo本轮原话：
         result["last_updated_at"] = int(float(item.get("last_updated_at") or 0))
         result["last_user_at"] = int(float(item.get("last_user_at") or 0))
         result["recent_events"] = list(item.get("recent_events") or [])[-6:]
+        display_mood = str(item.get("display_mood") or "calm").strip().lower()
+        result["display_mood"] = (
+            display_mood if display_mood in DISPLAY_MOODS else "calm"
+        )
+        result["display_mood_confidence"] = round(
+            _clamp(item.get("display_mood_confidence") or 0.0),
+            4,
+        )
+        result["display_mood_note"] = str(
+            item.get("display_mood_note") or ""
+        ).strip()[:180]
+        result["display_mood_updated_at"] = int(
+            float(item.get("display_mood_updated_at") or 0)
+        )
         return result
 
     def _mask(self, value):

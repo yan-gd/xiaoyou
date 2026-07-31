@@ -18,6 +18,7 @@ const _voiceRose = Color(0xffb35282);
 const _voiceLavender = Color(0xff8d71bd);
 const _defaultVoiceRoomMoodAsset = 'assets/moods/平静.png';
 const _speechMouthMoodAsset = 'assets/moods/无语.png';
+const _playbackEnvelopeFrameMs = 20;
 // Send 160 ms batches over one dedicated keep-alive connection. The server
 // queues and re-times these into O2.0's required 640-byte/20 ms frames without
 // holding the public HTTP request open for the duration of the audio.
@@ -120,7 +121,11 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   int _replyPlaybackBaseMs = 0;
   int _replyAudioDurationMs = 0;
   Timer? _playbackDrain;
-  Timer? _mouthDecay;
+  Timer? _playbackLevelClock;
+  final List<double> _playbackEnvelope = [];
+  bool _playbackLevelSyncing = false;
+  int _playbackEnvelopeGeneration = 0;
+  int _moodRefreshGeneration = 0;
   String _moodAsset = _defaultVoiceRoomMoodAsset;
   String _moodLabel = '平静';
   String _liveCaption = '';
@@ -141,6 +146,10 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         setState(() => _elapsedSeconds += 1);
       }
     });
+    _playbackLevelClock = Timer.periodic(
+      const Duration(milliseconds: 25),
+      (_) => unawaited(_syncPlaybackLevel()),
+    );
     unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
     unawaited(_recorder.prepare());
     unawaited(_initializeRoom());
@@ -151,7 +160,8 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _closed = true;
     _clock?.cancel();
     _playbackDrain?.cancel();
-    _mouthDecay?.cancel();
+    _playbackLevelClock?.cancel();
+    _moodRefreshGeneration += 1;
     _pcmSubscription?.cancel();
     _amplitude?.cancel();
     _breath.dispose();
@@ -205,6 +215,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _playbackReplyId = '';
     _replyPlaybackBaseMs = 0;
     _replyAudioDurationMs = 0;
+    _resetPlaybackEnvelope();
     _suppressedReplyId = '';
     if (mounted) {
       setState(() {
@@ -292,6 +303,23 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     }
   }
 
+  void _scheduleMoodRefresh() {
+    final generation = ++_moodRefreshGeneration;
+    for (final delay in const [
+      Duration.zero,
+      Duration(seconds: 4),
+      Duration(seconds: 12),
+      Duration(seconds: 26),
+    ]) {
+      Future<void>.delayed(delay, () async {
+        if (!mounted || _closed || generation != _moodRefreshGeneration) {
+          return;
+        }
+        await _refreshMood();
+      });
+    }
+  }
+
   Future<void> _startRealtimeMicrophone() async {
     final stream = await _recorder.startPcmStream();
     if (stream == null) {
@@ -336,8 +364,48 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         return;
       }
       final next = ((decibels + 55) / 55).clamp(0.06, 1.0);
-      _level.value = _level.value * 0.58 + next * 0.42;
+      final response = next > _level.value ? 0.68 : 0.30;
+      _level.value += (next - _level.value) * response;
     });
+  }
+
+  void _resetPlaybackEnvelope() {
+    _playbackEnvelopeGeneration += 1;
+    _playbackEnvelope.clear();
+    _level.value = 0.08;
+  }
+
+  Future<void> _syncPlaybackLevel() async {
+    if (_playbackLevelSyncing ||
+        _closed ||
+        _phase != _RoomPhase.speaking ||
+        _playbackReplyId.isEmpty ||
+        _playbackEnvelope.isEmpty) {
+      return;
+    }
+    _playbackLevelSyncing = true;
+    final generation = _playbackEnvelopeGeneration;
+    final replyId = _playbackReplyId;
+    try {
+      final absolutePositionMs = await _player.positionMs();
+      if (_closed ||
+          generation != _playbackEnvelopeGeneration ||
+          replyId != _playbackReplyId ||
+          _phase != _RoomPhase.speaking) {
+        return;
+      }
+      final playedMs = max(0, absolutePositionMs - _replyPlaybackBaseMs);
+      final exactIndex = playedMs / _playbackEnvelopeFrameMs;
+      final lower = exactIndex.floor().clamp(0, _playbackEnvelope.length - 1);
+      final upper = min(lower + 1, _playbackEnvelope.length - 1);
+      final fraction = exactIndex - exactIndex.floor();
+      final target = _playbackEnvelope[lower] * (1 - fraction) +
+          _playbackEnvelope[upper] * fraction;
+      final response = target > _level.value ? 0.76 : 0.38;
+      _level.value += (target - _level.value) * response;
+    } finally {
+      _playbackLevelSyncing = false;
+    }
   }
 
   Future<void> _pumpAudioQueue() async {
@@ -451,7 +519,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _playbackReplyId = '';
     _replyPlaybackBaseMs = 0;
     _replyAudioDurationMs = 0;
-    _level.value = 0.08;
+    _resetPlaybackEnvelope();
     if (mounted) {
       setState(() => _phase = _RoomPhase.listening);
     }
@@ -506,6 +574,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           _playbackReplyId = '';
           _replyPlaybackBaseMs = 0;
           _replyAudioDurationMs = 0;
+          _resetPlaybackEnvelope();
           if (replyId.isNotEmpty) {
             unawaited(
               widget.api.truncateVoiceRoomReply(
@@ -577,20 +646,13 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
             _replyPlaybackBaseMs = await _player.positionMs();
             _playbackReplyId = replyId;
             _replyAudioDurationMs = 0;
+            _resetPlaybackEnvelope();
           }
         }
         final decoded = base64Decode(encoded);
+        _playbackEnvelope.addAll(_pcmSpeechEnvelope(decoded));
         _replyAudioDurationMs += decoded.length * 1000 ~/ (24000 * 2);
         await _player.write(decoded);
-        final speechLevel = _pcmSpeechLevel(decoded);
-        _level.value =
-            (_level.value * 0.64 + speechLevel * 0.36).clamp(0.08, 1.0);
-        _mouthDecay?.cancel();
-        _mouthDecay = Timer(const Duration(milliseconds: 170), () {
-          if (!_closed && _phase == _RoomPhase.speaking) {
-            _level.value = max(0.10, _level.value * 0.70);
-          }
-        });
         if (mounted && _phase != _RoomPhase.speaking) {
           setState(() => _phase = _RoomPhase.speaking);
         }
@@ -619,12 +681,13 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         _playbackReplyId = '';
         _replyPlaybackBaseMs = 0;
         _replyAudioDurationMs = 0;
+        _resetPlaybackEnvelope();
         if (mounted && _phase != _RoomPhase.userSpeaking) {
           setState(() => _phase = _RoomPhase.interrupted);
         }
         return;
       case 'turn_complete':
-        unawaited(_refreshMood());
+        _scheduleMoodRefresh();
         return;
       case 'error':
         await _recoverRoom();
@@ -650,6 +713,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     }
     setState(() => _phase = _RoomPhase.ending);
     _playbackDrain?.cancel();
+    _resetPlaybackEnvelope();
     await _pcmSubscription?.cancel();
     _pcmSubscription = null;
     await _amplitude?.cancel();
@@ -1303,24 +1367,29 @@ String _roomDate(DateTime value) => '${value.month.toString().padLeft(2, '0')}-'
     '${value.hour.toString().padLeft(2, '0')}:'
     '${value.minute.toString().padLeft(2, '0')}';
 
-double _pcmSpeechLevel(Uint8List pcm) {
+List<double> _pcmSpeechEnvelope(Uint8List pcm) {
+  const samplesPerFrame = 24000 * _playbackEnvelopeFrameMs ~/ 1000;
+  const bytesPerFrame = samplesPerFrame * 2;
   if (pcm.length < 2) {
-    return 0.08;
+    return const [0.08];
   }
-  var energy = 0.0;
-  var samples = 0;
-  for (var index = 0; index + 1 < pcm.length; index += 4) {
-    final raw = pcm[index] | (pcm[index + 1] << 8);
-    final signed = raw >= 0x8000 ? raw - 0x10000 : raw;
-    final normalized = signed / 32768.0;
-    energy += normalized * normalized;
-    samples += 1;
+  final result = <double>[];
+  for (var start = 0; start < pcm.length; start += bytesPerFrame) {
+    final end = min(pcm.length, start + bytesPerFrame);
+    var energy = 0.0;
+    var samples = 0;
+    for (var index = start; index + 1 < end; index += 2) {
+      final raw = pcm[index] | (pcm[index + 1] << 8);
+      final signed = raw >= 0x8000 ? raw - 0x10000 : raw;
+      final normalized = signed / 32768.0;
+      energy += normalized * normalized;
+      samples += 1;
+    }
+    final rms = samples == 0 ? 0.0 : sqrt(energy / samples);
+    final linear = ((rms - 0.0035) * 13.5).clamp(0.0, 1.0);
+    result.add((0.08 + pow(linear, 0.72) * 0.92).clamp(0.08, 1.0));
   }
-  if (samples == 0) {
-    return 0.08;
-  }
-  final rms = sqrt(energy / samples);
-  return ((rms - 0.006) * 9.5).clamp(0.08, 1.0);
+  return result.isEmpty ? const [0.08] : result;
 }
 
 class _VoiceOrb extends StatefulWidget {

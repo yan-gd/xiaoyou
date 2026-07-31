@@ -90,6 +90,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   int _clientSequence = 0;
   int _recordingDurationMs = 0;
   int _newMessageCount = 0;
+  int _moodRefreshGeneration = 0;
   double _recordingLevel = 0;
   String _highlightedMessageId = '';
   Future<void>? _recordingStartTask;
@@ -119,6 +120,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _draftTimer?.cancel();
     _highlightTimer?.cancel();
     _recordingTimer?.cancel();
+    _moodRefreshGeneration += 1;
     _amplitudeSubscription?.cancel();
     final notificationSettingsResume = _notificationSettingsResume;
     if (notificationSettingsResume != null &&
@@ -569,7 +571,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           });
           if (receivedAssistantReply) {
             _typingTimer?.cancel();
-            unawaited(_refreshMoodProfile());
+            _scheduleMoodProfileRefresh();
           }
           if (!_appInForeground && _preferences.notificationsEnabled) {
             unawaited(_notifyIncoming(additions));
@@ -1893,7 +1895,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
     );
     if (mounted) {
-      unawaited(_refreshMoodProfile(api));
+      _scheduleMoodProfileRefresh(api);
     }
   }
 
@@ -1977,6 +1979,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       unawaited(prewarmVoiceRoomVisuals(moodAsset: asset));
     } catch (_) {
       // Mood display is optional and must never block the conversation.
+    }
+  }
+
+  void _scheduleMoodProfileRefresh([XiaoyouApi? source]) {
+    final generation = ++_moodRefreshGeneration;
+    for (final delay in const [
+      Duration.zero,
+      Duration(seconds: 4),
+      Duration(seconds: 12),
+      Duration(seconds: 26),
+    ]) {
+      Future<void>.delayed(delay, () async {
+        if (!mounted || generation != _moodRefreshGeneration) {
+          return;
+        }
+        await _refreshMoodProfile(source);
+      });
     }
   }
 
@@ -4674,7 +4693,9 @@ class _MessageRowState extends State<_MessageRow>
         ? api.mediaUrl(message.mediaId)
         : message.remoteUrl;
     final headers = message.mediaId.isNotEmpty ? api?.mediaHeaders : null;
-    final imageWidth = message.kind == 'sticker' ? 154.0 : 220.0;
+    // Keep photos as compact chat thumbnails; tapping still opens the original
+    // at full size.  This is roughly 60% of the previous 220 px bubble.
+    final imageWidth = message.kind == 'sticker' ? 154.0 : 132.0;
     return FutureBuilder<File?>(
       future: _mediaFileFuture,
       initialData: _resolvedMediaFile,

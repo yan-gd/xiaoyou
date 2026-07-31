@@ -66,12 +66,24 @@ MEDIA_DIR = Path(appdata_root()) / "app_channel" / "media"
 
 
 def _mood_descriptor(state):
-    """Map the model-maintained affect vector to a visual mood asset.
+    """Map the model-maintained affect state to a visual mood asset.
 
     This is presentation-only: it never participates in routing, prompting or
-    reply decisions. The scores remain continuous and are derived from the
-    inner-state dimensions rather than matching message keywords.
+    reply decisions. Prefer the model's semantic display mood; legacy states
+    fall back to continuous affect-vector scoring without message keywords.
     """
+    labels = {
+        "calm": ("平静", "平静.png"),
+        "happy": ("开心", "开心.png"),
+        "sad": ("难过", "难过.png"),
+        "angry": ("有点生气", "愤怒.png"),
+        "surprised": ("惊讶", "惊讶.png"),
+        "speechless": ("有点无语", "无语.png"),
+        "shy": ("有点害羞", "害羞.png"),
+        "crying": ("正在大哭", "大哭.png"),
+        "afraid": ("有点害怕", "害怕.png"),
+    }
+    preferred = str(state.get("display_mood") or "").strip().lower()
     values = {
         key: float(state.get(key) or 0.0)
         for key in (
@@ -147,24 +159,17 @@ def _mood_descriptor(state):
             + (1.0 - values["playfulness"]) * 0.06
         ),
     }
-    key = max(scores, key=scores.get)
-    labels = {
-        "calm": ("平静", "平静.png"),
-        "happy": ("开心", "开心.png"),
-        "sad": ("难过", "难过.png"),
-        "angry": ("有点生气", "愤怒.png"),
-        "surprised": ("惊讶", "惊讶.png"),
-        "speechless": ("有点无语", "无语.png"),
-        "shy": ("有点害羞", "害羞.png"),
-        "crying": ("正在大哭", "大哭.png"),
-        "afraid": ("有点害怕", "害怕.png"),
-    }
+    key = preferred if preferred in labels else max(scores, key=scores.get)
     label, asset = labels[key]
     return {
         "key": key,
         "label": label,
         "asset": asset,
-        "updated_at": int(state.get("last_updated_at") or 0),
+        "updated_at": int(
+            state.get("display_mood_updated_at")
+            or state.get("last_updated_at")
+            or 0
+        ),
     }
 
 

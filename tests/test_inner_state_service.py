@@ -84,6 +84,7 @@ class InnerStateServiceTest(unittest.TestCase):
                 },
                 "confidence": 1.0,
                 "emotion_note": "亲密而轻松",
+                "display_mood": "shy",
                 "next_evaluation_seconds": 73,
                 "reason": "本轮气氛自然",
             }, ensure_ascii=False),
@@ -97,6 +98,8 @@ class InnerStateServiceTest(unittest.TestCase):
         )
         self.assertGreater(result["state"]["mood_valence"], before)
         self.assertGreater(result["state"]["sharing_drive"], 0.34)
+        self.assertEqual("shy", result["state"]["display_mood"])
+        self.assertEqual("亲密而轻松", result["state"]["display_mood_note"])
         self.assertEqual(73, result["next_evaluation_seconds"])
         for key in self.module["STATE_KEYS"]:
             self.assertGreaterEqual(result["state"][key], 0.0)

@@ -891,6 +891,18 @@ def test_profile_mood_is_derived_from_affect_state_not_message_text(
     }
     assert happy["key"] == "happy"
     assert happy["asset"] == "开心.png"
+    model_selected = module._mood_descriptor(
+        {
+            "display_mood": "shy",
+            "display_mood_updated_at": 789,
+        }
+    )
+    assert model_selected == {
+        "key": "shy",
+        "label": "有点害羞",
+        "asset": "害羞.png",
+        "updated_at": 789,
+    }
 
 
 def test_profile_mood_supports_shy_crying_and_afraid_states(
