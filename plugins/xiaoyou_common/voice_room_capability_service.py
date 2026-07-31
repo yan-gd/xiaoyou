@@ -1,11 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Model-first capability bridge for completed voice-room exchanges.
+"""Model-first reminder bridge for completed voice-room exchanges.
 
-The realtime conversation path must stay responsive, so capability planning
-and side effects run on a background FIFO.  The model sees the complete user
-and assistant exchange and may request one reminder and/or one life photo.
-There is deliberately no keyword, regular-expression, or phrase-list router in
-this module.
+The realtime conversation path must stay responsive, so reminder planning and
+creation run on a background FIFO.  The model sees the complete user and
+assistant exchange.  There is deliberately no keyword, regular-expression, or
+phrase-list router in this module.
 """
 
 import json
@@ -17,11 +16,10 @@ from datetime import datetime
 from common.log import logger
 from plugins.xiaoyou_common.app_transport import app_receiver
 from plugins.xiaoyou_common.model_gateway import chat_completion
-from plugins.xiaoyou_common.outbound_dispatcher import send_action
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
 
-ALLOWED_ACTIONS = ("create_reminder", "generate_life_photo")
+ALLOWED_ACTIONS = ("create_reminder",)
 _STOP = object()
 
 
@@ -92,11 +90,8 @@ def plan_voice_room_actions(exchange):
                     "1. create_reminder：YoYo 明确请小悠在未来某个可确定时间"
                     "提醒、叫醒或通知他。必须把相对时间结合当前本地时间换算成"
                     "带时区的绝对 ISO 8601 时间；时间无法可靠确定时不执行。\n"
-                    "2. generate_life_photo：YoYo 明确要求小悠现在生成、拍摄或"
-                    "分享一张新的生活照。未来计划、回忆、假设、否定、转述或仅仅"
-                    "谈论照片时不执行。\n"
                     "用户原话是行动依据；小悠的回复只能帮助理解指代，不能凭回复"
-                    "自行制造行动。普通聊天输出空 actions。每种能力每轮最多一次。"
+                    "自行制造行动。普通聊天输出空 actions。每轮最多创建一次提醒。"
                     "只输出合法 JSON，不要 Markdown。"
                 ),
             },
@@ -111,20 +106,12 @@ def plan_voice_room_actions(exchange):
                         "output_schema": {
                             "actions": [
                                 {
-                                    "type": (
-                                        "create_reminder | "
-                                        "generate_life_photo"
-                                    ),
+                                    "type": "create_reminder",
                                     "confidence": 0.0,
                                     "due_at": (
                                         "reminder only: absolute ISO 8601"
                                     ),
                                     "task": "reminder only",
-                                    "subject": (
-                                        "photo only: xiaoyou | yoyo | both | "
-                                        "scene | unknown"
-                                    ),
-                                    "request_text": "photo only",
                                     "reason": "brief semantic reason",
                                 }
                             ]
@@ -189,35 +176,23 @@ def plan_voice_room_actions(exchange):
             "confidence": confidence,
             "reason": _clean_text(raw.get("reason"), 500),
         }
-        if action_type == "create_reminder":
-            item["due_at"] = _clean_text(raw.get("due_at"), 100)
-            item["task"] = _clean_text(raw.get("task"), 600)
-            if not item["due_at"] or not item["task"]:
-                continue
-        else:
-            subject = _clean_text(raw.get("subject"), 40).lower()
-            item["subject"] = (
-                subject
-                if subject in ("xiaoyou", "yoyo", "both", "scene", "unknown")
-                else "unknown"
-            )
-            item["request_text"] = (
-                _clean_text(raw.get("request_text"), 1200) or user_text
-            )
+        item["due_at"] = _clean_text(raw.get("due_at"), 100)
+        item["task"] = _clean_text(raw.get("task"), 600)
+        if not item["due_at"] or not item["task"]:
+            continue
         seen_types.add(action_type)
         normalized.append(item)
     return normalized
 
 
 class VoiceRoomCapabilityService:
-    """Background FIFO for model planning and capability side effects."""
+    """Background FIFO for semantic reminder planning and creation."""
 
     def __init__(
         self,
         *,
         instances_provider=None,
         planner=None,
-        dispatcher=None,
         receiver_builder=None,
         start_worker=True,
     ):
@@ -226,7 +201,6 @@ class VoiceRoomCapabilityService:
         )
         self.instances_provider = instances_provider
         self.planner = planner or plan_voice_room_actions
-        self.dispatcher = dispatcher or send_action
         self.receiver_builder = receiver_builder or app_receiver
         self.jobs = queue.Queue(maxsize=256)
         self._seen = set()
@@ -296,6 +270,16 @@ class VoiceRoomCapabilityService:
 
     def process(self, exchange):
         actions = self.planner(dict(exchange or {}))
+        logger.info(
+            "[VoiceRoomCapability] planned turn_id=%s actions=%s",
+            str(exchange.get("turn_id") or "-")[:48],
+            ",".join(
+                str(item.get("type") or "-")
+                for item in actions
+                if isinstance(item, dict)
+            )
+            or "none",
+        )
         results = []
         for action in actions:
             try:
@@ -322,7 +306,6 @@ class VoiceRoomCapabilityService:
         device_id = _clean_text(exchange.get("device_id"), 160)
         turn_id = _clean_text(exchange.get("turn_id"), 180)
         user_text = _clean_text(exchange.get("user_text"))
-        assistant_text = _clean_text(exchange.get("assistant_text"))
         if action_type == "create_reminder":
             reminder_plugin = instances.get("REMINDERLOVE")
             creator = getattr(
@@ -351,52 +334,6 @@ class VoiceRoomCapabilityService:
                 "type": action_type,
                 "ok": ok,
                 "reminder_id": str((reminder or {}).get("id") or ""),
-            }
-
-        if action_type == "generate_life_photo":
-            photo_plugin = instances.get("XIAOYOULIFEPHOTO")
-            creator = getattr(photo_plugin, "create_voice_share", None)
-            if not callable(creator):
-                raise RuntimeError("life_photo_capability_unavailable")
-            share = creator(
-                session_id=session_id,
-                user_text=action.get("request_text") or user_text,
-                assistant_text=assistant_text,
-                subject=action.get("subject") or "unknown",
-            )
-            if not share:
-                return {"type": action_type, "ok": False}
-            caption = _clean_text(share.get("caption"), 600)
-            receipt = self.dispatcher(
-                session_id=session_id,
-                source="voice_room_life_photo",
-                image_path=share.get("path"),
-                parts=[caption] if caption else [],
-                receiver=self.receiver_builder(device_id),
-                record_memory=False,
-                input_id="voice-room:" + turn_id,
-            )
-            delivered = bool(
-                getattr(receipt, "ok", False)
-                or getattr(receipt, "queued", False)
-            )
-            if delivered:
-                marker = getattr(photo_plugin, "mark_voice_sent", None)
-                if callable(marker):
-                    marker(session_id, share)
-            else:
-                discard = getattr(photo_plugin, "discard_share", None)
-                if callable(discard):
-                    discard(share)
-            logger.info(
-                "[VoiceRoomCapability] photo result turn_id=%s ok=%s",
-                turn_id[:48],
-                delivered,
-            )
-            return {
-                "type": action_type,
-                "ok": delivered,
-                "action_id": str(getattr(receipt, "action_id", "") or ""),
             }
         return {"type": action_type, "ok": False, "error": "unsupported"}
 

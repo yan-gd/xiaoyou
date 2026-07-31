@@ -45,10 +45,11 @@ services: # Docker Compose 服务集合。
       XIAOYOU_VOICE_ROOM_LOUDNESS_RATE: '${XIAOYOU_VOICE_ROOM_LOUDNESS_RATE:-100}' # O2.0输出音量，范围-50到100。
       XIAOYOU_VOICE_ROOM_IDLE_TIMEOUT: '${XIAOYOU_VOICE_ROOM_IDLE_TIMEOUT:-300}' # App异常退出后，空闲语音房5分钟自动收束并保留记录。
       XIAOYOU_VOICE_ROOM_DB_PATH: '${XIAOYOU_VOICE_ROOM_DB_PATH:-/app/data/app_channel/voice_rooms.db}' # 每个语音房和逐轮转写独立持久化。
-      XIAOYOU_VOICE_ROOM_CAPABILITIES_ENABLED: '${XIAOYOU_VOICE_ROOM_CAPABILITIES_ENABLED:-true}' # 仅在有效语音回合完成后异步判断提醒与生活照能力。
-      XIAOYOU_VOICE_CAPABILITY_MODEL: '${XIAOYOU_VOICE_CAPABILITY_MODEL:-qwen3.7-plus}' # 语音能力由模型理解完整语义，不使用关键词或正则路由。
-      XIAOYOU_VOICE_CAPABILITY_MIN_CONFIDENCE: '${XIAOYOU_VOICE_CAPABILITY_MIN_CONFIDENCE:-0.78}' # 低置信度时不产生提醒或图片副作用。
+      XIAOYOU_VOICE_ROOM_CAPABILITIES_ENABLED: '${XIAOYOU_VOICE_ROOM_CAPABILITIES_ENABLED:-true}' # 仅在有效语音回合完成后异步判断提醒能力。
+      XIAOYOU_VOICE_CAPABILITY_MODEL: '${XIAOYOU_VOICE_CAPABILITY_MODEL:-qwen3.7-plus}' # 语音提醒由模型理解完整语义，不使用关键词或正则路由。
+      XIAOYOU_VOICE_CAPABILITY_MIN_CONFIDENCE: '${XIAOYOU_VOICE_CAPABILITY_MIN_CONFIDENCE:-0.78}' # 低置信度时不创建提醒。
       XIAOYOU_VOICE_CAPABILITY_TIMEOUT: '${XIAOYOU_VOICE_CAPABILITY_TIMEOUT:-25}' # 能力判断在后台执行，不阻塞实时语音。
+      XIAOYOU_VOICE_CAPABILITY_ENABLE_THINKING: 'false' # 提醒意图判断关闭慢思考，避免后台提醒积压。
       XIAOYOU_APP_VOICE_TIMEOUT: '45' # 单次识别或合成最多等待45秒。
       XIAOYOU_APP_TEXT_VOICE_DECISION_ENABLED: 'true' # App文字回合由模型结合语境决定本轮发送文字还是语音；不使用关键词路由。
       XIAOYOU_APP_VOICE_ROUTE_MODEL: 'qwen3.7-plus' # 只做回复媒介判断，不改写小悠已经生成的内容。

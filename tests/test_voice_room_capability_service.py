@@ -32,10 +32,6 @@ def _load_service(monkeypatch):
         content="",
         error_kind="configuration",
     )
-    outbound = types.ModuleType(
-        "plugins.xiaoyou_common.outbound_dispatcher"
-    )
-    outbound.send_action = lambda **_kwargs: None
     thinking = types.ModuleType(
         "plugins.xiaoyou_common.thinking_config"
     )
@@ -49,7 +45,6 @@ def _load_service(monkeypatch):
         "plugins.xiaoyou_common": plugins_common,
         "plugins.xiaoyou_common.app_transport": app_transport,
         "plugins.xiaoyou_common.model_gateway": model_gateway,
-        "plugins.xiaoyou_common.outbound_dispatcher": outbound,
         "plugins.xiaoyou_common.thinking_config": thinking,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
@@ -66,7 +61,7 @@ def _load_service(monkeypatch):
     return module, model_gateway
 
 
-def test_planner_returns_structured_reminder_and_photo_without_local_routing(
+def test_planner_returns_only_structured_reminders_without_local_routing(
     monkeypatch,
 ):
     module, gateway = _load_service(monkeypatch)
@@ -112,53 +107,24 @@ def test_planner_returns_structured_reminder_and_photo_without_local_routing(
         }
     )
 
-    assert [item["type"] for item in actions] == [
-        "create_reminder",
-        "generate_life_photo",
-    ]
+    assert [item["type"] for item in actions] == ["create_reminder"]
     assert actions[0]["due_at"] == "2099-08-01T07:30:00+08:00"
-    assert actions[1]["subject"] == "xiaoyou"
 
 
-def test_capabilities_use_existing_reminder_photo_and_app_delivery(
+def test_capability_uses_existing_reminder_and_app_receiver(
     monkeypatch,
 ):
     module, _gateway = _load_service(monkeypatch)
     reminder_calls = []
-    photo_calls = []
-    delivery_calls = []
 
     class _Reminder:
         def create_voice_reminder(self, **kwargs):
             reminder_calls.append(kwargs)
             return {"id": "vr-1", "due_text": "2099-08-01 07:30"}
 
-    class _Photo:
-        def create_voice_share(self, **kwargs):
-            photo_calls.append(("create", kwargs))
-            return {
-                "path": "generated.jpg",
-                "caption": "刚拍好，给你看～",
-            }
-
-        def mark_voice_sent(self, session_id, share):
-            photo_calls.append(("sent", session_id, share))
-
-        def discard_share(self, share):
-            photo_calls.append(("discard", share))
-
-    def _dispatcher(**kwargs):
-        delivery_calls.append(kwargs)
-        return types.SimpleNamespace(
-            ok=True,
-            queued=True,
-            action_id="action-1",
-        )
-
     service = module.VoiceRoomCapabilityService(
         instances_provider=lambda: {
             "REMINDERLOVE": _Reminder(),
-            "XIAOYOULIFEPHOTO": _Photo(),
         },
         planner=lambda _exchange: [
             {
@@ -166,13 +132,7 @@ def test_capabilities_use_existing_reminder_photo_and_app_delivery(
                 "due_at": "2099-08-01T07:30:00+08:00",
                 "task": "叫 YoYo 起床",
             },
-            {
-                "type": "generate_life_photo",
-                "request_text": "拍一张现在的生活照",
-                "subject": "xiaoyou",
-            },
         ],
-        dispatcher=_dispatcher,
         start_worker=False,
     )
     results = service.process(
@@ -186,13 +146,9 @@ def test_capabilities_use_existing_reminder_photo_and_app_delivery(
         }
     )
 
-    assert [item["ok"] for item in results] == [True, True]
+    assert [item["ok"] for item in results] == [True]
     assert reminder_calls[0]["receiver"] == "app:phone"
     assert reminder_calls[0]["turn_id"] == "room-1:turn-1"
-    assert photo_calls[0][0] == "create"
-    assert photo_calls[1][0] == "sent"
-    assert delivery_calls[0]["receiver"] == "app:phone"
-    assert delivery_calls[0]["record_memory"] is False
 
 
 def test_submit_is_non_blocking_and_deduplicates_turns(monkeypatch):
