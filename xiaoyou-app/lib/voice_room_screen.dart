@@ -275,6 +275,9 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         '愤怒.png': 'assets/moods/愤怒.png',
         '无语.png': 'assets/moods/无语.png',
         '难过.png': 'assets/moods/难过.png',
+        '害羞.png': 'assets/moods/害羞.png',
+        '大哭.png': 'assets/moods/大哭.png',
+        '害怕.png': 'assets/moods/害怕.png',
       };
       final asset = assets['${mood['asset'] ?? ''}'];
       if (asset == null) {

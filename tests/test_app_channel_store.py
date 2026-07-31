@@ -891,3 +891,58 @@ def test_profile_mood_is_derived_from_affect_state_not_message_text(
     }
     assert happy["key"] == "happy"
     assert happy["asset"] == "开心.png"
+
+
+def test_profile_mood_supports_shy_crying_and_afraid_states(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    base = {
+        "sharing_drive": 0.40,
+        "last_updated_at": 456,
+    }
+
+    shy = module._mood_descriptor(
+        {
+            **base,
+            "mood_valence": 0.77,
+            "energy": 0.25,
+            "security": 0.95,
+            "longing": 0.83,
+            "playfulness": 0.92,
+            "sensitivity": 0.67,
+            "expression_drive": 0.55,
+            "interruption_caution": 0.95,
+        }
+    )
+    crying = module._mood_descriptor(
+        {
+            **base,
+            "mood_valence": 0.36,
+            "energy": 0.16,
+            "security": 0.12,
+            "longing": 0.22,
+            "playfulness": 0.05,
+            "sensitivity": 0.90,
+            "expression_drive": 0.09,
+            "interruption_caution": 0.14,
+        }
+    )
+    afraid = module._mood_descriptor(
+        {
+            **base,
+            "mood_valence": 0.87,
+            "energy": 0.16,
+            "security": 0.03,
+            "longing": 0.73,
+            "playfulness": 0.46,
+            "sensitivity": 0.14,
+            "expression_drive": 0.11,
+            "interruption_caution": 0.70,
+        }
+    )
+
+    assert (shy["key"], shy["asset"]) == ("shy", "害羞.png")
+    assert (crying["key"], crying["asset"]) == ("crying", "大哭.png")
+    assert (afraid["key"], afraid["asset"]) == ("afraid", "害怕.png")

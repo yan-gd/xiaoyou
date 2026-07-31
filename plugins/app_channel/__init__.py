@@ -125,6 +125,27 @@ def _mood_descriptor(state):
             + (1.0 - values["expression_drive"]) * 0.12
             + values["longing"] * 0.10
         ),
+        "shy": (
+            values["sensitivity"] * 0.28
+            + values["longing"] * 0.24
+            + values["mood_valence"] * 0.18
+            + values["security"] * 0.14
+            + (1.0 - values["expression_drive"]) * 0.16
+        ),
+        "crying": (
+            (1.0 - values["mood_valence"]) * 0.42
+            + values["sensitivity"] * 0.24
+            + (1.0 - values["security"]) * 0.18
+            + values["longing"] * 0.10
+            + (1.0 - values["energy"]) * 0.06
+        ),
+        "afraid": (
+            (1.0 - values["security"]) * 0.38
+            + values["sensitivity"] * 0.24
+            + values["interruption_caution"] * 0.20
+            + (1.0 - values["mood_valence"]) * 0.12
+            + (1.0 - values["playfulness"]) * 0.06
+        ),
     }
     key = max(scores, key=scores.get)
     labels = {
@@ -134,6 +155,9 @@ def _mood_descriptor(state):
         "angry": ("有点生气", "愤怒.png"),
         "surprised": ("惊讶", "惊讶.png"),
         "speechless": ("有点无语", "无语.png"),
+        "shy": ("有点害羞", "害羞.png"),
+        "crying": ("正在大哭", "大哭.png"),
+        "afraid": ("有点害怕", "害怕.png"),
     }
     label, asset = labels[key]
     return {

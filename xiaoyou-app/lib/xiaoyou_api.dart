@@ -495,9 +495,30 @@ class XiaoyouApi {
 
   Future<MediaPayload> downloadMedia(String mediaId) async {
     final uri = _uri('/v1/media/$mediaId', {'device_id': deviceId});
+    return _downloadMediaUri(uri, authenticated: true);
+  }
+
+  Future<MediaPayload> downloadRemoteMedia(String value) async {
+    final uri = Uri.parse(value);
+    if (!const {'http', 'https'}.contains(uri.scheme.toLowerCase())) {
+      throw ArgumentError.value(value, 'value', 'Unsupported media URL');
+    }
+    final sameOrigin =
+        uri.scheme.toLowerCase() == baseUri.scheme.toLowerCase() &&
+            uri.host.toLowerCase() == baseUri.host.toLowerCase() &&
+            uri.port == baseUri.port;
+    return _downloadMediaUri(uri, authenticated: sameOrigin);
+  }
+
+  Future<MediaPayload> _downloadMediaUri(
+    Uri uri, {
+    required bool authenticated,
+  }) async {
     final request = await _client.getUrl(uri);
     request.persistentConnection = true;
-    request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    if (authenticated) {
+      request.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+    }
     final response = await request.close().timeout(
           const Duration(seconds: 35),
         );

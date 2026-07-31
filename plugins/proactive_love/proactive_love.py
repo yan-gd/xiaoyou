@@ -57,6 +57,8 @@ class ProactiveLove(Plugin):
         super().__init__()
         self.inner_state = get_inner_state_service()
         self.relationship_profile = get_relationship_profile_service()
+        self._voice_room_lock = threading.RLock()
+        self._active_voice_rooms = {}
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self._migrate_identity_state()
         logger.info("[ProactiveLove] inited")
@@ -220,6 +222,110 @@ class ProactiveLove(Plugin):
         ).start()
         return True
 
+    def begin_voice_room(self, session_id, room_id):
+        """Pause proactive delivery while a voice room is visibly active.
+
+        Opening a room is presence, not a conversation.  It therefore never
+        mutates the user's last-message time or conversation revision.
+        """
+        session_id = str(session_id or "").strip()
+        room_id = str(room_id or "").strip()
+        if not session_id or not room_id:
+            return False
+        with self._voice_room_lock:
+            rooms = self._active_voice_rooms.setdefault(session_id, set())
+            rooms.add(room_id)
+        return True
+
+    def end_voice_room(self, session_id, room_id, *, had_interaction=False):
+        """Release voice-room suppression without inventing an interaction."""
+        session_id = str(session_id or "").strip()
+        room_id = str(room_id or "").strip()
+        if not session_id or not room_id:
+            return False
+        with self._voice_room_lock:
+            rooms = self._active_voice_rooms.get(session_id)
+            if not rooms:
+                return True
+            rooms.discard(room_id)
+            if not rooms:
+                self._active_voice_rooms.pop(session_id, None)
+        return True
+
+    def _voice_room_active(self, session_id):
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return False
+        with self._voice_room_lock:
+            return bool(self._active_voice_rooms.get(session_id))
+
+    def observe_voice_exchange(
+        self,
+        session_id,
+        user_text,
+        assistant_text,
+        *,
+        input_id="",
+        occurred_at=0,
+    ):
+        """Observe one complete, audible user/assistant voice exchange.
+
+        Empty rooms and half-turns never call this method.  A delayed callback
+        also cannot overwrite newer activity already observed elsewhere.
+        """
+        if not self._enabled() or not self._unified_enabled():
+            return False
+        session_id = str(session_id or "").strip()
+        user_text = str(user_text or "").strip()
+        assistant_text = str(assistant_text or "").strip()
+        input_id = str(input_id or "").strip()[:120]
+        if not session_id or not user_text or not assistant_text or not input_id:
+            return False
+        if self._target_session() and session_id != self._target_session():
+            return False
+
+        observed_at = int(occurred_at or time.time())
+        with LOCK:
+            data = self._load_all()
+            item = data.get(session_id, {})
+            if input_id == str(item.get("last_voice_turn_id") or ""):
+                return True
+            if observed_at < int(item.get("last_user_ts") or 0):
+                return False
+            item["session_id"] = session_id
+            item["receiver"] = (
+                item.get("receiver")
+                or self._target_receiver()
+                or session_id
+            )
+            item["last_user_ts"] = observed_at
+            item["last_user_text"] = user_text[:1200]
+            item["last_assistant_text"] = assistant_text[:1200]
+            item["last_assistant_ts"] = observed_at
+            item["last_voice_turn_id"] = input_id
+            item["input_id"] = input_id[:80]
+            item["conversation_revision"] = (
+                int(item.get("conversation_revision") or 0) + 1
+            )
+            revision = item["conversation_revision"]
+            item["next_evaluation_ts"] = 0
+            item["schedule_reason"] = "voice_exchange_updating_inner_state"
+            item.setdefault("last_proactive_ts", 0)
+            item.setdefault("last_proactive_decision_ts", 0)
+            item.setdefault("today", self._today())
+            item.setdefault("sent_today", 0)
+            data[session_id] = item
+            self._save_all(data)
+            snapshot = dict(item)
+
+        threading.Thread(
+            target=self._update_inner_state_and_schedule,
+            args=(session_id, revision, snapshot),
+            daemon=True,
+            name="XiaoyouVoiceProactiveState",
+        ).start()
+        return True
+
     def _update_inner_state_and_schedule(self, session_id, revision, activity):
         try:
             result = self.inner_state.update_from_exchange(
@@ -314,6 +420,9 @@ class ProactiveLove(Plugin):
                     continue
 
                 if target_receiver and receiver != target_receiver:
+                    continue
+
+                if self._voice_room_active(session_id):
                     continue
 
                 send_receiver = target_receiver or receiver
@@ -797,6 +906,8 @@ YoYo 上次说的是：{last_text if last_text else "没有记录"}
         source_last_user_ts,
         source_revision=None,
     ):
+        if self._voice_room_active(session_id):
+            return False
         with LOCK:
             latest = self._load_all().get(session_id, {})
         if int(latest.get("last_user_ts") or 0) > int(source_last_user_ts or 0):

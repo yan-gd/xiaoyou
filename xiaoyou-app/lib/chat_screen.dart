@@ -10,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
 import 'chat_models.dart';
+import 'media_cache_service.dart';
 import 'media_save_service.dart';
 import 'notification_service.dart';
 import 'relationship_universe_screen.dart';
@@ -52,6 +53,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _notificationService = AppNotificationService.instance;
   final _imagePicker = ImagePicker();
   final _messageKeys = <String, GlobalKey>{};
+  final _mediaCache = MessageMediaCache();
 
   XiaoyouApi? _api;
   SavedConnection? _savedConnection;
@@ -476,6 +478,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       activated = true;
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
+      unawaited(_primeMediaCache(history.messages, api));
       await WidgetsBinding.instance.endOfFrame;
       await _flushAcknowledgements();
       _startPolling();
@@ -571,6 +574,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (!_appInForeground && _preferences.notificationsEnabled) {
             unawaited(_notifyIncoming(additions));
           }
+          unawaited(_primeMediaCache(additions, api));
           if (shouldFollow) {
             _scrollToEnd();
           }
@@ -598,6 +602,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return false;
     }
     return !_locked || (!_appInForeground && _preferences.notificationsEnabled);
+  }
+
+  Future<void> _primeMediaCache(
+    Iterable<ChatMessage> messages,
+    XiaoyouApi api,
+  ) async {
+    final resolved = <String, String>{};
+    for (final message in messages) {
+      if (_api != api) {
+        break;
+      }
+      if (!MessageMediaCache.supports(message)) {
+        continue;
+      }
+      final file = await _mediaCache.resolveMessage(message, api);
+      if (file != null && await file.exists()) {
+        resolved[message.id] = file.path;
+      }
+    }
+    if (!mounted || _api != api || resolved.isEmpty) {
+      return;
+    }
+    setState(() {
+      for (var index = 0; index < _messages.length; index += 1) {
+        final path = resolved[_messages[index].id];
+        if (path != null && path.isNotEmpty) {
+          _messages[index] = _messages[index].copyWith(localPath: path);
+        }
+      }
+    });
   }
 
   Future<void> _notifyIncoming(List<ChatMessage> messages) async {
@@ -698,7 +732,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     final messageId = _newId('msg');
-    final createdAt = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final existingIndex =
+        _messages.indexWhere((message) => message.id == messageId);
+    final createdAt = existingIndex >= 0
+        ? _messages[existingIndex].createdAt
+        : DateTime.now().millisecondsSinceEpoch ~/ 1000;
     setState(() {
       _sending = true;
       _composer.clear();
@@ -941,20 +979,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!result.accepted && !result.duplicate) {
         throw const HttpException('服务器没有接受这条语音');
       }
+      final deliveredMessage = ChatMessage(
+        id: messageId,
+        role: 'user',
+        kind: 'voice',
+        text: result.text.isEmpty ? '语音消息' : result.text,
+        mediaId: result.mediaId,
+        mimeType: result.mimeType,
+        durationMs: result.durationMs > 0 ? result.durationMs : durationMs,
+        localPath: path,
+        createdAt: createdAt,
+        localState: 'sent',
+      );
+      final cached = await _mediaCache.cacheLocalFile(deliveredMessage, file);
       final index = _messages.indexWhere((message) => message.id == messageId);
       if (mounted && index >= 0) {
         setState(() {
           _messages[index] = _messages[index].copyWith(
-            text: result.text.isEmpty ? '语音消息' : result.text,
-            mediaId: result.mediaId,
-            mimeType: result.mimeType,
-            durationMs: result.durationMs > 0 ? result.durationMs : durationMs,
-            localPath: '',
+            text: deliveredMessage.text,
+            mediaId: deliveredMessage.mediaId,
+            mimeType: deliveredMessage.mimeType,
+            durationMs: deliveredMessage.durationMs,
+            localPath: cached?.path ?? path,
             localState: 'sent',
           );
         });
       }
-      if (await file.exists()) {
+      if (cached != null && cached.path != file.path && await file.exists()) {
         await file.delete();
       }
       _beginWaitingForReply();
@@ -1069,6 +1120,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     final placeholder = kind == 'sticker' ? '[表情包]' : '[图片]';
+    final existingIndex =
+        _messages.indexWhere((message) => message.id == messageId);
+    final createdAt = existingIndex >= 0
+        ? _messages[existingIndex].createdAt
+        : DateTime.now().millisecondsSinceEpoch ~/ 1000;
     if (addLocalMessage) {
       setState(() {
         _sending = true;
@@ -1080,7 +1136,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             text: placeholder,
             mimeType: mimeType,
             localPath: path,
-            createdAt: DateTime.now().millisecondsSinceEpoch ~/ 1000,
+            createdAt: createdAt,
             localState: 'sending',
           ),
         );
@@ -1108,13 +1164,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (!result.accepted && !result.duplicate) {
         throw const HttpException('服务器没有接受这张图片');
       }
+      final deliveredMessage = ChatMessage(
+        id: messageId,
+        role: 'user',
+        kind: kind,
+        text: placeholder,
+        mediaId: result.mediaId,
+        mimeType: result.mimeType,
+        localPath: path,
+        createdAt: createdAt,
+        localState: 'sent',
+      );
+      final cached = await _mediaCache.cacheLocalFile(deliveredMessage, file);
       if (mounted) {
         final index = _messages.indexWhere((item) => item.id == messageId);
         if (index >= 0) {
           setState(() {
             _messages[index] = _messages[index].copyWith(
-              mediaId: result.mediaId,
-              mimeType: result.mimeType,
+              mediaId: deliveredMessage.mediaId,
+              mimeType: deliveredMessage.mimeType,
+              localPath: cached?.path ?? path,
               localState: 'sent',
             );
           });
@@ -1149,12 +1218,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _showSnack('还没有可搜索的聊天记录');
       return;
     }
-    final selected = await showModalBottomSheet<ChatMessage>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _MessageSearchSheet(messages: _messages),
+    final selected = await Navigator.of(context).push<ChatMessage>(
+      MaterialPageRoute<ChatMessage>(
+        builder: (context) => _MessageSearchSheet(messages: _messages),
+      ),
     );
     if (selected != null && mounted) {
       _jumpToMessage(selected);
@@ -1719,38 +1786,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!mounted) {
       return;
     }
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) => _SettingsSheet(
-        connection: _savedConnection,
-        status: _status,
-        lockEnabled: _lockEnabled,
-        preferences: _preferences,
-        systemNotificationsAllowed: _systemNotificationsAllowed,
-        systemPushStatus: _systemPushStatus,
-        batteryOptimizationIgnored: _batteryOptimizationIgnored,
-        onLockChanged: _setAppLock,
-        onNotificationsChanged: _setNotificationsEnabled,
-        onSystemPushChanged: _setSystemPushEnabled,
-        onTestNotification: _sendTestNotification,
-        onOpenNotificationSettings: _openSystemNotificationSettings,
-        onOpenBatteryOptimizationSettings: _openBatteryOptimizationSettings,
-        onPreferencesChanged: _updatePreferences,
-        onEditConnection: () {
-          Navigator.pop(sheetContext);
-          unawaited(_openConnectionSheet());
-        },
-        onLockNow: () {
-          Navigator.pop(sheetContext);
-          _lockNow();
-        },
-        onForget: () {
-          Navigator.pop(sheetContext);
-          unawaited(_forgetConnection());
-        },
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (settingsContext) => _SettingsSheet(
+          connection: _savedConnection,
+          status: _status,
+          lockEnabled: _lockEnabled,
+          preferences: _preferences,
+          systemNotificationsAllowed: _systemNotificationsAllowed,
+          systemPushStatus: _systemPushStatus,
+          batteryOptimizationIgnored: _batteryOptimizationIgnored,
+          onLockChanged: _setAppLock,
+          onNotificationsChanged: _setNotificationsEnabled,
+          onSystemPushChanged: _setSystemPushEnabled,
+          onTestNotification: _sendTestNotification,
+          onOpenNotificationSettings: _openSystemNotificationSettings,
+          onOpenBatteryOptimizationSettings: _openBatteryOptimizationSettings,
+          onPreferencesChanged: _updatePreferences,
+          onEditConnection: () {
+            Navigator.pop(settingsContext);
+            unawaited(_openConnectionSheet());
+          },
+          onLockNow: () {
+            Navigator.pop(settingsContext);
+            _lockNow();
+          },
+          onForget: () {
+            Navigator.pop(settingsContext);
+            unawaited(_forgetConnection());
+          },
+        ),
       ),
     );
   }
@@ -1896,6 +1961,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         '愤怒.png': 'assets/moods/愤怒.png',
         '无语.png': 'assets/moods/无语.png',
         '难过.png': 'assets/moods/难过.png',
+        '害羞.png': 'assets/moods/害羞.png',
+        '大哭.png': 'assets/moods/大哭.png',
+        '害怕.png': 'assets/moods/害怕.png',
       };
       final assetName = '${mood['asset'] ?? ''}';
       final asset = moodAssets[assetName];
@@ -1933,16 +2001,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       }
     }
-    showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => _ProfileSheet(
-        moodAsset: _moodAsset,
-        moodLabel: _moodLabel,
-        recentPhotos: recentPhotos,
-        api: _api,
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => _ProfileSheet(
+          moodAsset: _moodAsset,
+          moodLabel: _moodLabel,
+          recentPhotos: recentPhotos,
+          api: _api,
+        ),
       ),
     );
   }
@@ -2174,6 +2240,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                           ),
                                           message: message,
                                           api: _api,
+                                          mediaCache: _mediaCache,
                                           userBubbleColor: palette.userBubble,
                                           bubbleRadius:
                                               _preferences.bubbleRadius,
@@ -2630,361 +2697,371 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   @override
   Widget build(BuildContext context) {
     final connection = widget.connection;
-    return Material(
-      color: _canvas,
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-      clipBehavior: Clip.antiAlias,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(20, 14, 20, 30),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: const Color(0xffddcfd6),
-                borderRadius: BorderRadius.circular(99),
-              ),
-            ),
-            const SizedBox(height: 22),
-            const _Avatar(size: 70),
-            const SizedBox(height: 12),
-            const Text(
-              '小悠',
-              style: TextStyle(
-                color: _ink,
-                fontWeight: FontWeight.w700,
-                fontSize: 22,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(widget.status, style: const TextStyle(color: _muted)),
-            const SizedBox(height: 24),
-            _SettingsCard(
-              children: [
-                ListTile(
-                  leading: const _SettingsIcon(
-                    icon: Icons.lock_outline_rounded,
-                  ),
-                  title: const Text('App 锁'),
-                  subtitle: const Text('打开时使用指纹、面容或锁屏密码'),
-                  trailing: _changingLock
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Switch.adaptive(
-                          value: _lockEnabled,
-                          onChanged: _changeLock,
-                        ),
+    return Scaffold(
+      backgroundColor: _canvas,
+      appBar: AppBar(
+        backgroundColor: _canvas,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        leading: IconButton(
+          tooltip: '返回',
+          onPressed: () => Navigator.of(context).pop(),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+        ),
+        title: const Text(
+          '系统设置',
+          style: TextStyle(
+            color: _ink,
+            fontWeight: FontWeight.w700,
+            fontSize: 19,
+          ),
+        ),
+      ),
+      body: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 30),
+          child: Column(
+            children: [
+              const _Avatar(size: 70),
+              const SizedBox(height: 12),
+              const Text(
+                '小悠',
+                style: TextStyle(
+                  color: _ink,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 22,
                 ),
-                if (_lockEnabled)
+              ),
+              const SizedBox(height: 4),
+              Text(widget.status, style: const TextStyle(color: _muted)),
+              const SizedBox(height: 24),
+              _SettingsCard(
+                children: [
                   ListTile(
                     leading: const _SettingsIcon(
-                      icon: Icons.fingerprint_rounded,
+                      icon: Icons.lock_outline_rounded,
                     ),
-                    title: const Text('立即锁定'),
-                    trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: widget.onLockNow,
-                  ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _SettingsCard(
-              children: [
-                ListTile(
-                  leading: const _SettingsIcon(
-                    icon: Icons.notifications_active_outlined,
-                  ),
-                  title: const Text('后台消息提醒'),
-                  subtitle: Text(
-                    !_preferences.notificationsEnabled
-                        ? '仅暂停 App 提醒，不会关闭系统通知权限'
-                        : (_systemNotificationsAllowed
-                            ? '原生后台服务运行中，离开 App 后仍会提醒'
-                            : 'App 内已开启，但系统通知权限尚未生效'),
-                  ),
-                  trailing: _changingNotifications
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Switch.adaptive(
-                          value: _preferences.notificationsEnabled,
-                          onChanged: _changeNotifications,
-                        ),
-                ),
-                if (Platform.isAndroid)
-                  ListTile(
-                    enabled: _preferences.notificationsEnabled,
-                    leading: _SettingsIcon(
-                      icon: _systemPushStatus.active
-                          ? Icons.bolt_rounded
-                          : Icons.cloud_sync_outlined,
-                    ),
-                    title: const Text('vivo 系统级推送'),
-                    subtitle: Text(_systemPushSubtitle),
-                    trailing: _changingSystemPush
+                    title: const Text('App 锁'),
+                    subtitle: const Text('打开时使用指纹、面容或锁屏密码'),
+                    trailing: _changingLock
                         ? const SizedBox(
                             width: 22,
                             height: 22,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : Switch.adaptive(
-                            value: _preferences.systemPushEnabled &&
-                                _systemPushStatus.active,
-                            onChanged: _preferences.notificationsEnabled
-                                ? _changeSystemPush
-                                : null,
+                            value: _lockEnabled,
+                            onChanged: _changeLock,
                           ),
                   ),
-                ListTile(
-                  leading: _SettingsIcon(
-                    icon: _systemNotificationsAllowed
-                        ? Icons.verified_rounded
-                        : Icons.notification_important_outlined,
+                  if (_lockEnabled)
+                    ListTile(
+                      leading: const _SettingsIcon(
+                        icon: Icons.fingerprint_rounded,
+                      ),
+                      title: const Text('立即锁定'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: widget.onLockNow,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _SettingsCard(
+                children: [
+                  ListTile(
+                    leading: const _SettingsIcon(
+                      icon: Icons.notifications_active_outlined,
+                    ),
+                    title: const Text('后台消息提醒'),
+                    subtitle: Text(
+                      !_preferences.notificationsEnabled
+                          ? '仅暂停 App 提醒，不会关闭系统通知权限'
+                          : (_systemNotificationsAllowed
+                              ? '原生后台服务运行中，离开 App 后仍会提醒'
+                              : 'App 内已开启，但系统通知权限尚未生效'),
+                    ),
+                    trailing: _changingNotifications
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Switch.adaptive(
+                            value: _preferences.notificationsEnabled,
+                            onChanged: _changeNotifications,
+                          ),
                   ),
-                  title: Text(
-                    _systemNotificationsAllowed ? '系统权限已开启' : '系统权限未开启',
-                  ),
-                  subtitle: const Text('这里显示 Android 实际返回的授权状态'),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: widget.onOpenNotificationSettings,
-                ),
-                if (Platform.isAndroid)
+                  if (Platform.isAndroid)
+                    ListTile(
+                      enabled: _preferences.notificationsEnabled,
+                      leading: _SettingsIcon(
+                        icon: _systemPushStatus.active
+                            ? Icons.bolt_rounded
+                            : Icons.cloud_sync_outlined,
+                      ),
+                      title: const Text('vivo 系统级推送'),
+                      subtitle: Text(_systemPushSubtitle),
+                      trailing: _changingSystemPush
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Switch.adaptive(
+                              value: _preferences.systemPushEnabled &&
+                                  _systemPushStatus.active,
+                              onChanged: _preferences.notificationsEnabled
+                                  ? _changeSystemPush
+                                  : null,
+                            ),
+                    ),
                   ListTile(
                     leading: _SettingsIcon(
-                      icon: _batteryOptimizationIgnored
-                          ? Icons.battery_charging_full_rounded
-                          : Icons.battery_alert_outlined,
+                      icon: _systemNotificationsAllowed
+                          ? Icons.verified_rounded
+                          : Icons.notification_important_outlined,
                     ),
-                    title: const Text('后台运行保护'),
+                    title: Text(
+                      _systemNotificationsAllowed ? '系统权限已开启' : '系统权限未开启',
+                    ),
+                    subtitle: const Text('这里显示 Android 实际返回的授权状态'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: widget.onOpenNotificationSettings,
+                  ),
+                  if (Platform.isAndroid)
+                    ListTile(
+                      leading: _SettingsIcon(
+                        icon: _batteryOptimizationIgnored
+                            ? Icons.battery_charging_full_rounded
+                            : Icons.battery_alert_outlined,
+                      ),
+                      title: const Text('后台运行保护'),
+                      subtitle: Text(
+                        _batteryOptimizationIgnored
+                            ? '系统未限制小悠，休眠时更不容易延迟'
+                            : '建议在电池设置中将小悠设为“不限制”',
+                      ),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: _openBatteryOptimizationSettings,
+                    ),
+                  ListTile(
+                    enabled: _preferences.notificationsEnabled,
+                    leading: const _SettingsIcon(
+                      icon: Icons.notifications_none_rounded,
+                    ),
+                    title: const Text('发送测试通知'),
+                    subtitle: const Text('立即验证通知分类、声音与振动'),
+                    trailing: _testingNotifications
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.chevron_right_rounded),
+                    onTap: _preferences.notificationsEnabled &&
+                            !_testingNotifications
+                        ? _testNotification
+                        : null,
+                  ),
+                  ListTile(
+                    enabled: _preferences.notificationsEnabled,
+                    leading: const _SettingsIcon(
+                      icon: Icons.volume_up_outlined,
+                    ),
+                    title: const Text('通知声音'),
+                    trailing: Switch.adaptive(
+                      value: _preferences.notificationSound,
+                      onChanged: _preferences.notificationsEnabled
+                          ? (value) => _updatePreferences(
+                                _preferences.copyWith(
+                                  notificationSound: value,
+                                ),
+                              )
+                          : null,
+                    ),
+                  ),
+                  ListTile(
+                    enabled: _preferences.notificationsEnabled,
+                    leading: const _SettingsIcon(
+                      icon: Icons.visibility_outlined,
+                    ),
+                    title: const Text('显示消息内容'),
+                    subtitle: const Text('关闭后，锁屏通知不展示聊天正文'),
+                    trailing: Switch.adaptive(
+                      value: _preferences.notificationPreview,
+                      onChanged: _preferences.notificationsEnabled
+                          ? (value) => _updatePreferences(
+                                _preferences.copyWith(
+                                  notificationPreview: value,
+                                ),
+                              )
+                          : null,
+                    ),
+                  ),
+                  ListTile(
+                    enabled: _preferences.notificationsEnabled,
+                    leading: const _SettingsIcon(
+                      icon: Icons.vibration_rounded,
+                    ),
+                    title: const Text('通知振动'),
+                    trailing: Switch.adaptive(
+                      value: _preferences.notificationVibration,
+                      onChanged: _preferences.notificationsEnabled
+                          ? (value) => _updatePreferences(
+                                _preferences.copyWith(
+                                  notificationVibration: value,
+                                ),
+                              )
+                          : null,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _SettingsCard(
+                children: [
+                  const ListTile(
+                    leading: _SettingsIcon(
+                      icon: Icons.palette_outlined,
+                    ),
+                    title: Text('界面 DIY'),
+                    subtitle: Text('更改只保存在这台手机，不影响小悠的人格与记忆'),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          '聊天配色',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          children: [
+                            for (final item in const [
+                              ('rose', '樱粉', Color(0xffa85e85)),
+                              ('lilac', '雾紫', Color(0xff826aa8)),
+                              ('peach', '奶杏', Color(0xffb77661)),
+                            ])
+                              ChoiceChip(
+                                avatar: CircleAvatar(
+                                  radius: 7,
+                                  backgroundColor: item.$3,
+                                ),
+                                label: Text(item.$2),
+                                selected: _preferences.palette == item.$1,
+                                onSelected: (_) => _updatePreferences(
+                                  _preferences.copyWith(palette: item.$1),
+                                ),
+                                showCheckmark: false,
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 15),
+                        Text(
+                          '字体大小 ${(_preferences.fontScale * 100).round()}%',
+                          style: const TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Slider(
+                          value: _preferences.fontScale,
+                          min: 0.9,
+                          max: 1.2,
+                          divisions: 6,
+                          label: '${(_preferences.fontScale * 100).round()}%',
+                          onChanged: (value) => _updatePreferences(
+                            _preferences.copyWith(fontScale: value),
+                          ),
+                        ),
+                        Text(
+                          '气泡圆角 ${_preferences.bubbleRadius.round()}',
+                          style: const TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Slider(
+                          value: _preferences.bubbleRadius,
+                          min: 10,
+                          max: 24,
+                          divisions: 7,
+                          onChanged: (value) => _updatePreferences(
+                            _preferences.copyWith(bubbleRadius: value),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SwitchListTile.adaptive(
+                    value: _preferences.compactMessages,
+                    title: const Text('紧凑消息间距'),
+                    subtitle: const Text('同一屏显示更多聊天内容'),
+                    secondary: const Icon(
+                      Icons.density_small_rounded,
+                      color: _rose,
+                    ),
+                    onChanged: (value) => _updatePreferences(
+                      _preferences.copyWith(compactMessages: value),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _SettingsCard(
+                children: [
+                  ListTile(
+                    leading: const _SettingsIcon(
+                      icon: Icons.cloud_outlined,
+                    ),
+                    title: const Text('连接设置'),
                     subtitle: Text(
-                      _batteryOptimizationIgnored
-                          ? '系统未限制小悠，休眠时更不容易延迟'
-                          : '建议在电池设置中将小悠设为“不限制”',
+                      connection == null
+                          ? '尚未保存'
+                          : '${connection.baseUrl}\n${connection.deviceId}',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                     ),
                     trailing: const Icon(Icons.chevron_right_rounded),
-                    onTap: _openBatteryOptimizationSettings,
+                    onTap: widget.onEditConnection,
                   ),
-                ListTile(
-                  enabled: _preferences.notificationsEnabled,
-                  leading: const _SettingsIcon(
-                    icon: Icons.notifications_none_rounded,
+                ],
+              ),
+              const SizedBox(height: 14),
+              _SettingsCard(
+                children: [
+                  ListTile(
+                    leading: const _SettingsIcon(
+                      icon: Icons.logout_rounded,
+                      danger: true,
+                    ),
+                    title: const Text(
+                      '忘记本机登录',
+                      style: TextStyle(color: Colors.redAccent),
+                    ),
+                    subtitle: const Text('不会删除服务器聊天记录'),
+                    onTap: widget.onForget,
                   ),
-                  title: const Text('发送测试通知'),
-                  subtitle: const Text('立即验证通知分类、声音与振动'),
-                  trailing: _testingNotifications
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.chevron_right_rounded),
-                  onTap: _preferences.notificationsEnabled &&
-                          !_testingNotifications
-                      ? _testNotification
-                      : null,
-                ),
-                ListTile(
-                  enabled: _preferences.notificationsEnabled,
-                  leading: const _SettingsIcon(
-                    icon: Icons.volume_up_outlined,
-                  ),
-                  title: const Text('通知声音'),
-                  trailing: Switch.adaptive(
-                    value: _preferences.notificationSound,
-                    onChanged: _preferences.notificationsEnabled
-                        ? (value) => _updatePreferences(
-                              _preferences.copyWith(
-                                notificationSound: value,
-                              ),
-                            )
-                        : null,
-                  ),
-                ),
-                ListTile(
-                  enabled: _preferences.notificationsEnabled,
-                  leading: const _SettingsIcon(
-                    icon: Icons.visibility_outlined,
-                  ),
-                  title: const Text('显示消息内容'),
-                  subtitle: const Text('关闭后，锁屏通知不展示聊天正文'),
-                  trailing: Switch.adaptive(
-                    value: _preferences.notificationPreview,
-                    onChanged: _preferences.notificationsEnabled
-                        ? (value) => _updatePreferences(
-                              _preferences.copyWith(
-                                notificationPreview: value,
-                              ),
-                            )
-                        : null,
-                  ),
-                ),
-                ListTile(
-                  enabled: _preferences.notificationsEnabled,
-                  leading: const _SettingsIcon(
-                    icon: Icons.vibration_rounded,
-                  ),
-                  title: const Text('通知振动'),
-                  trailing: Switch.adaptive(
-                    value: _preferences.notificationVibration,
-                    onChanged: _preferences.notificationsEnabled
-                        ? (value) => _updatePreferences(
-                              _preferences.copyWith(
-                                notificationVibration: value,
-                              ),
-                            )
-                        : null,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _SettingsCard(
-              children: [
-                const ListTile(
-                  leading: _SettingsIcon(
-                    icon: Icons.palette_outlined,
-                  ),
-                  title: Text('界面 DIY'),
-                  subtitle: Text('更改只保存在这台手机，不影响小悠的人格与记忆'),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '聊天配色',
-                        style: TextStyle(
-                          color: _muted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Wrap(
-                        spacing: 8,
-                        children: [
-                          for (final item in const [
-                            ('rose', '樱粉', Color(0xffa85e85)),
-                            ('lilac', '雾紫', Color(0xff826aa8)),
-                            ('peach', '奶杏', Color(0xffb77661)),
-                          ])
-                            ChoiceChip(
-                              avatar: CircleAvatar(
-                                radius: 7,
-                                backgroundColor: item.$3,
-                              ),
-                              label: Text(item.$2),
-                              selected: _preferences.palette == item.$1,
-                              onSelected: (_) => _updatePreferences(
-                                _preferences.copyWith(palette: item.$1),
-                              ),
-                              showCheckmark: false,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 15),
-                      Text(
-                        '字体大小 ${(_preferences.fontScale * 100).round()}%',
-                        style: const TextStyle(
-                          color: _muted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Slider(
-                        value: _preferences.fontScale,
-                        min: 0.9,
-                        max: 1.2,
-                        divisions: 6,
-                        label: '${(_preferences.fontScale * 100).round()}%',
-                        onChanged: (value) => _updatePreferences(
-                          _preferences.copyWith(fontScale: value),
-                        ),
-                      ),
-                      Text(
-                        '气泡圆角 ${_preferences.bubbleRadius.round()}',
-                        style: const TextStyle(
-                          color: _muted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      Slider(
-                        value: _preferences.bubbleRadius,
-                        min: 10,
-                        max: 24,
-                        divisions: 7,
-                        onChanged: (value) => _updatePreferences(
-                          _preferences.copyWith(bubbleRadius: value),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                SwitchListTile.adaptive(
-                  value: _preferences.compactMessages,
-                  title: const Text('紧凑消息间距'),
-                  subtitle: const Text('同一屏显示更多聊天内容'),
-                  secondary: const Icon(
-                    Icons.density_small_rounded,
-                    color: _rose,
-                  ),
-                  onChanged: (value) => _updatePreferences(
-                    _preferences.copyWith(compactMessages: value),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _SettingsCard(
-              children: [
-                ListTile(
-                  leading: const _SettingsIcon(
-                    icon: Icons.cloud_outlined,
-                  ),
-                  title: const Text('连接设置'),
-                  subtitle: Text(
-                    connection == null
-                        ? '尚未保存'
-                        : '${connection.baseUrl}\n${connection.deviceId}',
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: widget.onEditConnection,
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            _SettingsCard(
-              children: [
-                ListTile(
-                  leading: const _SettingsIcon(
-                    icon: Icons.logout_rounded,
-                    danger: true,
-                  ),
-                  title: const Text(
-                    '忘记本机登录',
-                    style: TextStyle(color: Colors.redAccent),
-                  ),
-                  subtitle: const Text('不会删除服务器聊天记录'),
-                  onTap: widget.onForget,
-                ),
-              ],
-            ),
-            const SizedBox(height: 18),
-            const Text(
-              '小悠 App · 私人单联系人会话',
-              style: TextStyle(color: Color(0xffaa9da4), fontSize: 12),
-            ),
-          ],
+                ],
+              ),
+              const SizedBox(height: 18),
+              const Text(
+                '小悠 App · 私人单联系人会话',
+                style: TextStyle(color: Color(0xffaa9da4), fontSize: 12),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4122,6 +4199,7 @@ class _MessageRow extends StatefulWidget {
     super.key,
     required this.message,
     required this.api,
+    required this.mediaCache,
     required this.userBubbleColor,
     required this.bubbleRadius,
     required this.compact,
@@ -4139,6 +4217,7 @@ class _MessageRow extends StatefulWidget {
 
   final ChatMessage message;
   final XiaoyouApi? api;
+  final MessageMediaCache mediaCache;
   final Color userBubbleColor;
   final double bubbleRadius;
   final bool compact;
@@ -4172,13 +4251,50 @@ class _MessageRowState extends State<_MessageRow>
   bool _voiceLoading = false;
   bool _voicePlaying = false;
   Duration _voiceDuration = Duration.zero;
+  Future<File?>? _mediaFileFuture;
+  File? _resolvedMediaFile;
 
   @override
   void initState() {
     super.initState();
+    _prepareMedia();
     if (widget.animate) {
       _controller.forward();
     }
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessageRow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final before = oldWidget.message;
+    final after = widget.message;
+    if (before.id != after.id ||
+        before.mediaId != after.mediaId ||
+        before.remoteUrl != after.remoteUrl ||
+        before.localPath != after.localPath ||
+        before.mimeType != after.mimeType ||
+        before.localState != after.localState) {
+      _prepareMedia();
+    }
+  }
+
+  void _prepareMedia() {
+    _resolvedMediaFile = null;
+    if (!MessageMediaCache.supports(widget.message)) {
+      _mediaFileFuture = null;
+      return;
+    }
+    final future = widget.mediaCache.resolveMessage(
+      widget.message,
+      widget.api,
+    );
+    _mediaFileFuture = future;
+    future.then((file) {
+      if (!mounted || !identical(_mediaFileFuture, future)) {
+        return;
+      }
+      setState(() => _resolvedMediaFile = file);
+    });
   }
 
   @override
@@ -4340,18 +4456,29 @@ class _MessageRowState extends State<_MessageRow>
     }
     setState(() => _voiceLoading = true);
     try {
-      if (message.localPath.isNotEmpty) {
+      final cached = _resolvedMediaFile ?? await _mediaFileFuture;
+      if (cached != null && await cached.exists()) {
+        await player.play(
+          DeviceFileSource(
+            cached.path,
+            mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
+          ),
+        );
+      } else if (message.localPath.isNotEmpty &&
+          await File(message.localPath).exists()) {
         await player.play(
           DeviceFileSource(
             message.localPath,
             mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
           ),
         );
-      } else {
+      } else if (message.mediaId.isNotEmpty && widget.api != null) {
         final media = await widget.api!.downloadMedia(message.mediaId);
         await player.play(
           BytesSource(media.bytes, mimeType: media.mimeType),
         );
+      } else {
+        return;
       }
     } catch (_) {
       if (mounted) {
@@ -4547,66 +4674,82 @@ class _MessageRowState extends State<_MessageRow>
         ? api.mediaUrl(message.mediaId)
         : message.remoteUrl;
     final headers = message.mediaId.isNotEmpty ? api?.mediaHeaders : null;
-    final localPath = message.localPath;
-    final hasLocal = localPath.isNotEmpty && File(localPath).existsSync();
     final imageWidth = message.kind == 'sticker' ? 154.0 : 220.0;
-    final image = hasLocal
-        ? Image.file(
-            File(localPath),
-            width: imageWidth,
-            fit: BoxFit.cover,
-          )
-        : Image.network(
-            url,
-            headers: headers,
-            width: imageWidth,
-            fit: BoxFit.cover,
-          );
-    return GestureDetector(
-      onTap: !hasLocal && url.isEmpty
-          ? null
-          : () => _openImage(
-                url,
-                headers,
-                hasLocal ? localPath : '',
-                message.mimeType,
-              ),
-      child: Hero(
-        tag: 'image-${message.id}',
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(15),
-          child: Image(
-            image: image.image,
-            width: imageWidth,
-            fit: BoxFit.cover,
-            frameBuilder: (context, child, frame, synchronous) {
-              if (synchronous || frame != null) {
-                _reportRendered();
-              }
-              return child;
-            },
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) {
-                return child;
-              }
-              return SizedBox(
+    return FutureBuilder<File?>(
+      future: _mediaFileFuture,
+      initialData: _resolvedMediaFile,
+      builder: (context, snapshot) {
+        final cached = snapshot.data;
+        final hasCached = cached != null && cached.existsSync();
+        final canOpen = hasCached || url.isNotEmpty;
+        final image = hasCached
+            ? Image.file(
+                cached,
                 width: imageWidth,
-                height: 180,
-                child: const Center(
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              );
-            },
-            errorBuilder: (_, __, ___) => SizedBox(
-              width: imageWidth,
-              height: 150,
-              child: const Center(child: Text('图片暂时加载失败')),
+                fit: BoxFit.cover,
+                frameBuilder: (context, child, frame, synchronous) {
+                  if (synchronous || frame != null) {
+                    _reportRendered();
+                  }
+                  return child;
+                },
+                errorBuilder: (_, __, ___) => _mediaLoadFailure(imageWidth),
+              )
+            : url.isNotEmpty && snapshot.connectionState == ConnectionState.done
+                ? Image.network(
+                    url,
+                    headers: headers,
+                    width: imageWidth,
+                    fit: BoxFit.cover,
+                    frameBuilder: (context, child, frame, synchronous) {
+                      if (synchronous || frame != null) {
+                        _reportRendered();
+                      }
+                      return child;
+                    },
+                    loadingBuilder: (context, child, progress) {
+                      if (progress == null) {
+                        return child;
+                      }
+                      return _mediaLoading(imageWidth);
+                    },
+                    errorBuilder: (_, __, ___) => _mediaLoadFailure(imageWidth),
+                  )
+                : _mediaLoading(imageWidth);
+        return GestureDetector(
+          onTap: canOpen
+              ? () => _openImage(
+                    url,
+                    headers,
+                    hasCached ? cached.path : '',
+                    message.mimeType,
+                  )
+              : null,
+          child: Hero(
+            tag: 'image-${message.id}',
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(15),
+              child: image,
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
+
+  Widget _mediaLoading(double width) => SizedBox(
+        width: width,
+        height: 180,
+        child: const Center(
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+
+  Widget _mediaLoadFailure(double width) => SizedBox(
+        width: width,
+        height: 150,
+        child: const Center(child: Text('图片暂时加载失败')),
+      );
 
   Widget _buildVoice(ChatMessage message) {
     _reportRendered();
@@ -4621,7 +4764,9 @@ class _MessageRowState extends State<_MessageRow>
     final seconds =
         milliseconds > 0 ? max(1, (milliseconds / 1000).round()) : 0;
     final canPlay = message.localPath.isNotEmpty ||
-        (message.mediaId.isNotEmpty && widget.api != null);
+        _resolvedMediaFile != null ||
+        ((message.mediaId.isNotEmpty || message.remoteUrl.isNotEmpty) &&
+            widget.api != null);
     final bubbleWidth = (150.0 + min(seconds, 30) * 3.2).clamp(150.0, 246.0);
     return InkWell(
       onTap: canPlay ? _toggleVoice : null,
@@ -5249,172 +5394,182 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
         })
         .take(80)
         .toList();
-    final media = MediaQuery.of(context);
-    final availableHeight = max(
-      0.0,
-      media.size.height - media.viewInsets.bottom - media.padding.top - 12,
-    );
-    final sheetHeight = min(media.size.height * 0.82, availableHeight);
-    return AnimatedPadding(
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOutCubic,
-      padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
-      child: Align(
-        alignment: Alignment.bottomCenter,
-        child: SizedBox(
-          height: sheetHeight,
-          child: Material(
-            color: _pearl.withValues(alpha: 0.96),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-            clipBehavior: Clip.antiAlias,
-            child: Column(
-              children: [
-                const SizedBox(height: 10),
-                Container(
-                  width: 42,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xffd8bdcd), Color(0xffb88da8)],
-                    ),
-                    borderRadius: BorderRadius.circular(99),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
-                  child: TextField(
-                    controller: _controller,
-                    autofocus: true,
-                    onChanged: (value) => setState(() => _query = value),
-                    decoration: InputDecoration(
-                      hintText: '搜索你和小悠的聊天记录',
-                      prefixIcon: const Icon(Icons.search_rounded),
-                      suffixIcon: _query.isEmpty
-                          ? null
-                          : IconButton(
-                              onPressed: () {
-                                _controller.clear();
-                                setState(() => _query = '');
-                              },
-                              icon: const Icon(Icons.close_rounded),
-                            ),
-                      filled: true,
-                      fillColor: const Color(0xfaffffff),
-                      prefixIconColor: _rose,
-                      suffixIconColor: _muted,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        borderSide: const BorderSide(color: Color(0xffead6e2)),
-                      ),
-                      enabledBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        borderSide: const BorderSide(color: Color(0xffead6e2)),
-                      ),
-                      focusedBorder: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(20),
-                        borderSide: const BorderSide(color: _rose, width: 1.2),
-                      ),
-                    ),
-                  ),
-                ),
-                _SearchFilterRow(
-                  children: [
-                    _SearchFilterChip(
-                      label: '全部时间',
-                      selected: _period == _SearchPeriod.all,
-                      onTap: () => setState(() => _period = _SearchPeriod.all),
-                    ),
-                    _SearchFilterChip(
-                      label: '今天',
-                      selected: _period == _SearchPeriod.today,
-                      onTap: () =>
-                          setState(() => _period = _SearchPeriod.today),
-                    ),
-                    _SearchFilterChip(
-                      label: '近 7 天',
-                      selected: _period == _SearchPeriod.sevenDays,
-                      onTap: () =>
-                          setState(() => _period = _SearchPeriod.sevenDays),
-                    ),
-                    _SearchFilterChip(
-                      label: '近 30 天',
-                      selected: _period == _SearchPeriod.thirtyDays,
-                      onTap: () =>
-                          setState(() => _period = _SearchPeriod.thirtyDays),
-                    ),
-                    _SearchFilterChip(
-                      label: _selectedDay == null
-                          ? '选择日期'
-                          : '${_selectedDay!.month}月${_selectedDay!.day}日',
-                      selected: _period == _SearchPeriod.customDay,
-                      onTap: _selectDay,
-                    ),
-                  ],
-                ),
-                _SearchFilterRow(
-                  children: [
-                    for (final entry in const [
-                      (_SearchKind.all, '全部类型'),
-                      (_SearchKind.text, '文字'),
-                      (_SearchKind.image, '图片'),
-                      (_SearchKind.voice, '语音'),
-                      (_SearchKind.sticker, '表情包'),
-                    ])
-                      _SearchFilterChip(
-                        label: entry.$2,
-                        selected: _kind == entry.$1,
-                        onTap: () => setState(() => _kind = entry.$1),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                Expanded(
-                  child: results.isEmpty
-                      ? const Center(child: Text('没有找到相关消息'))
-                      : ListView.separated(
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
-                          itemCount: results.length,
-                          separatorBuilder: (_, __) =>
-                              const SizedBox(height: 4),
-                          itemBuilder: (context, index) {
-                            final message = results[index];
-                            return ListTile(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(20),
-                              ),
-                              tileColor: const Color(0xfaffffff),
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                                vertical: 4,
-                              ),
-                              leading: message.fromXiaoyou
-                                  ? const _Avatar(size: 38)
-                                  : const CircleAvatar(
-                                      backgroundColor: Color(0xffead7e1),
-                                      child: Text(
-                                        '您',
-                                        style: TextStyle(color: _roseDark),
-                                      ),
-                                    ),
-                              title: Text(
-                                _searchMessageSummary(message),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                '${_searchKindLabel(message.kind)} · '
-                                '${_formatDateTime(message.timestamp)}',
-                              ),
-                              onTap: () => Navigator.pop(context, message),
-                            );
+    return Scaffold(
+      resizeToAvoidBottomInset: true,
+      backgroundColor: _pearl,
+      appBar: AppBar(
+        backgroundColor: _pearl,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        leading: IconButton(
+          tooltip: '返回',
+          onPressed: () => Navigator.maybePop(context),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+          color: const Color(0xff5a424b),
+        ),
+        titleSpacing: 2,
+        title: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '搜索聊天记录',
+              style: TextStyle(
+                color: Color(0xff3f2f35),
+                fontSize: 19,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            SizedBox(height: 2),
+            Text(
+              '你和小悠说过的每一句话',
+              style: TextStyle(
+                color: Color(0xffa18e95),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
+        ),
+        bottom: const PreferredSize(
+          preferredSize: Size.fromHeight(1),
+          child: Divider(height: 1, color: Color(0xffeee3e6)),
+        ),
+      ),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
+              child: TextField(
+                controller: _controller,
+                autofocus: true,
+                onChanged: (value) => setState(() => _query = value),
+                decoration: InputDecoration(
+                  hintText: '搜索你和小悠的聊天记录',
+                  prefixIcon: const Icon(Icons.search_rounded),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: () {
+                            _controller.clear();
+                            setState(() => _query = '');
                           },
+                          icon: const Icon(Icons.close_rounded),
                         ),
+                  filled: true,
+                  fillColor: const Color(0xfaffffff),
+                  prefixIconColor: _rose,
+                  suffixIconColor: _muted,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    borderSide: const BorderSide(color: Color(0xffead6e2)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    borderSide: const BorderSide(color: Color(0xffead6e2)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(20),
+                    borderSide: const BorderSide(color: _rose, width: 1.2),
+                  ),
+                ),
+              ),
+            ),
+            _SearchFilterRow(
+              children: [
+                _SearchFilterChip(
+                  label: '全部时间',
+                  selected: _period == _SearchPeriod.all,
+                  onTap: () => setState(() => _period = _SearchPeriod.all),
+                ),
+                _SearchFilterChip(
+                  label: '今天',
+                  selected: _period == _SearchPeriod.today,
+                  onTap: () => setState(() => _period = _SearchPeriod.today),
+                ),
+                _SearchFilterChip(
+                  label: '近 7 天',
+                  selected: _period == _SearchPeriod.sevenDays,
+                  onTap: () =>
+                      setState(() => _period = _SearchPeriod.sevenDays),
+                ),
+                _SearchFilterChip(
+                  label: '近 30 天',
+                  selected: _period == _SearchPeriod.thirtyDays,
+                  onTap: () =>
+                      setState(() => _period = _SearchPeriod.thirtyDays),
+                ),
+                _SearchFilterChip(
+                  label: _selectedDay == null
+                      ? '选择日期'
+                      : '${_selectedDay!.month}月${_selectedDay!.day}日',
+                  selected: _period == _SearchPeriod.customDay,
+                  onTap: _selectDay,
                 ),
               ],
             ),
-          ),
+            _SearchFilterRow(
+              children: [
+                for (final entry in const [
+                  (_SearchKind.all, '全部类型'),
+                  (_SearchKind.text, '文字'),
+                  (_SearchKind.image, '图片'),
+                  (_SearchKind.voice, '语音'),
+                  (_SearchKind.sticker, '表情包'),
+                ])
+                  _SearchFilterChip(
+                    label: entry.$2,
+                    selected: _kind == entry.$1,
+                    onTap: () => setState(() => _kind = entry.$1),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: results.isEmpty
+                  ? const Center(child: Text('没有找到相关消息'))
+                  : ListView.separated(
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
+                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+                      itemCount: results.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 4),
+                      itemBuilder: (context, index) {
+                        final message = results[index];
+                        return ListTile(
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          tileColor: const Color(0xfaffffff),
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 4,
+                          ),
+                          leading: message.fromXiaoyou
+                              ? const _Avatar(size: 38)
+                              : const CircleAvatar(
+                                  backgroundColor: Color(0xffead7e1),
+                                  child: Text(
+                                    '您',
+                                    style: TextStyle(color: _roseDark),
+                                  ),
+                                ),
+                          title: Text(
+                            _searchMessageSummary(message),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            '${_searchKindLabel(message.kind)} · '
+                            '${_formatDateTime(message.timestamp)}',
+                          ),
+                          onTap: () => Navigator.pop(context, message),
+                        );
+                      },
+                    ),
+            ),
+          ],
         ),
       ),
     );
@@ -6499,8 +6654,771 @@ class _LockScreen extends StatelessWidget {
   }
 }
 
-class _ProfileSheet extends StatelessWidget {
+class _ProfileSheet extends StatefulWidget {
   const _ProfileSheet({
+    required this.moodAsset,
+    required this.moodLabel,
+    required this.recentPhotos,
+    required this.api,
+  });
+
+  final String moodAsset;
+  final String moodLabel;
+  final List<ChatMessage> recentPhotos;
+  final XiaoyouApi? api;
+
+  @override
+  State<_ProfileSheet> createState() => _ProfileSheetState();
+}
+
+class _ProfileSheetState extends State<_ProfileSheet> {
+  static const _moodAssets = [
+    'assets/moods/平静.png',
+    'assets/moods/开心.png',
+    'assets/moods/害羞.png',
+    'assets/moods/惊讶.png',
+    'assets/moods/愤怒.png',
+    'assets/moods/无语.png',
+    'assets/moods/难过.png',
+    'assets/moods/大哭.png',
+    'assets/moods/害怕.png',
+  ];
+  static const _moodLabels = {
+    'assets/moods/平静.png': '平静',
+    'assets/moods/开心.png': '开心',
+    'assets/moods/害羞.png': '害羞',
+    'assets/moods/惊讶.png': '惊讶',
+    'assets/moods/愤怒.png': '愤怒',
+    'assets/moods/无语.png': '无语',
+    'assets/moods/难过.png': '难过',
+    'assets/moods/大哭.png': '大哭',
+    'assets/moods/害怕.png': '害怕',
+  };
+
+  late final PageController _sectionController;
+  late int _selectedMoodIndex;
+  int _activeSection = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _sectionController = PageController();
+    _selectedMoodIndex = _indexForAsset(widget.moodAsset);
+  }
+
+  @override
+  void dispose() {
+    _sectionController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProfileSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.moodAsset != widget.moodAsset) {
+      _selectedMoodIndex = _indexForAsset(widget.moodAsset);
+    }
+  }
+
+  int _indexForAsset(String asset) {
+    final index = _moodAssets.indexOf(asset);
+    return index < 0 ? 0 : index;
+  }
+
+  List<ImageProvider<Object>> _recentImages() {
+    final images = <ImageProvider<Object>>[];
+    for (final message in widget.recentPhotos) {
+      if (message.localPath.isNotEmpty &&
+          File(message.localPath).existsSync()) {
+        images.add(FileImage(File(message.localPath)));
+        continue;
+      }
+      if (message.mediaId.isNotEmpty && widget.api != null) {
+        images.add(
+          NetworkImage(
+            widget.api!.mediaUrl(message.mediaId),
+            headers: widget.api!.mediaHeaders,
+          ),
+        );
+        continue;
+      }
+      if (message.remoteUrl.isNotEmpty) {
+        images.add(NetworkImage(message.remoteUrl));
+      }
+    }
+    return images;
+  }
+
+  String _moodNote(String label) {
+    return switch (label) {
+      '开心' => '有开心的事，想第一个告诉你',
+      '惊讶' => '刚刚有一点意外，还没缓过来',
+      '愤怒' => '现在有点生气，想让你哄哄',
+      '无语' => '有些话卡住了，先陪我待会儿',
+      '难过' => '情绪有点低，想靠近你一点',
+      '害羞' => '有点不好意思，但还是想靠近你',
+      '大哭' => '情绪一下没忍住，想让你好好抱抱',
+      '害怕' => '现在有点不安，想听见你陪着我',
+      _ => '想安静地陪你一会儿',
+    };
+  }
+
+  Future<void> _showSection(int section) async {
+    if (_activeSection == section && _sectionController.hasClients) {
+      return;
+    }
+    setState(() => _activeSection = section);
+    if (!_sectionController.hasClients) {
+      return;
+    }
+    await _sectionController.animateToPage(
+      section,
+      duration: const Duration(milliseconds: 430),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final recentImages = _recentImages();
+    final selectedAsset = _moodAssets[_selectedMoodIndex];
+    final selectedLabel = _moodLabels[selectedAsset] ?? widget.moodLabel;
+    return Scaffold(
+      backgroundColor: const Color(0xfffffcfa),
+      body: SafeArea(
+        child: Material(
+          color: const Color(0xfffffcfa),
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 14, 20, 12),
+                child: Row(
+                  children: [
+                    IconButton(
+                      tooltip: '关闭',
+                      onPressed: () => Navigator.maybePop(context),
+                      icon: const Icon(Icons.close_rounded),
+                      color: const Color(0xff6f555e),
+                      iconSize: 25,
+                    ),
+                    const SizedBox(width: 4),
+                    const Hero(
+                      tag: 'xiaoyou-avatar',
+                      child: _Avatar(size: 48),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '小悠',
+                            style: TextStyle(
+                              color: Color(0xff3a292f),
+                              fontSize: 21,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.2,
+                            ),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            '最近的她',
+                            style: TextStyle(
+                              color: Color(0xff9a878e),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: _ProfileAnchorTab(
+                      label: '心情',
+                      active: _activeSection == 0,
+                      onTap: () => _showSection(0),
+                    ),
+                  ),
+                  Expanded(
+                    child: _ProfileAnchorTab(
+                      label: '照片',
+                      active: _activeSection == 1,
+                      onTap: () => _showSection(1),
+                    ),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: PageView(
+                  controller: _sectionController,
+                  onPageChanged: (section) {
+                    if (_activeSection != section) {
+                      setState(() => _activeSection = section);
+                    }
+                  },
+                  children: [
+                    SingleChildScrollView(
+                      key: const PageStorageKey('profile-mood-page'),
+                      padding: const EdgeInsets.fromLTRB(24, 24, 24, 38),
+                      child: Column(
+                        children: [
+                          _ProfileMoodSummary(
+                            asset: selectedAsset,
+                            label: selectedLabel,
+                            note: _moodNote(selectedLabel),
+                          ),
+                          const SizedBox(height: 20),
+                          _MoodContactSheet(
+                            assets: _moodAssets,
+                            selectedIndex: _selectedMoodIndex,
+                            currentIndex: _indexForAsset(widget.moodAsset),
+                            onSelected: (index) {
+                              setState(() => _selectedMoodIndex = index);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    SingleChildScrollView(
+                      key: const PageStorageKey('profile-photo-page'),
+                      padding: const EdgeInsets.fromLTRB(18, 22, 18, 38),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                const Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        '最近的日常',
+                                        style: TextStyle(
+                                          color: Color(0xff443138),
+                                          fontSize: 22,
+                                          fontWeight: FontWeight.w800,
+                                          letterSpacing: 0.2,
+                                        ),
+                                      ),
+                                      SizedBox(height: 4),
+                                      Text(
+                                        '她最近分享给你的照片',
+                                        style: TextStyle(
+                                          color: Color(0xffa08d94),
+                                          fontSize: 12,
+                                          height: 1.4,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Text(
+                                  '${recentImages.length.clamp(0, 6)} 张',
+                                  style: const TextStyle(
+                                    color: Color(0xffbd5a7c),
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          if (recentImages.isEmpty)
+                            const _ProfilePhotoEmptyState()
+                          else
+                            _ProfilePhotoJournal(images: recentImages),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileAnchorTab extends StatelessWidget {
+  const _ProfileAnchorTab({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 220),
+          height: 52,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            border: Border(
+              top: const BorderSide(color: Color(0xffeee6e8)),
+              bottom: BorderSide(
+                color:
+                    active ? const Color(0xffc85f83) : const Color(0xffeee6e8),
+                width: active ? 2 : 1,
+              ),
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: active ? const Color(0xffb14e73) : const Color(0xff4c383f),
+              fontSize: 15,
+              fontWeight: active ? FontWeight.w700 : FontWeight.w600,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileMoodSummary extends StatelessWidget {
+  const _ProfileMoodSummary({
+    required this.asset,
+    required this.label,
+    required this.note,
+  });
+
+  final String asset;
+  final String label;
+  final String note;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final imageWidth = (constraints.maxWidth * 0.48).clamp(138.0, 190.0);
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: imageWidth,
+              height: imageWidth * 1.08,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: ScaleTransition(
+                    scale:
+                        Tween<double>(begin: 0.97, end: 1).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: Image.asset(
+                  asset,
+                  key: ValueKey(asset),
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                  errorBuilder: (context, error, stackTrace) =>
+                      const SizedBox.shrink(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 14),
+            Container(
+              width: 2,
+              height: 92,
+              color: const Color(0xffd36a8d),
+            ),
+            const SizedBox(width: 18),
+            Expanded(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 260),
+                child: Column(
+                  key: ValueKey(label),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '今天 · $label',
+                      style: const TextStyle(
+                        color: Color(0xff573940),
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                    const SizedBox(height: 9),
+                    Text(
+                      note,
+                      style: const TextStyle(
+                        color: Color(0xff9c858d),
+                        fontSize: 13,
+                        height: 1.55,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _MoodContactSheet extends StatelessWidget {
+  const _MoodContactSheet({
+    required this.assets,
+    required this.selectedIndex,
+    required this.currentIndex,
+    required this.onSelected,
+  });
+
+  final List<String> assets;
+  final int selectedIndex;
+  final int currentIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return GridView.builder(
+      itemCount: assets.length,
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 9,
+        mainAxisSpacing: 9,
+        childAspectRatio: 0.94,
+      ),
+      itemBuilder: (context, index) {
+        final selected = index == selectedIndex;
+        final current = index == currentIndex;
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => onSelected(index),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              decoration: BoxDecoration(
+                color: const Color(0xfffffdfc),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: selected
+                      ? const Color(0xffcf6386)
+                      : const Color(0xffeadfe2),
+                  width: selected ? 1.6 : 1,
+                ),
+              ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(5, 7, 5, 3),
+                    child: Image.asset(
+                      assets[index],
+                      fit: BoxFit.contain,
+                      filterQuality: FilterQuality.high,
+                      errorBuilder: (context, error, stackTrace) =>
+                          const SizedBox.shrink(),
+                    ),
+                  ),
+                  if (selected)
+                    const Positioned(
+                      right: 7,
+                      top: 7,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Color(0xffc85f83),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Padding(
+                          padding: EdgeInsets.all(4),
+                          child: Icon(
+                            Icons.check_rounded,
+                            size: 13,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    )
+                  else if (current)
+                    const Positioned(
+                      right: 9,
+                      top: 9,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: Color(0xffc85f83),
+                          shape: BoxShape.circle,
+                        ),
+                        child: SizedBox(width: 7, height: 7),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _ProfilePhotoJournal extends StatelessWidget {
+  const _ProfilePhotoJournal({required this.images});
+
+  final List<ImageProvider<Object>> images;
+
+  void _openGallery(BuildContext context, int initialIndex) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => _ProfilePhotoGallery(
+          images: images.take(6).toList(growable: false),
+          initialIndex: initialIndex,
+        ),
+      ),
+    );
+  }
+
+  Widget _tile(
+    BuildContext context, {
+    required ImageProvider<Object> image,
+    required int index,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xfffffdfc),
+        borderRadius: BorderRadius.circular(17),
+        border: Border.all(color: const Color(0xfff1e8ea)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x160d0710),
+            blurRadius: 18,
+            offset: Offset(0, 7),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: GestureDetector(
+          onTap: () => _openGallery(context, index),
+          child: Image(
+            image: image,
+            width: double.infinity,
+            fit: BoxFit.fitWidth,
+            filterQuality: FilterQuality.high,
+            errorBuilder: (_, __, ___) => const AspectRatio(
+              aspectRatio: 0.72,
+              child: ColoredBox(
+                color: Color(0xfff5eef0),
+                child: Center(
+                  child: Icon(
+                    Icons.broken_image_outlined,
+                    color: Color(0xffb99ba5),
+                    size: 28,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _column(
+    BuildContext context, {
+    required List<ImageProvider<Object>> visible,
+    required List<int> indices,
+  }) {
+    return Column(
+      children: [
+        for (var offset = 0; offset < indices.length; offset++) ...[
+          _tile(
+            context,
+            image: visible[indices[offset]],
+            index: indices[offset],
+          ),
+          if (offset != indices.length - 1) const SizedBox(height: 10),
+        ],
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final visible = images.take(6).toList(growable: false);
+    final left = <int>[];
+    final right = <int>[];
+    for (var index = 0; index < visible.length; index++) {
+      (index.isEven ? left : right).add(index);
+    }
+    return Column(
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _column(
+                context,
+                visible: visible,
+                indices: left,
+              ),
+            ),
+            if (right.isNotEmpty) ...[
+              const SizedBox(width: 10),
+              Expanded(
+                child: _column(
+                  context,
+                  visible: visible,
+                  indices: right,
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 18),
+        OutlinedButton.icon(
+          onPressed: () => _openGallery(context, 0),
+          iconAlignment: IconAlignment.end,
+          icon: const Icon(Icons.arrow_forward_rounded, size: 17),
+          label: const Text('查看全部照片'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xffb95075),
+            side: const BorderSide(color: Color(0xffead9df)),
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
+            shape: const StadiumBorder(),
+            textStyle: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProfilePhotoEmptyState extends StatelessWidget {
+  const _ProfilePhotoEmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 34, horizontal: 22),
+      decoration: BoxDecoration(
+        color: const Color(0xfffaf5f6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xffeee3e6)),
+      ),
+      child: const Column(
+        children: [
+          Icon(
+            Icons.photo_library_outlined,
+            color: Color(0xffb99ba5),
+            size: 30,
+          ),
+          SizedBox(height: 10),
+          Text(
+            '她最近还没有分享照片',
+            style: TextStyle(
+              color: Color(0xff806b72),
+              fontSize: 13,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProfilePhotoGallery extends StatefulWidget {
+  const _ProfilePhotoGallery({
+    required this.images,
+    required this.initialIndex,
+  });
+
+  final List<ImageProvider<Object>> images;
+  final int initialIndex;
+
+  @override
+  State<_ProfilePhotoGallery> createState() => _ProfilePhotoGalleryState();
+}
+
+class _ProfilePhotoGalleryState extends State<_ProfilePhotoGallery> {
+  late final PageController _controller = PageController(
+    initialPage: widget.initialIndex,
+  );
+  late int _index = widget.initialIndex;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xff171315),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        title: Text(
+          '${_index + 1} / ${widget.images.length}',
+          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        ),
+        centerTitle: true,
+      ),
+      body: PageView.builder(
+        controller: _controller,
+        itemCount: widget.images.length,
+        onPageChanged: (index) => setState(() => _index = index),
+        itemBuilder: (context, index) => InteractiveViewer(
+          minScale: 1,
+          maxScale: 4,
+          child: Center(
+            child: Image(
+              image: widget.images[index],
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => const Icon(
+                Icons.broken_image_outlined,
+                color: Colors.white54,
+                size: 46,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Kept temporarily while older screenshots and golden references are migrated.
+// ignore: unused_element
+class _LegacyProfileSheet extends StatelessWidget {
+  const _LegacyProfileSheet({
     required this.moodAsset,
     required this.moodLabel,
     required this.recentPhotos,

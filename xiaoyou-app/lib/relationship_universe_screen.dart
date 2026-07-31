@@ -327,7 +327,6 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
                 SliverToBoxAdapter(child: _buildHeader()),
                 SliverToBoxAdapter(child: _buildOrbitCard()),
                 SliverToBoxAdapter(child: _buildMemoryRibbon()),
-                SliverToBoxAdapter(child: _buildActions()),
                 const SliverToBoxAdapter(child: SizedBox(height: 26)),
               ],
             ),
@@ -550,23 +549,6 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
               api: widget.api,
               onTap: _openSelected,
             ),
-    );
-  }
-
-  Widget _buildActions() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(26, 4, 26, 0),
-      child: Row(
-        children: [
-          Expanded(
-            child: _PosterPillButton(
-              icon: Icons.edit_note_rounded,
-              title: '写一封信',
-              onTap: _openCapsules,
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
@@ -1221,77 +1203,6 @@ class _GlassBubble extends StatelessWidget {
             spreadRadius: 1,
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _PosterPillButton extends StatelessWidget {
-  const _PosterPillButton({
-    required this.icon,
-    required this.title,
-    required this.onTap,
-  });
-
-  final IconData icon;
-  final String title;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(99),
-        child: Ink(
-          height: 58,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(99),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xdfffffff),
-                Color(0xdffff7fa),
-                Color(0xd4f0eaff),
-              ],
-            ),
-            border: Border.all(color: const Color(0xfaffffff), width: 1.4),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x24a95a82),
-                blurRadius: 22,
-                offset: Offset(0, 10),
-              ),
-              BoxShadow(
-                color: Color(0x6bffffff),
-                blurRadius: 8,
-                offset: Offset(-3, -3),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: _orbitRose, size: 22),
-              const SizedBox(width: 9),
-              Flexible(
-                child: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: _orbitInk,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 0.4,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
       ),
     );
   }

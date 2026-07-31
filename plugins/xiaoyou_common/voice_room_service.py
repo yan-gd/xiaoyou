@@ -79,6 +79,25 @@ def _clean_text(value, limit=12000):
     return str(value or "").replace("\x00", "").strip()[: max(0, int(limit))]
 
 
+def pcm16_has_audible_signal(value, minimum_peak=32):
+    """Return whether little-endian PCM16 contains an audible sample.
+
+    A provider can finish a TTS event with an empty or all-zero audio payload.
+    Such a turn was never actually spoken and must not become conversation
+    history, memory, relationship data, or proactive-activity state.
+    """
+    raw = bytes(value or b"")
+    if len(raw) < 2:
+        return False
+    usable = len(raw) - (len(raw) % 2)
+    threshold = max(1, int(minimum_peak or 1))
+    for offset in range(0, usable, 2):
+        sample = struct.unpack_from("<h", raw, offset)[0]
+        if abs(sample) >= threshold:
+            return True
+    return False
+
+
 def _json_bytes(payload):
     return json.dumps(
         payload if isinstance(payload, dict) else {},
@@ -892,8 +911,25 @@ class VoiceRoomMemoryProjector:
         user_text = _clean_text(turn.get("user_text"))
         assistant_text = _clean_text(turn.get("assistant_text"))
         turn_id = _clean_text(turn.get("turn_id"), 128)
-        if not session_id or not user_text or not turn_id:
-            raise VoiceRoomError("voice_room_memory_payload_invalid")
+        audio_media_id = _clean_text(turn.get("audio_media_id"), 128)
+        if (
+            not session_id
+            or not user_text
+            or not assistant_text
+            or not turn_id
+            or not audio_media_id
+        ):
+            if turn_id:
+                self.store.mark_memory(turn_id, "discarded")
+            logger.info(
+                "[VoiceRoomMemory] discarded incomplete turn_id=%s "
+                "user=%s assistant=%s audio=%s",
+                turn_id[:48],
+                bool(user_text),
+                bool(assistant_text),
+                bool(audio_media_id),
+            )
+            return False
         instances = self._instances()
         short_memory = instances.get("SHORTMEMORY")
         append_user = getattr(short_memory, "append_external_user_message", None)
@@ -919,48 +955,31 @@ class VoiceRoomMemoryProjector:
             turn.get("terminal_status")
             or ("complete" if delivery_complete else "partial")
         )
-        if assistant_text:
-            append_assistant(
-                session_id,
-                assistant_text,
-                source="voice_room",
-                input_id=input_id,
-                action_id=turn_id,
-            )
-            append_long = getattr(
-                long_memory,
-                "append_delivered_assistant_message",
-                None,
-            )
-            if not callable(append_long):
-                raise VoiceRoomError("long_memory_unavailable")
-            append_long(
-                session_id,
-                assistant_text,
-                user_text=user_text,
-                source="voice_room",
-                action_id=turn_id,
-                input_id=input_id,
-                delivery_complete=delivery_complete,
-                terminal_status=terminal_status,
-                completed_at=int(turn.get("created_at") or time.time()),
-            )
-        else:
-            append_long_user = getattr(
-                long_memory,
-                "append_external_user_message",
-                None,
-            )
-            if not callable(append_long_user):
-                raise VoiceRoomError("long_memory_unavailable")
-            append_long_user(
-                session_id,
-                user_text,
-                source="voice_room",
-                action_id=turn_id,
-                input_id=input_id,
-                completed_at=int(turn.get("created_at") or time.time()),
-            )
+        append_assistant(
+            session_id,
+            assistant_text,
+            source="voice_room",
+            input_id=input_id,
+            action_id=turn_id,
+        )
+        append_long = getattr(
+            long_memory,
+            "append_delivered_assistant_message",
+            None,
+        )
+        if not callable(append_long):
+            raise VoiceRoomError("long_memory_unavailable")
+        append_long(
+            session_id,
+            assistant_text,
+            user_text=user_text,
+            source="voice_room",
+            action_id=turn_id,
+            input_id=input_id,
+            delivery_complete=delivery_complete,
+            terminal_status=terminal_status,
+            completed_at=int(turn.get("created_at") or time.time()),
+        )
         try:
             from plugins.xiaoyou_common.recent_state_service import (
                 get_recent_state_service,
@@ -1805,11 +1824,12 @@ class _VoiceRoomLiveRuntime:
                         128,
                     )
             snapshot = self._snapshot_turn()
-            if (
+            valid_exchange = bool(
                 snapshot["user_text"]
                 and snapshot["assistant_text"]
-                and callable(self.continuity_callback)
-            ):
+                and pcm16_has_audible_signal(snapshot["audio_pcm"])
+            )
+            if valid_exchange and callable(self.continuity_callback):
                 try:
                     self.continuity_callback(snapshot)
                 except Exception:
@@ -1823,13 +1843,23 @@ class _VoiceRoomLiveRuntime:
                 reply_id=snapshot["reply_id"],
                 delivery_complete=snapshot["delivery_complete"],
             )
-            if snapshot["user_text"]:
+            if valid_exchange:
                 threading.Thread(
                     target=self.finalize_callback,
                     args=(snapshot,),
                     daemon=True,
                     name="XiaoyouVoiceRoomFinalize",
                 ).start()
+            else:
+                self.publish(
+                    "turn_discarded",
+                    reason="incomplete_exchange",
+                    has_user_text=bool(snapshot["user_text"]),
+                    has_assistant_text=bool(snapshot["assistant_text"]),
+                    has_audible_audio=pcm16_has_audible_signal(
+                        snapshot["audio_pcm"]
+                    ),
+                )
             return
 
     def close(self):
@@ -1931,6 +1961,20 @@ class VoiceRoomService:
         value = getattr(manager, "instances", {}) if manager else {}
         return value if isinstance(value, dict) else {}
 
+    def _notify_proactive(self, method_name, *args, **kwargs):
+        proactive = self._instances().get("PROACTIVELOVE")
+        callback = getattr(proactive, str(method_name or ""), None)
+        if not callable(callback):
+            return False
+        try:
+            return bool(callback(*args, **kwargs))
+        except Exception:
+            logger.exception(
+                "[VoiceRoom] proactive bridge failed method=%s",
+                str(method_name or "")[:80],
+            )
+            return False
+
     def _dialog_context(self, session_id):
         memory = self._instances().get("SHORTMEMORY")
         builder = getattr(
@@ -1974,6 +2018,15 @@ class VoiceRoomService:
     def _remember_dialog_turn(self, room, snapshot):
         if not isinstance(room, dict) or not isinstance(snapshot, dict):
             return False
+        user_text = _clean_text(snapshot.get("user_text"))
+        assistant_text = _clean_text(snapshot.get("assistant_text"))
+        audio_pcm = bytes(snapshot.get("audio_pcm") or b"")
+        if (
+            not user_text
+            or not assistant_text
+            or not pcm16_has_audible_signal(audio_pcm)
+        ):
+            return False
         turn_id = (
             _clean_text(snapshot.get("turn_id"), 100)
             or uuid.uuid4().hex
@@ -1982,8 +2035,8 @@ class VoiceRoomService:
             context_id="%s:%s" % (str(room.get("room_id") or ""), turn_id),
             room_id=room.get("room_id"),
             session_id=room.get("session_id"),
-            user_text=snapshot.get("user_text"),
-            assistant_text=snapshot.get("assistant_text"),
+            user_text=user_text,
+            assistant_text=assistant_text,
             created_at=int(snapshot.get("created_at") or time.time()),
             terminal_status=str(
                 snapshot.get("terminal_status") or "complete"
@@ -2082,6 +2135,11 @@ class VoiceRoomService:
         if callable(start_receiving):
             start_receiving(live.handle_frame)
             live.publish("listening")
+        self._notify_proactive(
+            "begin_voice_room",
+            room["session_id"],
+            room["room_id"],
+        )
         return self.store.get_room(
             room["room_id"],
             device_id,
@@ -2183,13 +2241,35 @@ class VoiceRoomService:
         live = None
         with self.lock:
             live = self.live_sessions.get(str(room_id))
+        user_text = _clean_text(snapshot.get("user_text"))
+        assistant_text = _clean_text(snapshot.get("assistant_text"))
+        audio_pcm = bytes(snapshot.get("audio_pcm") or b"")
+        if (
+            not user_text
+            or not assistant_text
+            or not pcm16_has_audible_signal(audio_pcm)
+        ):
+            logger.info(
+                "[VoiceRoom] discarded incomplete realtime turn "
+                "room_id=%s user=%s assistant=%s audio=%s",
+                str(room_id)[:48],
+                bool(user_text),
+                bool(assistant_text),
+                pcm16_has_audible_signal(audio_pcm),
+            )
+            if live is not None:
+                live.publish(
+                    "turn_discarded",
+                    reason="incomplete_exchange",
+                )
+            return
         try:
             self._remember_dialog_turn(room, snapshot)
             reply_wav = b""
             media = None
-            if snapshot["audio_pcm"]:
+            if audio_pcm:
                 reply_wav = pcm16_to_wav(
-                    snapshot["audio_pcm"],
+                    audio_pcm,
                     sample_rate=24000,
                 )
                 if self.media_store is None:
@@ -2210,8 +2290,8 @@ class VoiceRoomService:
                     or uuid.uuid4().hex,
                 ),
                 room_id=room_id,
-                user_text=snapshot["user_text"],
-                assistant_text=snapshot["assistant_text"],
+                user_text=user_text,
+                assistant_text=assistant_text,
                 user_duration_ms=snapshot.get("user_duration_ms", 0),
                 assistant_duration_ms=(
                     wav_duration_ms(reply_wav) if reply_wav else 0
@@ -2229,6 +2309,16 @@ class VoiceRoomService:
             if inserted:
                 turn["session_id"] = room["session_id"]
                 self.memory.submit(turn)
+                self._notify_proactive(
+                    "observe_voice_exchange",
+                    room["session_id"],
+                    user_text,
+                    assistant_text,
+                    input_id=turn["turn_id"],
+                    occurred_at=int(
+                        turn.get("created_at") or time.time()
+                    ),
+                )
             if live is not None:
                 live.publish(
                     "turn_complete",
@@ -2281,7 +2371,16 @@ class VoiceRoomService:
 
         pcm = wav_to_pcm16(audio_bytes)
         result = provider.process_turn(pcm)
-        reply_wav = pcm16_to_wav(result["audio_pcm"], sample_rate=24000)
+        user_text = _clean_text(result.get("user_text"))
+        assistant_text = _clean_text(result.get("assistant_text"))
+        reply_pcm = bytes(result.get("audio_pcm") or b"")
+        if (
+            not user_text
+            or not assistant_text
+            or not pcm16_has_audible_signal(reply_pcm)
+        ):
+            raise VoiceRoomError("voice_room_incomplete_exchange")
+        reply_wav = pcm16_to_wav(reply_pcm, sample_rate=24000)
         if self.media_store is None:
             raise VoiceRoomError("voice_room_media_store_unavailable")
         media = self.media_store.save_media_bytes(
@@ -2294,8 +2393,8 @@ class VoiceRoomService:
         turn, inserted = self.store.add_turn(
             turn_id=turn_id,
             room_id=room_id,
-            user_text=result["user_text"],
-            assistant_text=result["assistant_text"],
+            user_text=user_text,
+            assistant_text=assistant_text,
             user_duration_ms=duration_ms,
             assistant_duration_ms=wav_duration_ms(reply_wav),
             audio_media_id=media["media_id"],
@@ -2306,14 +2405,23 @@ class VoiceRoomService:
                 room,
                 {
                     "turn_id": turn_id,
-                    "user_text": result["user_text"],
-                    "assistant_text": result["assistant_text"],
+                    "user_text": user_text,
+                    "assistant_text": assistant_text,
+                    "audio_pcm": reply_pcm,
                     "terminal_status": "complete",
                     "created_at": int(turn.get("created_at") or time.time()),
                 },
             )
             turn["session_id"] = room["session_id"]
             self.memory.submit(turn)
+            self._notify_proactive(
+                "observe_voice_exchange",
+                room["session_id"],
+                user_text,
+                assistant_text,
+                input_id=turn["turn_id"],
+                occurred_at=int(turn.get("created_at") or time.time()),
+            )
         with self.lock:
             if str(room_id) in self.sessions:
                 self.session_last_used[str(room_id)] = time.monotonic()
@@ -2336,6 +2444,13 @@ class VoiceRoomService:
         if provider is not None:
             provider.close()
         finished = self.store.finish_room(room_id, device_id)
+        if finished:
+            self._notify_proactive(
+                "end_voice_room",
+                finished["session_id"],
+                room_id,
+                had_interaction=bool(finished.get("turn_count")),
+            )
         if (
             self.relationship_service is not None
             and finished
@@ -2368,6 +2483,13 @@ class VoiceRoomService:
             self.live_sessions.clear()
             self.session_last_used.clear()
         for live in live_sessions:
+            room = getattr(live, "room", {}) or {}
+            self._notify_proactive(
+                "end_voice_room",
+                room.get("session_id"),
+                room.get("room_id"),
+                had_interaction=False,
+            )
             live.close()
         for session in sessions:
             session.close()

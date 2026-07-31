@@ -315,6 +315,7 @@ def test_voice_rooms_are_separate_and_project_memory_async(
 
     short_calls = []
     long_calls = []
+    proactive_calls = []
 
     class _ShortMemory:
         def build_dialog_context_for_external_consumer(self, _session_id):
@@ -333,12 +334,48 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         def append_delivered_assistant_message(self, *args, **kwargs):
             long_calls.append((args, kwargs))
 
+    class _Proactive:
+        def begin_voice_room(self, session_id, room_id):
+            proactive_calls.append(("begin", session_id, room_id))
+            return True
+
+        def observe_voice_exchange(
+            self,
+            session_id,
+            user_text,
+            assistant_text,
+            **kwargs,
+        ):
+            proactive_calls.append(
+                (
+                    "exchange",
+                    session_id,
+                    user_text,
+                    assistant_text,
+                    kwargs,
+                )
+            )
+            return True
+
+        def end_voice_room(
+            self,
+            session_id,
+            room_id,
+            *,
+            had_interaction=False,
+        ):
+            proactive_calls.append(
+                ("end", session_id, room_id, had_interaction)
+            )
+            return True
+
     class _Provider:
         latest = None
 
         def __init__(self, **kwargs):
             self.kwargs = kwargs
             self.closed = False
+            self.audio_pcm = b"\x40\x00" * 2400
             _Provider.latest = self
 
         def start(self):
@@ -349,7 +386,7 @@ def test_voice_rooms_are_separate_and_project_memory_async(
             return {
                 "user_text": "我回来了",
                 "assistant_text": "欢迎回来，刚才还在想你。",
-                "audio_pcm": b"\x00\x00" * 2400,
+                "audio_pcm": self.audio_pcm,
             }
 
         def close(self):
@@ -368,6 +405,7 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     instances = {
         "SHORTMEMORY": _ShortMemory(),
         "LONGTERMMEMORY": _LongMemory(),
+        "PROACTIVELOVE": _Proactive(),
     }
     store = module.VoiceRoomStore(tmp_path / "rooms.db")
     service = module.VoiceRoomService(
@@ -393,6 +431,10 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     )
     assert result["accepted"] is True
     assert result["turn"]["audio_media_id"] == "voice-wav-1"
+    assert [item[0] for item in proactive_calls[:2]] == [
+        "begin",
+        "exchange",
+    ]
 
     second_room = service.create_room(session_id="yoyo", device_id="phone")
     second_context = _Provider.latest.kwargs[
@@ -402,7 +444,32 @@ def test_voice_rooms_are_separate_and_project_memory_async(
         "我回来了",
         "欢迎回来，刚才还在想你。",
     ]
+    _Provider.latest.audio_pcm = b"\x00\x00" * 2400
+    try:
+        service.process_turn(
+            room_id=second_room["room_id"],
+            device_id="phone",
+            turn_id="silent-turn",
+            audio_bytes=_wav(),
+            mime_type="audio/wav",
+            duration_ms=240,
+        )
+    except module.VoiceRoomError as error:
+        assert str(error) == "voice_room_incomplete_exchange"
+    else:
+        raise AssertionError("silent voice-room turn should be rejected")
+    assert store.get_room(
+        second_room["room_id"],
+        "phone",
+        include_turns=True,
+    )["turns"] == []
     service.finish_room(second_room["room_id"], "phone")
+    assert (
+        "end",
+        "yoyo",
+        second_room["room_id"],
+        False,
+    ) in proactive_calls
 
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -421,6 +488,12 @@ def test_voice_rooms_are_separate_and_project_memory_async(
     finished = service.finish_room(room["room_id"], "phone")
     assert finished["status"] == "complete"
     assert finished["turn_count"] == 1
+    assert (
+        "end",
+        "yoyo",
+        room["room_id"],
+        True,
+    ) in proactive_calls
     assert _Provider.latest.closed is True
     assert service.list_rooms("phone")[0]["room_id"] == room["room_id"]
 
@@ -515,6 +588,65 @@ def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
     )
     assert bytes(provider.audio) == b"\x01\x00" * 320
 
+    # Opening the room or speaking without a delivered Xiaoyou reply is not a
+    # conversation turn and must never enter the room archive or memory.
+    provider.handler({"event": module.ASR_INFO, "payload": {}})
+    provider.handler(
+        {
+            "event": module.ASR_ENDED,
+            "payload": {"results": [{"text": "你听见了吗"}]},
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_ENDED,
+            "payload": {"question_id": "empty-reply"},
+        }
+    )
+
+    # Text without audible TTS bytes is likewise not a delivered reply.
+    provider.handler({"event": module.ASR_INFO, "payload": {}})
+    provider.handler(
+        {
+            "event": module.ASR_ENDED,
+            "payload": {"results": [{"text": "再说一次"}]},
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_SENTENCE_START,
+            "payload": {
+                "text": "这句话没有声音",
+                "question_id": "silent-reply",
+                "reply_id": "silent-reply",
+            },
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_SENTENCE_END,
+            "payload": {
+                "text": "这句话没有声音",
+                "question_id": "silent-reply",
+                "reply_id": "silent-reply",
+            },
+        }
+    )
+    provider.handler(
+        {
+            "event": module.TTS_ENDED,
+            "payload": {
+                "question_id": "silent-reply",
+                "reply_id": "silent-reply",
+            },
+        }
+    )
+    assert store.get_room(
+        room["room_id"],
+        "phone",
+        include_turns=True,
+    )["turns"] == []
+
     provider.handler({"event": module.ASR_INFO, "payload": {}})
     provider.handler(
         {
@@ -541,7 +673,7 @@ def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
     provider.handler(
         {
             "event": module.TTS_RESPONSE,
-            "payload_bytes": b"\x02\x00" * 1200,
+            "payload_bytes": b"\x40\x00" * 1200,
         }
     )
     provider.handler(
@@ -573,7 +705,7 @@ def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
     provider.handler(
         {
             "event": module.TTS_RESPONSE,
-            "payload_bytes": b"\x03\x00" * 2400,
+            "payload_bytes": b"\x50\x00" * 2400,
         }
     )
     provider.handler(
@@ -614,6 +746,7 @@ def test_realtime_room_streams_audio_and_persists_only_delivered_speech(
     assert "assistant_audio" in event_types
     assert "interrupted" in event_types
     assert "turn_complete" in event_types
+    assert event_types.count("turn_discarded") >= 2
 
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
