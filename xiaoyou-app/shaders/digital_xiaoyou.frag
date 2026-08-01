@@ -16,7 +16,9 @@ layout(location = 0) out vec4 frag_color;
 
 float gaussian(vec2 point, vec2 center, vec2 radius) {
   vec2 delta = (point - center) / radius;
-  return exp(-dot(delta, delta) * 2.35);
+  // A smooth squared falloff is visually equivalent at this small scale and
+  // avoids an expensive exponential for every portrait pixel, every frame.
+  return 1.0 - smoothstep(0.0, 1.0, dot(delta, delta));
 }
 
 void main() {
@@ -40,9 +42,9 @@ void main() {
   ).rgb;
   portrait.rgb = mix(portrait.rgb, cheek_color, lid_mask);
 
-  float left_lash = exp(-abs(left_delta.y) * 24.0) *
+  float left_lash = (1.0 - smoothstep(0.0, 0.18, abs(left_delta.y))) *
       (1.0 - smoothstep(0.72, 1.0, abs(left_delta.x)));
-  float right_lash = exp(-abs(right_delta.y) * 24.0) *
+  float right_lash = (1.0 - smoothstep(0.0, 0.18, abs(right_delta.y))) *
       (1.0 - smoothstep(0.72, 1.0, abs(right_delta.x)));
   float lash = max(left_lash, right_lash) * blink_amount;
   vec3 lash_color = mix(

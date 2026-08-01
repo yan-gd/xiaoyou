@@ -19,6 +19,7 @@ const _voiceLavender = Color(0xff8d71bd);
 const _defaultVoiceRoomMoodAsset = 'assets/moods/平静.png';
 const _speechMouthMoodAsset = 'assets/moods/无语.png';
 const _playbackEnvelopeFrameMs = 20;
+const _voiceRoomPortraitFramesPerLoop = 360;
 // Send 160 ms batches over one dedicated keep-alive connection. The server
 // queues and re-times these into O2.0's required 640-byte/20 ms frames without
 // holding the public HTTP request open for the duration of the audio.
@@ -32,8 +33,12 @@ Future<ui.Image> _loadVoiceRoomImage(String asset) {
     final bytes = await rootBundle.load(asset);
     final codec = await ui.instantiateImageCodec(
       bytes.buffer.asUint8List(),
-      targetWidth: 768,
-      targetHeight: 768,
+      // The portrait is rendered inside a sub-300 logical-pixel orb. Keeping
+      // two 768px textures resident made the per-frame face shader needlessly
+      // bandwidth-heavy on mid-range phones. 640px stays crisp while cutting
+      // texture reads and memory pressure by roughly 30 percent.
+      targetWidth: 640,
+      targetHeight: 640,
     );
     try {
       final frame = await codec.getNextFrame();
@@ -1451,6 +1456,10 @@ class _VoiceOrbState extends State<_VoiceOrb>
   ui.Image? _faceImage;
   ui.Image? _speechMouthImage;
   int _imageLoadGeneration = 0;
+  int _portraitFrame = -1;
+  double _portraitMouth = 0;
+  double _portraitProgress = 0;
+  _RoomPhase? _portraitPhase;
 
   double get _diameter => switch (widget.phase) {
         _RoomPhase.connecting => 214,
@@ -1585,6 +1594,18 @@ class _VoiceOrbState extends State<_VoiceOrb>
 
   @override
   Widget build(BuildContext context) {
+    // The glow remains tied to display vsync, but the much heavier two-texture
+    // portrait shader only needs a stable 30 fps. Sampling mouth/time together
+    // prevents the face layer from being repainted twice for one visible
+    // audio step while the outer orb still moves at the screen refresh rate.
+    final portraitFrame =
+        (widget.progress * _voiceRoomPortraitFramesPerLoop).floor();
+    if (_portraitFrame != portraitFrame || _portraitPhase != widget.phase) {
+      _portraitFrame = portraitFrame;
+      _portraitPhase = widget.phase;
+      _portraitMouth = _mouthLevel;
+      _portraitProgress = widget.progress;
+    }
     final pulse =
         1 + (widget.breath - 0.5) * (0.018 + widget.level.clamp(0, 1) * 0.025);
     return AnimatedBuilder(
@@ -1632,19 +1653,21 @@ class _VoiceOrbState extends State<_VoiceOrb>
                                   if (_faceImage != null &&
                                       _speechMouthImage != null &&
                                       _faceShader != null)
-                                    CustomPaint(
-                                      isComplex: true,
-                                      willChange: true,
-                                      painter: _DigitalXiaoyouPainter(
-                                        image: _faceImage!,
-                                        speechMouthImage: _speechMouthImage!,
-                                        fragmentShader: _faceShader!,
-                                        blink: Curves.easeInCubic.transform(
-                                          _blink.value,
+                                    RepaintBoundary(
+                                      child: CustomPaint(
+                                        isComplex: true,
+                                        willChange: true,
+                                        painter: _DigitalXiaoyouPainter(
+                                          image: _faceImage!,
+                                          speechMouthImage: _speechMouthImage!,
+                                          fragmentShader: _faceShader!,
+                                          blink: Curves.easeInCubic.transform(
+                                            _blink.value,
+                                          ),
+                                          mouth: _portraitMouth,
+                                          activity: _activity,
+                                          progress: _portraitProgress,
                                         ),
-                                        mouth: _mouthLevel,
-                                        activity: _activity,
-                                        progress: widget.progress,
                                       ),
                                     )
                                   else if (_faceImage != null)

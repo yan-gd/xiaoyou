@@ -350,6 +350,23 @@ YoYo 当前消息：
                             receipt.action_id,
                             receipt.error,
                         )
+                elif receipt.queued and receipt.deferred_delivery:
+                    # The App inbox is durable: a queued action remains there
+                    # until the device acknowledges it. Treating a successful
+                    # queue as an immediate failure changed the reminder back
+                    # to pending every check interval and produced hundreds of
+                    # duplicate actions while the App was offline.
+                    self._mark_sent(
+                        session_id,
+                        item.get("id"),
+                        "\n".join(parts).strip(),
+                    )
+                    logger.info(
+                        "[ReminderLove] reminder queued for deferred App "
+                        "delivery action_id=%s session=%s",
+                        receipt.action_id,
+                        session_id,
+                    )
                 else:
                     self._mark_pending(session_id, item.get("id"))
 
@@ -362,6 +379,15 @@ YoYo 当前消息：
                         lease.complete(
                             delivered=True,
                             detail=receipt.error or "sent",
+                        )
+                    elif (
+                        receipt is not None
+                        and receipt.queued
+                        and receipt.deferred_delivery
+                    ):
+                        lease.complete(
+                            delivered=False,
+                            detail="queued_for_deferred_app_delivery",
                         )
                     else:
                         lease.cancel("reminder_not_delivered")
