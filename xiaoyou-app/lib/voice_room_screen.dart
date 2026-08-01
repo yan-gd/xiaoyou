@@ -102,10 +102,6 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   StreamSubscription<Uint8List>? _pcmSubscription;
   StreamSubscription<double>? _amplitude;
   Timer? _clock;
-  late final AnimationController _breath = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 2600),
-  )..repeat(reverse: true);
   late final AnimationController _particles = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 12),
@@ -121,9 +117,14 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   int _replyPlaybackBaseMs = 0;
   int _replyAudioDurationMs = 0;
   Timer? _playbackDrain;
-  Timer? _playbackLevelClock;
+  Timer? _playbackPositionClock;
+  final Stopwatch _playbackClock = Stopwatch();
   final List<double> _playbackEnvelope = [];
-  bool _playbackLevelSyncing = false;
+  bool _playbackPositionSyncing = false;
+  int _playbackAnchorPositionMs = 0;
+  int _playbackAnchorClockMs = 0;
+  int _lastPlaybackVisualClockMs = 0;
+  double _renderedPlaybackLevel = 0.08;
   int _playbackEnvelopeGeneration = 0;
   int _moodRefreshGeneration = 0;
   String _moodAsset = _defaultVoiceRoomMoodAsset;
@@ -146,9 +147,10 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         setState(() => _elapsedSeconds += 1);
       }
     });
-    _playbackLevelClock = Timer.periodic(
-      const Duration(milliseconds: 25),
-      (_) => unawaited(_syncPlaybackLevel()),
+    _playbackClock.start();
+    _playbackPositionClock = Timer.periodic(
+      const Duration(milliseconds: 180),
+      (_) => unawaited(_calibratePlaybackPosition()),
     );
     unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
     unawaited(_recorder.prepare());
@@ -160,11 +162,11 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _closed = true;
     _clock?.cancel();
     _playbackDrain?.cancel();
-    _playbackLevelClock?.cancel();
+    _playbackPositionClock?.cancel();
+    _playbackClock.stop();
     _moodRefreshGeneration += 1;
     _pcmSubscription?.cancel();
     _amplitude?.cancel();
-    _breath.dispose();
     _particles.dispose();
     _level.dispose();
     unawaited(_player.dispose());
@@ -372,18 +374,28 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   void _resetPlaybackEnvelope() {
     _playbackEnvelopeGeneration += 1;
     _playbackEnvelope.clear();
+    _playbackAnchorPositionMs = 0;
+    _playbackAnchorClockMs = _playbackClock.elapsedMilliseconds;
+    _lastPlaybackVisualClockMs = _playbackAnchorClockMs;
+    _renderedPlaybackLevel = 0.08;
     _level.value = 0.08;
   }
 
-  Future<void> _syncPlaybackLevel() async {
-    if (_playbackLevelSyncing ||
+  void _anchorPlaybackPosition(int positionMs) {
+    final nowMs = _playbackClock.elapsedMilliseconds;
+    _playbackAnchorPositionMs = max(0, positionMs);
+    _playbackAnchorClockMs = nowMs;
+  }
+
+  Future<void> _calibratePlaybackPosition() async {
+    if (_playbackPositionSyncing ||
         _closed ||
         _phase != _RoomPhase.speaking ||
         _playbackReplyId.isEmpty ||
         _playbackEnvelope.isEmpty) {
       return;
     }
-    _playbackLevelSyncing = true;
+    _playbackPositionSyncing = true;
     final generation = _playbackEnvelopeGeneration;
     final replyId = _playbackReplyId;
     try {
@@ -394,18 +406,35 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           _phase != _RoomPhase.speaking) {
         return;
       }
-      final playedMs = max(0, absolutePositionMs - _replyPlaybackBaseMs);
-      final exactIndex = playedMs / _playbackEnvelopeFrameMs;
-      final lower = exactIndex.floor().clamp(0, _playbackEnvelope.length - 1);
-      final upper = min(lower + 1, _playbackEnvelope.length - 1);
-      final fraction = exactIndex - exactIndex.floor();
-      final target = _playbackEnvelope[lower] * (1 - fraction) +
-          _playbackEnvelope[upper] * fraction;
-      final response = target > _level.value ? 0.76 : 0.38;
-      _level.value += (target - _level.value) * response;
+      _anchorPlaybackPosition(absolutePositionMs);
     } finally {
-      _playbackLevelSyncing = false;
+      _playbackPositionSyncing = false;
     }
+  }
+
+  double _playbackLevelForFrame() {
+    if (_phase != _RoomPhase.speaking ||
+        _playbackReplyId.isEmpty ||
+        _playbackEnvelope.isEmpty) {
+      return _level.value;
+    }
+    final nowMs = _playbackClock.elapsedMilliseconds;
+    final estimatedPositionMs =
+        _playbackAnchorPositionMs + max(0, nowMs - _playbackAnchorClockMs);
+    final playedMs = max(0, estimatedPositionMs - _replyPlaybackBaseMs);
+    final exactIndex = playedMs / _playbackEnvelopeFrameMs;
+    final lower =
+        exactIndex.floor().clamp(0, _playbackEnvelope.length - 1).toInt();
+    final upper = min(lower + 1, _playbackEnvelope.length - 1);
+    final fraction = exactIndex - exactIndex.floor();
+    final target = _playbackEnvelope[lower] * (1 - fraction) +
+        _playbackEnvelope[upper] * fraction;
+    final elapsedMs = (nowMs - _lastPlaybackVisualClockMs).clamp(1, 50);
+    _lastPlaybackVisualClockMs = nowMs;
+    final timeConstantMs = target > _renderedPlaybackLevel ? 38.0 : 72.0;
+    final response = 1 - exp(-elapsedMs / timeConstantMs);
+    _renderedPlaybackLevel += (target - _renderedPlaybackLevel) * response;
+    return _renderedPlaybackLevel.clamp(0.08, 1.0);
   }
 
   Future<void> _pumpAudioQueue() async {
@@ -643,10 +672,12 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           _currentReplyId = replyId;
           if (_playbackReplyId != replyId) {
             _playbackDrain?.cancel();
-            _replyPlaybackBaseMs = await _player.positionMs();
+            _resetPlaybackEnvelope();
+            final playbackPositionMs = await _player.positionMs();
+            _replyPlaybackBaseMs = playbackPositionMs;
+            _anchorPlaybackPosition(playbackPositionMs);
             _playbackReplyId = replyId;
             _replyAudioDurationMs = 0;
-            _resetPlaybackEnvelope();
           }
         }
         final decoded = base64Decode(encoded);
@@ -820,19 +851,16 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         AnimatedBuilder(
-                          animation: Listenable.merge([
-                            _breath,
-                            _particles,
-                            _level,
-                          ]),
+                          animation: _particles,
                           builder: (_, __) => _VoiceOrb(
                             phase:
                                 _initializing ? _RoomPhase.connecting : _phase,
-                            level: _level.value,
+                            level: _playbackLevelForFrame(),
                             progress: _particles.value,
-                            breath: Curves.easeInOutSine.transform(
-                              _breath.value,
-                            ),
+                            // Five continuous breath cycles per ambient loop
+                            // keep one vsync source instead of rebuilding the
+                            // whole orb twice on every display frame.
+                            breath: 0.5 - 0.5 * cos(_particles.value * pi * 10),
                             moodAsset: _moodAsset,
                           ),
                         ),
@@ -1559,106 +1587,101 @@ class _VoiceOrbState extends State<_VoiceOrb>
   Widget build(BuildContext context) {
     final pulse =
         1 + (widget.breath - 0.5) * (0.018 + widget.level.clamp(0, 1) * 0.025);
-    return TweenAnimationBuilder<double>(
-      tween: Tween<double>(end: _mouthLevel),
-      duration: const Duration(milliseconds: 96),
-      curve: Curves.easeOutCubic,
-      builder: (context, smoothedMouth, _) => AnimatedBuilder(
-        animation: _blink,
-        builder: (context, _) => RepaintBoundary(
-          child: SizedBox.square(
-            dimension: 330,
-            child: Center(
-              child: TweenAnimationBuilder<double>(
-                tween: Tween<double>(end: _diameter),
-                duration: const Duration(milliseconds: 520),
-                curve: Curves.easeInOutCubicEmphasized,
-                builder: (context, diameter, _) => Transform.translate(
-                  offset: Offset(
-                    sin(widget.progress * pi * 4) *
-                        (widget.phase == _RoomPhase.speaking ? 1.8 : 0.7),
-                    cos(widget.progress * pi * 2) * 2.4,
-                  ),
-                  child: Transform.rotate(
-                    angle: _headTilt,
-                    child: Transform.scale(
-                      scale: pulse,
-                      child: SizedBox.square(
-                        dimension: diameter,
-                        child: Stack(
-                          fit: StackFit.expand,
-                          clipBehavior: Clip.none,
-                          children: [
-                            CustomPaint(
-                              isComplex: true,
-                              willChange: true,
-                              painter: _MoodOrbGlowPainter(
-                                phase: widget.phase,
-                                progress: widget.progress,
-                                activity: _activity,
-                                level: widget.level,
-                              ),
+    return AnimatedBuilder(
+      animation: _blink,
+      builder: (context, _) => RepaintBoundary(
+        child: SizedBox.square(
+          dimension: 330,
+          child: Center(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween<double>(end: _diameter),
+              duration: const Duration(milliseconds: 520),
+              curve: Curves.easeInOutCubicEmphasized,
+              builder: (context, diameter, _) => Transform.translate(
+                offset: Offset(
+                  sin(widget.progress * pi * 4) *
+                      (widget.phase == _RoomPhase.speaking ? 1.8 : 0.7),
+                  cos(widget.progress * pi * 2) * 2.4,
+                ),
+                child: Transform.rotate(
+                  angle: _headTilt,
+                  child: Transform.scale(
+                    scale: pulse,
+                    child: SizedBox.square(
+                      dimension: diameter,
+                      child: Stack(
+                        fit: StackFit.expand,
+                        clipBehavior: Clip.none,
+                        children: [
+                          CustomPaint(
+                            isComplex: true,
+                            willChange: true,
+                            painter: _MoodOrbGlowPainter(
+                              phase: widget.phase,
+                              progress: widget.progress,
+                              activity: _activity,
+                              level: widget.level,
                             ),
-                            Padding(
-                              padding: EdgeInsets.all(max(3, diameter * 0.018)),
-                              child: ClipOval(
-                                child: Stack(
-                                  fit: StackFit.expand,
-                                  children: [
-                                    if (_faceImage != null &&
-                                        _speechMouthImage != null &&
-                                        _faceShader != null)
-                                      CustomPaint(
-                                        isComplex: true,
-                                        willChange: true,
-                                        painter: _DigitalXiaoyouPainter(
-                                          image: _faceImage!,
-                                          speechMouthImage: _speechMouthImage!,
-                                          fragmentShader: _faceShader!,
-                                          blink: Curves.easeInCubic.transform(
-                                            _blink.value,
-                                          ),
-                                          mouth: smoothedMouth,
-                                          activity: _activity,
-                                          progress: widget.progress,
-                                        ),
-                                      )
-                                    else if (_faceImage != null)
-                                      RawImage(
-                                        image: _faceImage,
-                                        fit: BoxFit.cover,
-                                        filterQuality: FilterQuality.medium,
-                                      )
-                                    else
-                                      const DecoratedBox(
-                                        decoration: BoxDecoration(
-                                          gradient: RadialGradient(
-                                            center: Alignment(-0.28, -0.34),
-                                            radius: 0.92,
-                                            colors: [
-                                              Color(0xfffff7fb),
-                                              Color(0xffeadfff),
-                                              Color(0xffc8ecf5),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
+                          ),
+                          Padding(
+                            padding: EdgeInsets.all(max(3, diameter * 0.018)),
+                            child: ClipOval(
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  if (_faceImage != null &&
+                                      _speechMouthImage != null &&
+                                      _faceShader != null)
                                     CustomPaint(
                                       isComplex: true,
                                       willChange: true,
-                                      painter: _MoodOrbSurfacePainter(
-                                        phase: widget.phase,
+                                      painter: _DigitalXiaoyouPainter(
+                                        image: _faceImage!,
+                                        speechMouthImage: _speechMouthImage!,
+                                        fragmentShader: _faceShader!,
+                                        blink: Curves.easeInCubic.transform(
+                                          _blink.value,
+                                        ),
+                                        mouth: _mouthLevel,
+                                        activity: _activity,
                                         progress: widget.progress,
-                                        activity: _activity * 0.12,
-                                        level: widget.level,
+                                      ),
+                                    )
+                                  else if (_faceImage != null)
+                                    RawImage(
+                                      image: _faceImage,
+                                      fit: BoxFit.cover,
+                                      filterQuality: FilterQuality.medium,
+                                    )
+                                  else
+                                    const DecoratedBox(
+                                      decoration: BoxDecoration(
+                                        gradient: RadialGradient(
+                                          center: Alignment(-0.28, -0.34),
+                                          radius: 0.92,
+                                          colors: [
+                                            Color(0xfffff7fb),
+                                            Color(0xffeadfff),
+                                            Color(0xffc8ecf5),
+                                          ],
+                                        ),
                                       ),
                                     ),
-                                  ],
-                                ),
+                                  CustomPaint(
+                                    isComplex: true,
+                                    willChange: true,
+                                    painter: _MoodOrbSurfacePainter(
+                                      phase: widget.phase,
+                                      progress: widget.progress,
+                                      activity: _activity * 0.12,
+                                      level: widget.level,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ),
