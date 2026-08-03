@@ -704,6 +704,67 @@ def test_app_image_is_stored_under_data_with_chat_metadata(
     assert store.input_by_id("image-input-2", "phone-image")["status"] == "queued"
 
 
+def test_app_history_and_media_restore_across_reinstalled_devices(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-old", "yoyo", platform="android")
+    store.register_device("phone-new", "yoyo", platform="android")
+    store.register_device("phone-other", "other", platform="android")
+
+    uploaded = store.save_media_bytes(
+        b"\x89PNG\r\n\x1a\nrestorable-image",
+        "phone-old",
+        "image/png",
+    )
+    for index in range(7):
+        assert store.accept_input(
+            message_id="history-input-%d" % index,
+            session_id="yoyo",
+            device_id="phone-old",
+            kind="image" if index == 3 else "text",
+            text="[image]" if index == 3 else "message-%d" % index,
+            media_id=uploaded["media_id"] if index == 3 else "",
+            mime_type="image/png" if index == 3 else "",
+            client_sequence=index + 1,
+        )
+
+    restored_ids = []
+    cursor = ""
+    while True:
+        page = store.history_page("yoyo", cursor=cursor, limit=2)
+        restored_ids.extend(message["id"] for message in page["messages"])
+        if not page["has_more"]:
+            break
+        assert page["next_cursor"]
+        cursor = page["next_cursor"]
+
+    assert set(restored_ids) == {
+        "history-input-%d" % index
+        for index in range(7)
+    }
+    assert len(restored_ids) == len(set(restored_ids))
+    assert store.history_page("other")["messages"] == []
+
+    restored_media = store.media(
+        uploaded["media_id"],
+        "phone-new",
+        session_id="yoyo",
+    )
+    assert restored_media is not None
+    assert restored_media[0].read_bytes().endswith(b"restorable-image")
+    assert (
+        store.media(
+            uploaded["media_id"],
+            "phone-other",
+            session_id="other",
+        )
+        is None
+    )
+
+
 def test_app_voice_messages_keep_audio_transcript_and_receipt_text(
     monkeypatch,
     tmp_path,

@@ -22,6 +22,52 @@ void main() {
     expect(message.text, '在呀');
   });
 
+  test('history restores every server page in chronological order', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var requests = 0;
+    final subscription = server.listen((request) async {
+      expect(request.uri.path, '/v1/history');
+      expect(request.uri.queryParameters['device_id'], 'test-device');
+      expect(request.uri.queryParameters['limit'], '300');
+      requests += 1;
+      final responseBody = requests == 1
+          ? '{"messages":[{"id":"new","role":"assistant","kind":"image",'
+              '"media_id":"media-new","mime_type":"image/png",'
+              '"created_at":20}],"last_event_sequence":9,'
+              '"has_more":true,"next_cursor":"older-page"}'
+          : '{"messages":[{"id":"old","role":"user","kind":"text",'
+              '"text":"old message","created_at":10}],'
+              '"last_event_sequence":9,"has_more":false,'
+              '"next_cursor":""}';
+      if (requests == 2) {
+        expect(request.uri.queryParameters['cursor'], 'older-page');
+      }
+      final encoded = utf8.encode(responseBody);
+      request.response
+        ..headers.contentType = ContentType.json
+        ..contentLength = encoded.length
+        ..add(encoded);
+      await request.response.close();
+    });
+    final api = XiaoyouApi(
+      baseUrl: 'http://${server.address.address}:${server.port}',
+      token: 'test-token-with-at-least-24-characters',
+      deviceId: 'test-device',
+    );
+
+    try {
+      final history = await api.history();
+      expect(requests, 2);
+      expect(history.messages.map((message) => message.id), ['old', 'new']);
+      expect(history.messages.last.mediaId, 'media-new');
+      expect(history.lastEventSequence, 9);
+    } finally {
+      api.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('API reuses its HTTP connection across requests', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final remotePorts = <int>{};

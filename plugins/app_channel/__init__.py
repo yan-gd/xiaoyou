@@ -6,6 +6,7 @@ events while owning its transport-specific work queue. It does not create a
 second chat model, memory database, or turn scheduler.
 """
 
+import base64
 import hmac
 import json
 import mimetypes
@@ -246,6 +247,8 @@ class AppInboxStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_app_inputs_device_time
                     ON inputs(device_id, accepted_at);
+                CREATE INDEX IF NOT EXISTS idx_app_inputs_session_time
+                    ON inputs(session_id, accepted_at);
 
                 CREATE TABLE IF NOT EXISTS actions (
                     action_id TEXT PRIMARY KEY,
@@ -264,6 +267,8 @@ class AppInboxStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_app_actions_device_time
                     ON actions(device_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_app_actions_session_time
+                    ON actions(session_id, created_at);
 
                 CREATE TABLE IF NOT EXISTS action_inputs (
                     action_id TEXT NOT NULL,
@@ -1053,6 +1058,170 @@ class AppInboxStore:
         items.sort(key=lambda item: (item["created_at"], item["id"]))
         return items[-limit:]
 
+    @staticmethod
+    def _history_cursor(row):
+        payload = json.dumps(
+            [
+                int(row["created_at"]),
+                int(row["source_rank"]),
+                int(row["order_index"]),
+            ],
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_history_cursor(cursor):
+        cursor = str(cursor or "").strip()
+        if not cursor:
+            return None
+        try:
+            padding = "=" * (-len(cursor) % 4)
+            payload = json.loads(
+                base64.urlsafe_b64decode(cursor + padding).decode("utf-8")
+            )
+            if not isinstance(payload, list) or len(payload) != 3:
+                return None
+            return tuple(int(value) for value in payload)
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+
+    def history_page(self, session_id, cursor="", limit=300):
+        """Return a stable, session-scoped page of App chat history.
+
+        Realtime events remain device-scoped, but durable history belongs to
+        the Xiaoyou session. This lets a freshly installed App register a new
+        device id and still recover every acknowledged message and its media.
+        """
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            return {
+                "messages": [],
+                "next_cursor": "",
+                "has_more": False,
+            }
+        limit = max(1, min(int(limit or 300), 300))
+        decoded_cursor = self._decode_history_cursor(cursor)
+        cursor_clause = ""
+        args = [session_id, session_id]
+        if decoded_cursor is not None:
+            created_at, source_rank, order_index = decoded_cursor
+            cursor_clause = """
+                WHERE (
+                    created_at < ?
+                    OR (created_at = ? AND source_rank < ?)
+                    OR (
+                        created_at = ?
+                        AND source_rank = ?
+                        AND order_index < ?
+                    )
+                )
+            """
+            args.extend(
+                [
+                    created_at,
+                    created_at,
+                    source_rank,
+                    created_at,
+                    source_rank,
+                    order_index,
+                ]
+            )
+        args.append(limit + 1)
+        with self.lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT
+                        message_id AS id,
+                        '' AS action_id,
+                        'user' AS role,
+                        kind,
+                        text,
+                        media_id,
+                        '' AS remote_url,
+                        mime_type,
+                        duration_ms,
+                        accepted_at AS created_at,
+                        '' AS terminal_status,
+                        0 AS requested_parts,
+                        0 AS source_rank,
+                        rowid AS order_index
+                    FROM inputs
+                    WHERE session_id=?
+
+                    UNION ALL
+
+                    SELECT
+                        e.event_id AS id,
+                        e.action_id,
+                        'assistant' AS role,
+                        e.kind,
+                        e.text,
+                        e.media_id,
+                        e.remote_url,
+                        e.mime_type,
+                        e.duration_ms,
+                        e.created_at,
+                        a.terminal_status,
+                        a.requested_parts,
+                        1 AS source_rank,
+                        e.sequence AS order_index
+                    FROM events e
+                    JOIN actions a ON a.action_id=e.action_id
+                    WHERE a.session_id=?
+                      AND (
+                          a.terminal_status='queued'
+                          OR e.acknowledged_at IS NOT NULL
+                      )
+                ) AS history
+                %s
+                ORDER BY created_at DESC, source_rank DESC, order_index DESC
+                LIMIT ?
+                """ % cursor_clause,
+                tuple(args),
+            ).fetchall()
+
+        has_more = len(rows) > limit
+        selected = rows[:limit]
+        next_cursor = (
+            self._history_cursor(selected[-1])
+            if has_more and selected
+            else ""
+        )
+        messages = []
+        for row in reversed(selected):
+            item = {
+                "id": str(row["id"]),
+                "role": str(row["role"]),
+                "kind": str(row["kind"] or "text"),
+                "text": str(row["text"] or ""),
+                "media_id": str(row["media_id"] or ""),
+                "remote_url": str(row["remote_url"] or ""),
+                "mime_type": str(row["mime_type"] or ""),
+                "duration_ms": int(row["duration_ms"] or 0),
+                "created_at": int(row["created_at"]),
+            }
+            if item["role"] == "assistant":
+                item.update(
+                    {
+                        "action_id": str(row["action_id"] or ""),
+                        "terminal_status": str(
+                            row["terminal_status"] or "queued"
+                        ),
+                        "requested_parts": int(
+                            row["requested_parts"] or 0
+                        ),
+                    }
+                )
+            messages.append(item)
+        return {
+            "messages": messages,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+        }
+
     def latest_sequence(self, device_id):
         with self.lock, self._connect() as connection:
             row = connection.execute(
@@ -1198,11 +1367,27 @@ class AppInboxStore:
                 (str(action_id or ""),),
             )
 
-    def media(self, media_id, device_id):
+    def media(self, media_id, device_id, session_id=""):
+        device_id = _safe_device_id(device_id)
+        session_id = str(session_id or "").strip()
         with self.lock, self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM media WHERE media_id=? AND device_id=?",
-                (str(media_id or ""), _safe_device_id(device_id)),
+                """
+                SELECT media.*
+                FROM media
+                LEFT JOIN devices ON devices.device_id=media.device_id
+                WHERE media.media_id=?
+                  AND (
+                      media.device_id=?
+                      OR (? != '' AND devices.session_id=?)
+                  )
+                """,
+                (
+                    str(media_id or ""),
+                    device_id,
+                    session_id,
+                    session_id,
+                ),
             ).fetchone()
         if not row:
             return None
@@ -1794,15 +1979,16 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._sse(device_id, query)
             return
         if parsed.path == "/v1/history":
-            history = self.plugin.store.history(
-                device_id,
-                before=self._integer((query.get("before") or [0])[0], 0),
+            history = self.plugin.store.history_page(
+                self.plugin.canonical_session_id,
+                cursor=(query.get("cursor") or [""])[0],
                 limit=self._integer((query.get("limit") or [100])[0], 100),
             )
             self._json(
                 200,
                 {
-                    "messages": history,
+                    **history,
+                    "history_scope": "session",
                     "last_event_sequence": self.plugin.store.latest_sequence(
                         device_id
                     ),
@@ -2214,7 +2400,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _media(self, media_id, device_id):
-        item = self.plugin.store.media(media_id, device_id)
+        item = self.plugin.store.media(
+            media_id,
+            device_id,
+            session_id=self.plugin.canonical_session_id,
+        )
         if not item:
             self._json(404, {"error": "media_not_found"})
             return

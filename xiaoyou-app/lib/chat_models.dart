@@ -76,7 +76,28 @@ class ChatMessage {
       terminalStatus: '${value['terminal_status'] ?? ''}',
       requestedParts: asInt(value['requested_parts']),
       createdAt: asInt(value['created_at']),
+      localPath: '${value['local_path'] ?? ''}',
+      localState: '${value['local_state'] ?? 'sent'}',
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'action_id': actionId,
+      'role': role,
+      'kind': kind,
+      'text': text,
+      'media_id': mediaId,
+      'remote_url': remoteUrl,
+      'mime_type': mimeType,
+      'duration_ms': durationMs,
+      'local_path': localPath,
+      'terminal_status': terminalStatus,
+      'requested_parts': requestedParts,
+      'created_at': createdAt,
+      'local_state': localState,
+    };
   }
 }
 

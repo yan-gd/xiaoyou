@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:local_auth/local_auth.dart';
 
+import 'chat_archive_store.dart';
 import 'chat_models.dart';
 import 'media_cache_service.dart';
 import 'media_save_service.dart';
@@ -54,6 +55,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _imagePicker = ImagePicker();
   final _messageKeys = <String, GlobalKey>{};
   final _mediaCache = MessageMediaCache();
+  final _archiveStore = ChatArchiveStore();
 
   XiaoyouApi? _api;
   SavedConnection? _savedConnection;
@@ -62,6 +64,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Timer? _draftTimer;
   Timer? _highlightTimer;
   Timer? _recordingTimer;
+  Timer? _archiveSaveTimer;
   StreamSubscription<double>? _amplitudeSubscription;
   bool _booting = true;
   bool _connecting = false;
@@ -93,6 +96,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   int _moodRefreshGeneration = 0;
   double _recordingLevel = 0;
   String _highlightedMessageId = '';
+  String _archiveScope = '';
   Future<void>? _recordingStartTask;
   Completer<void>? _notificationSettingsResume;
   Completer<void>? _batterySettingsResume;
@@ -120,6 +124,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _draftTimer?.cancel();
     _highlightTimer?.cancel();
     _recordingTimer?.cancel();
+    _archiveSaveTimer?.cancel();
     _moodRefreshGeneration += 1;
     _amplitudeSubscription?.cancel();
     final notificationSettingsResume = _notificationSettingsResume;
@@ -128,6 +133,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       notificationSettingsResume.complete();
     }
     _cancelToastEntry?.remove();
+    unawaited(_persistArchive());
     _api?.close();
     unawaited(_voiceRecorder.dispose());
     _composer.dispose();
@@ -450,6 +456,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final previousApi = _api;
     var activated = false;
     try {
+      await _restoreLocalArchive(baseUrl);
       await api.health();
       await api.registerDevice();
       final history = await api.history();
@@ -465,12 +472,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (persist) {
         await _sessionStore.saveConnection(connection, token);
       }
+      final synchronizedMessages = mergeChatMessages([
+        ..._messages,
+        ...history.messages,
+      ]);
       setState(() {
         _api = api;
         _savedConnection = connection;
         _messages
           ..clear()
-          ..addAll(history.messages);
+          ..addAll(synchronizedMessages);
         _lastEventSequence = history.lastEventSequence;
         _status = '在线';
         if (persist) {
@@ -478,6 +489,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       });
       activated = true;
+      _scheduleArchiveSave(immediate: true);
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
       unawaited(_primeMediaCache(history.messages, api));
@@ -569,6 +581,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               _showJumpToBottom = true;
             }
           });
+          _scheduleArchiveSave();
           if (receivedAssistantReply) {
             _typingTimer?.cancel();
             _scheduleMoodProfileRefresh();
@@ -634,6 +647,46 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       }
     });
+    _scheduleArchiveSave();
+  }
+
+  Future<void> _restoreLocalArchive(String baseUrl) async {
+    final scope = baseUrl.replaceFirst(RegExp(r'/+$'), '').trim().toLowerCase();
+    if (scope.isEmpty || scope == _archiveScope) {
+      return;
+    }
+    final archived = await _archiveStore.load(scope);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _archiveScope = scope;
+      _messages
+        ..clear()
+        ..addAll(archived);
+    });
+  }
+
+  void _scheduleArchiveSave({bool immediate = false}) {
+    if (_archiveScope.isEmpty) {
+      return;
+    }
+    _archiveSaveTimer?.cancel();
+    if (immediate) {
+      unawaited(_persistArchive());
+      return;
+    }
+    _archiveSaveTimer = Timer(
+      const Duration(milliseconds: 300),
+      () => unawaited(_persistArchive()),
+    );
+  }
+
+  Future<void> _persistArchive() async {
+    if (_archiveScope.isEmpty) {
+      return;
+    }
+    await _archiveStore.replace(_archiveScope, List.of(_messages));
   }
 
   Future<void> _notifyIncoming(List<ChatMessage> messages) async {
@@ -1010,6 +1063,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (cached != null && cached.path != file.path && await file.exists()) {
         await file.delete();
       }
+      _scheduleArchiveSave();
       _beginWaitingForReply();
     } catch (error) {
       _updateLocalMessage(messageId, 'failed');
@@ -1032,6 +1086,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() {
       _messages[index] = _messages[index].copyWith(localState: state);
     });
+    _scheduleArchiveSave();
   }
 
   void _beginWaitingForReply() {
@@ -1191,6 +1246,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           });
         }
       }
+      _scheduleArchiveSave();
       _beginWaitingForReply();
     } catch (error) {
       _updateLocalMessage(messageId, 'failed');

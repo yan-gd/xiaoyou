@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'chat_models.dart';
@@ -44,25 +45,50 @@ class XiaoyouApi {
   }
 
   Future<ChatHistory> history() async {
-    final payload = await _request(
-      'GET',
-      '/v1/history',
-      query: {'device_id': deviceId, 'limit': '200'},
-    );
-    final values = payload['messages'];
-    if (values is! List) {
-      return ChatHistory(
-        messages: const [],
-        lastEventSequence: asInt(payload['last_event_sequence']),
+    final messagesById = <String, ChatMessage>{};
+    final seenCursors = <String>{};
+    var cursor = '';
+    var lastEventSequence = 0;
+    do {
+      final payload = await _request(
+        'GET',
+        '/v1/history',
+        query: {
+          'device_id': deviceId,
+          'limit': '300',
+          if (cursor.isNotEmpty) 'cursor': cursor,
+        },
       );
-    }
-    final messages = values
-        .whereType<Map>()
-        .map((value) => ChatMessage.fromJson(value.cast<String, dynamic>()))
-        .toList();
+      lastEventSequence = max(
+        lastEventSequence,
+        asInt(payload['last_event_sequence']),
+      );
+      final values = payload['messages'];
+      if (values is List) {
+        for (final value in values.whereType<Map>()) {
+          final message = ChatMessage.fromJson(
+            value.cast<String, dynamic>(),
+          );
+          if (message.id.isNotEmpty) {
+            messagesById[message.id] = message;
+          }
+        }
+      }
+      cursor = '${payload['next_cursor'] ?? ''}'.trim();
+      if (payload['has_more'] != true ||
+          cursor.isEmpty ||
+          !seenCursors.add(cursor)) {
+        break;
+      }
+    } while (true);
+    final messages = messagesById.values.toList()
+      ..sort((left, right) {
+        final byTime = left.createdAt.compareTo(right.createdAt);
+        return byTime != 0 ? byTime : left.id.compareTo(right.id);
+      });
     return ChatHistory(
       messages: messages,
-      lastEventSequence: asInt(payload['last_event_sequence']),
+      lastEventSequence: lastEventSequence,
     );
   }
 
