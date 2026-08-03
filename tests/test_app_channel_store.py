@@ -242,6 +242,27 @@ def test_app_runtime_owns_work_queues_but_shares_input_version_clock(
     assert module.AppRuntimeChannel.lock is module.ChatChannel.lock
 
 
+def test_app_text_input_requests_immediate_dispatch(monkeypatch, tmp_path):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    produced = []
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.canonical_session_id = "yoyo"
+    runtime.produce = produced.append
+    runtime.store = types.SimpleNamespace(
+        mark_input_status=lambda *_args, **_kwargs: None
+    )
+
+    runtime._produce_text(
+        text="我先说第一句",
+        message_id="message-immediate-1",
+        device_id="phone-immediate",
+        voice_reply=False,
+    )
+
+    assert len(produced) == 1
+    assert produced[0]["xiaoyou_input_immediate"] is True
+
+
 def test_device_reconnect_preserves_system_push_registration(
     monkeypatch,
     tmp_path,

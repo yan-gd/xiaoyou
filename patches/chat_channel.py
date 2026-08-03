@@ -522,6 +522,11 @@ class ChatChannel(Channel):
                     self.input_batch_workers.add(session_id)
                     start_batch_worker = True
             else:
+                if (
+                    self._is_versioned_input(context)
+                    and context.type == ContextType.TEXT
+                ):
+                    self._prepare_immediate_input_context(context)
                 self._enqueue_context_locked(context)
 
         if start_batch_worker:
@@ -635,6 +640,50 @@ class ChatChannel(Channel):
 
         return context
 
+    def _prepare_immediate_input_context(self, context):
+        """Commit one text input without a debounce window.
+
+        The version clock still invalidates an older in-flight reply.  By the
+        time a newer request reaches the model, ShortMemory has already
+        recorded the earlier user text, so the new request naturally sees the
+        user's complete continuation without delaying the first request.
+        """
+        text = str(context.content or "").strip()
+        if not text:
+            return context
+
+        kwargs = getattr(context, "kwargs", {}) or {}
+        source_message_ids = kwargs.get("xiaoyou_source_message_ids") or []
+        if isinstance(source_message_ids, str):
+            source_message_ids = [source_message_ids]
+        if not source_message_ids and kwargs.get("xiaoyou_input_id"):
+            source_message_ids = [kwargs.get("xiaoyou_input_id")]
+
+        self._set_context_input_metadata(
+            context,
+            version=kwargs.get(
+                "xiaoyou_input_version",
+                context.get("xiaoyou_input_version"),
+            ),
+            messages=[text],
+            first_ts=time.monotonic(),
+            session_key=kwargs.get("xiaoyou_input_session_key")
+            or context.get("session_id"),
+            source_message_ids=source_message_ids,
+        )
+        if context.get("xiaoyou_trace_id"):
+            trace_event(
+                "input_merged",
+                status="immediate",
+                link=activate_context_trace(context),
+                attrs={
+                    "input_version": context.get("xiaoyou_input_version"),
+                    "batch_size": 1,
+                    "settle_ms": 0,
+                },
+            )
+        return context
+
     def _set_context_input_metadata(
         self,
         context,
@@ -668,7 +717,10 @@ class ChatChannel(Channel):
         return context.type in (ContextType.TEXT, ContextType.IMAGE, ContextType.VOICE)
 
     def _should_merge_input(self, context):
-        enabled = os.getenv("XIAOYOU_INPUT_MERGE_ENABLED", "true").strip().lower()
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if kwargs.get("xiaoyou_input_immediate"):
+            return False
+        enabled = os.getenv("XIAOYOU_INPUT_MERGE_ENABLED", "false").strip().lower()
         if enabled not in ("1", "true", "yes", "on"):
             return False
         if context is None or context.get("isgroup", False):
@@ -682,9 +734,9 @@ class ChatChannel(Channel):
 
     def _input_settle_seconds(self):
         try:
-            value = float(os.getenv("XIAOYOU_INPUT_SETTLE_SECONDS", "4.0"))
+            value = float(os.getenv("XIAOYOU_INPUT_SETTLE_SECONDS", "0.1"))
         except Exception:
-            value = 4.0
+            value = 0.1
         return max(0.1, min(value, 10.0))
 
     def is_context_current(self, context):

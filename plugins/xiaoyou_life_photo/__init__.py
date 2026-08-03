@@ -38,6 +38,7 @@ from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
 from plugins.xiaoyou_common.relationship_profile_service import (
     get_relationship_profile_service,
 )
+from plugins.xiaoyou_common.route_prefetch import resolve_route_prefetch
 from plugins.xiaoyou_life_photo.plan_rules import (
     ALLOWED_SHARE_INTENTS,
     action_requires_free_hands,
@@ -115,11 +116,15 @@ class XiaoyouLifePhoto(Plugin):
         if not current_text:
             return
 
-        semantic_route = classify_photo_semantics(
-            text=current_text,
-            session_id=session_id,
-            pending_user_image=False,
-            context=context,
+        semantic_route = resolve_route_prefetch(
+            context,
+            "XIAOYOULIFEPHOTO",
+            lambda: classify_photo_semantics(
+                text=current_text,
+                session_id=session_id,
+                pending_user_image=False,
+                context=context,
+            ),
         )
         if not semantic_route.should_generate:
             return
@@ -170,6 +175,33 @@ class XiaoyouLifePhoto(Plugin):
             "[XiaoyouLifePhoto] user-requested photo sent session=%s has_caption=%s",
             session_id,
             bool(caption),
+        )
+
+    def prefetch_route_decision(self, e_context):
+        if not self._enabled():
+            return PhotoSemanticRoute()
+        context = e_context["context"]
+        if context.type != ContextType.TEXT:
+            return PhotoSemanticRoute()
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if kwargs.get("isgroup"):
+            return PhotoSemanticRoute()
+        session_id = str(
+            kwargs.get("session_id") or kwargs.get("receiver") or ""
+        ).strip()
+        receiver = str(kwargs.get("receiver") or "").strip()
+        current_text = extract_current_user_text(context.content)
+        if (
+            not current_text
+            or not self._session_allowed(session_id)
+            or not receiver
+        ):
+            return PhotoSemanticRoute()
+        return classify_photo_semantics(
+            text=current_text,
+            session_id=session_id,
+            pending_user_image=False,
+            context=context,
         )
 
     def create_proactive_share(self, session_id, activity=None):

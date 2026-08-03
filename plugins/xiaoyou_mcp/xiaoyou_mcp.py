@@ -18,6 +18,7 @@ from plugins.xiaoyou_common.context_service import (
     build_character_context,
     extract_current_user_text,
 )
+from plugins.xiaoyou_common.route_prefetch import resolve_route_prefetch
 
 
 TOOLS_CACHE = {}
@@ -53,7 +54,11 @@ class XiaoyouMCP(Plugin):
         if not text:
             return
 
-        kind = self._route_intent(text)
+        kind = resolve_route_prefetch(
+            context,
+            "XIAOYOUMCP",
+            lambda: self._route_intent(text),
+        )
         if not kind:
             return
 
@@ -97,6 +102,20 @@ class XiaoyouMCP(Plugin):
                 error=ex,
             )
             self._set_reply_or_silence(e_context, reply)
+
+    def prefetch_route_decision(self, e_context):
+        if not self._enabled():
+            return None
+        context = e_context["context"]
+        if context.type != ContextType.TEXT:
+            return None
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if kwargs.get("isgroup"):
+            return None
+        text = self._extract_plain_user_text(context.content)
+        if not text:
+            return None
+        return self._route_intent(text)
 
     def _enabled(self):
         return os.getenv("XIAOYOU_MCP_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")

@@ -26,6 +26,7 @@ from plugins.xiaoyou_common.context_service import (
     load_long_memory_context,
 )
 from plugins.xiaoyou_common.intent_fastpath import might_need_capability
+from plugins.xiaoyou_common.route_prefetch import resolve_route_prefetch
 
 
 DATA_FILE = runtime_path(
@@ -101,7 +102,12 @@ class ReminderLove(Plugin):
 
         # 普通聊天：如果刚刚触发过提醒，把提醒上下文塞给聊天模型
         # 提醒由统一发送器直接送达，主 CoW 回复上下文本身不知道这件事。
-        if not self._has_reminder_intent(text):
+        has_reminder_intent = resolve_route_prefetch(
+            context,
+            "REMINDERLOVE",
+            lambda: self._has_reminder_intent(text),
+        )
+        if not has_reminder_intent:
             self._inject_recent_reminder_context(context, session_id, text)
             return
 
@@ -177,6 +183,26 @@ YoYo 当前消息：
 %s
 """ % (reminder.get("due_text", ""), reminder.get("task", ""), text)
             return
+
+    def prefetch_route_decision(self, e_context):
+        if not self._enabled():
+            return False
+        context = e_context["context"]
+        if context.type != ContextType.TEXT:
+            return False
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if kwargs.get("isgroup"):
+            return False
+        text = self._extract_actual_user_text(str(context.content or "").strip())
+        if (
+            not text
+            or self._is_list_cmd(text)
+            or self._is_cancel_cmd(text)
+            or not self._get_session_id(context)
+            or not self._get_receiver(context)
+        ):
+            return False
+        return self._has_reminder_intent(text)
 
     def create_voice_reminder(
         self,

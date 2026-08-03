@@ -11,7 +11,7 @@ CHAT_CHANNEL_PATH = os.path.join(ROOT, "patches", "chat_channel.py")
 VISION_PATH = os.path.join(ROOT, "plugins", "qwen_vision", "qwen_vision.py")
 
 
-def load_class_methods(path, class_name, method_names):
+def load_class_methods(path, class_name, method_names, namespace=None):
     with open(path, "r", encoding="utf-8") as handle:
         tree = ast.parse(handle.read(), filename=path)
     selected = []
@@ -22,15 +22,17 @@ def load_class_methods(path, class_name, method_names):
                 for item in node.body
                 if isinstance(item, ast.FunctionDef) and item.name in method_names
             )
-    namespace = {}
+    namespace = dict(namespace or {})
     exec(compile(ast.Module(body=selected, type_ignores=[]), path, "exec"), namespace)
     return {name: namespace[name] for name in method_names}
 
 
 class Context(dict):
-    def __init__(self, **values):
+    def __init__(self, content="", context_type=None, **values):
         super().__init__(values)
         self.kwargs = dict(values)
+        self.content = content
+        self.type = context_type
 
 
 class InputVersionAndVisionStaleTest(unittest.TestCase):
@@ -62,6 +64,65 @@ class InputVersionAndVisionStaleTest(unittest.TestCase):
 
         self.assertTrue(channel.is_context_current(context))
         context.kwargs["xiaoyou_input_version"] = 1
+        self.assertFalse(channel.is_context_current(context))
+
+    def test_text_input_is_committed_immediately_with_stale_protection(self):
+        class _ContextType:
+            TEXT = "text"
+            IMAGE = "image"
+            VOICE = "voice"
+
+        trace_calls = []
+        methods = load_class_methods(
+            CHAT_CHANNEL_PATH,
+            "ChatChannel",
+            {
+                "_set_context_input_metadata",
+                "_prepare_immediate_input_context",
+                "_should_merge_input",
+                "is_context_current",
+            },
+            namespace={
+                "ContextType": _ContextType,
+                "os": os,
+                "time": __import__("time"),
+                "trace_event": lambda *args, **kwargs: trace_calls.append(
+                    (args, kwargs)
+                ),
+                "activate_context_trace": lambda context: context,
+            },
+        )
+        channel = types.SimpleNamespace(
+            lock=threading.Lock(),
+            input_versions={"yoyo": 1},
+        )
+        for name, method in methods.items():
+            setattr(channel, name, types.MethodType(method, channel))
+
+        context = Context(
+            "第一条消息",
+            _ContextType.TEXT,
+            session_id="yoyo",
+            xiaoyou_trace_id="trace-1",
+            xiaoyou_input_id="message-1",
+            xiaoyou_input_version=1,
+            xiaoyou_input_session_key="yoyo",
+            xiaoyou_input_immediate=True,
+        )
+
+        self.assertFalse(channel._should_merge_input(context))
+        channel._prepare_immediate_input_context(context)
+        self.assertEqual(context.kwargs["xiaoyou_input_messages"], ["第一条消息"])
+        self.assertEqual(context.kwargs["xiaoyou_input_batch_size"], 1)
+        self.assertEqual(
+            context.kwargs["xiaoyou_source_message_ids"],
+            ["message-1"],
+        )
+        self.assertEqual(trace_calls[-1][0], ("input_merged",))
+        self.assertEqual(trace_calls[-1][1]["status"], "immediate")
+        self.assertEqual(trace_calls[-1][1]["attrs"]["settle_ms"], 0)
+
+        channel.input_versions["yoyo"] = 2
         self.assertFalse(channel.is_context_current(context))
 
     def test_unchanged_stale_vision_snapshot_is_not_requeued(self):

@@ -136,8 +136,8 @@ services: # Docker Compose 服务集合。
       XIAOYOU_SELECTIVE_CRITIC_TIMEOUT: '25' # 审查失败时保留原草稿，不阻断回复。
 
       # ===== 连续输入合并 =====
-      XIAOYOU_INPUT_MERGE_ENABLED: 'true' # 将短时间连续消息合成同一轮，并废弃思考中的旧回复。
-      XIAOYOU_INPUT_SETTLE_SECONDS: '4.0' # 最后一条输入后等待4秒，覆盖自然连续补话；快速路由会抵消新增等待。
+      XIAOYOU_INPUT_MERGE_ENABLED: 'false' # 新消息立即进入请求；后续补话递增版本并废弃仍在生成的旧回复。
+      XIAOYOU_INPUT_SETTLE_SECONDS: '0.1' # 仅在手动重新开启静默合并时生效；默认即时链路不等待。
       XIAOYOU_INPUT_MAX_MESSAGES: '8' # 单轮最多合并8条连续消息，防止无限堆积。
       XIAOYOU_INPUT_MAX_CHARS: '2400' # 单轮合并文本最多2400字符，超出部分不继续合并。
 

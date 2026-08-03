@@ -183,8 +183,18 @@ class PluginManager:
         self.activate_plugins()
 
     def emit_event(self, e_context: EventContext, *args, **kwargs):
+        parallel_route_started = False
         if e_context.event in self.listening_plugins:
             for name in self.listening_plugins[e_context.event]:
+                if (
+                    not parallel_route_started
+                    and e_context.event == Event.ON_HANDLE_CONTEXT
+                    and str(name).upper()
+                    in {"REMINDERLOVE", "XIAOYOULIFEPHOTO", "XIAOYOUMCP"}
+                    and e_context.action == EventAction.CONTINUE
+                ):
+                    parallel_route_started = True
+                    self._start_parallel_route_prefetch(e_context)
                 if self.plugins[name].enabled and e_context.action == EventAction.CONTINUE:
                     logger.debug("Plugin %s triggered by event %s" % (name, e_context.event))
                     instance = self.instances[name]
@@ -193,6 +203,38 @@ class PluginManager:
                         e_context["breaked_by"] = name
                         logger.debug("Plugin %s breaked event %s" % (name, e_context.event))
         return e_context
+
+    def _start_parallel_route_prefetch(self, e_context):
+        try:
+            from plugins.xiaoyou_common.route_prefetch import start_route_prefetch
+
+            context = e_context["context"]
+            providers = {}
+            for plugin_name in (
+                "REMINDERLOVE",
+                "XIAOYOULIFEPHOTO",
+                "XIAOYOUMCP",
+            ):
+                plugin_class = (
+                    self.plugins[plugin_name]
+                    if plugin_name in self.plugins
+                    else None
+                )
+                instance = self.instances.get(plugin_name)
+                provider = getattr(instance, "prefetch_route_decision", None)
+                if (
+                    plugin_class is not None
+                    and plugin_class.enabled
+                    and callable(provider)
+                ):
+                    providers[plugin_name] = lambda provider=provider: provider(
+                        e_context
+                    )
+            start_route_prefetch(context, providers)
+        except Exception:
+            # Prefetch is an optimization only. Existing synchronous routing
+            # remains the source of truth whenever it cannot be started.
+            logger.exception("[ParallelRoute] failed to start route prefetch")
 
     def set_plugin_priority(self, name: str, priority: int):
         name = name.upper()

@@ -1636,6 +1636,10 @@ class AppRuntimeChannel(ChatChannel):
             "xiaoyou_defer_memory_until_delivery": True,
             "xiaoyou_input_kind": "voice" if voice_reply else "text",
             "xiaoyou_app_voice_reply": bool(voice_reply),
+            # App sends are committed immediately.  A later input increments
+            # the shared version clock, discards the older in-flight reply and
+            # starts a fresh request with ShortMemory continuity.
+            "xiaoyou_input_immediate": True,
         }
         context = Context(ContextType.TEXT, text)
         context.kwargs = kwargs
