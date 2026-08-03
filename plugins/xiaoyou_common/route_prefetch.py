@@ -3,7 +3,8 @@
 
 Only model-backed classification runs in the worker pool. Plugin callbacks
 still consume the results in their normal priority order, so reminder, photo,
-and MCP side effects remain deterministic and single-threaded.
+and MCP side effects remain deterministic and single-threaded. App reply
+medium prediction is independent and may be consumed after reply generation.
 """
 
 import os
@@ -36,7 +37,7 @@ def _executor():
                 1,
                 min(
                     8,
-                    int(os.getenv("XIAOYOU_PARALLEL_ROUTE_WORKERS", "3")),
+                    int(os.getenv("XIAOYOU_PARALLEL_ROUTE_WORKERS", "4")),
                 ),
             )
             _EXECUTOR = ThreadPoolExecutor(

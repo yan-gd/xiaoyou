@@ -230,6 +230,32 @@ class PluginManager:
                     providers[plugin_name] = lambda provider=provider: provider(
                         e_context
                     )
+            app_plugin_class = (
+                self.plugins["APPCHANNEL"]
+                if "APPCHANNEL" in self.plugins
+                else None
+            )
+            app_instance = self.instances.get("APPCHANNEL")
+            app_provider = getattr(
+                app_instance,
+                "prefetch_reply_medium_decision",
+                None,
+            )
+            app_eligible = getattr(
+                app_instance,
+                "can_prefetch_reply_medium_decision",
+                None,
+            )
+            if (
+                app_plugin_class is not None
+                and app_plugin_class.enabled
+                and callable(app_provider)
+                and callable(app_eligible)
+                and app_eligible(e_context)
+            ):
+                providers["APPVOICEREPLYDECISION"] = (
+                    lambda app_provider=app_provider: app_provider(e_context)
+                )
             start_route_prefetch(context, providers)
         except Exception:
             # Prefetch is an optimization only. Existing synchronous routing

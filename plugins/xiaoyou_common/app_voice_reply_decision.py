@@ -66,6 +66,155 @@ class AppVoiceReplyDecisionService:
             ),
         )
 
+    def decide_before_reply(
+        self,
+        *,
+        input_kind,
+        user_text,
+        session_id="",
+        trace_id="",
+        input_id="",
+    ):
+        """Predict the natural reply medium while the main reply is running.
+
+        This path intentionally uses semantic model judgment only. It does
+        not add keyword, regex or hard-coded intent routing. The completed
+        assistant reply is unavailable at this point, so the model judges the
+        user's current turn together with recent conversation.
+        """
+        input_kind = str(input_kind or "").strip().lower()
+        if input_kind == "voice":
+            return AppVoiceReplyDecision(
+                medium=MEDIUM_VOICE,
+                confidence=1.0,
+                reason="App voice input keeps a voice reply",
+                model_ok=True,
+                forced=True,
+            )
+        if input_kind != "text" or not self.enabled:
+            return AppVoiceReplyDecision(
+                reason=(
+                    "not an App text turn"
+                    if input_kind != "text"
+                    else "text voice decision disabled"
+                )
+            )
+
+        user_text = str(user_text or "").strip()
+        if not user_text:
+            return AppVoiceReplyDecision(reason="user text unavailable")
+
+        recent_context = ""
+        try:
+            snapshot = build_context_snapshot(
+                content=user_text,
+                session_id=str(session_id or ""),
+                include_character=False,
+                include_short_memory=True,
+                short_memory_max_chars=self.context_max_chars,
+                component="AppVoiceReplyDecision",
+            )
+            recent_context = str(snapshot.short_memory or "").strip()
+        except Exception:
+            logger.exception(
+                "[AppVoiceReplyDecision] recent context unavailable"
+            )
+
+        prompt = """你是小悠 App 的回复媒介决策器。小悠的聊天回复正在由主模型生成，
+你只需要提前判断这一轮更适合以文字发送，还是合成为语音发送。
+
+必须基于当前语义、关系氛围和最近对话做完整判断，不能依赖关键词、正则或固定短语：
+- 当 YoYo 当前明确希望听见小悠的声音，或当前情绪、语气、亲密互动明显更适合由小悠亲口表达，可以选择 voice。
+- 讨论语音功能、转述别人的要求、否定或取消语音、计划以后再听，不等于当前就应发送语音。
+- 需要方便阅读、保存或查看结构的内容，以及没有充分理由改变日常媒介的情况，选择 text。
+- 不要因为语音更亲密就每轮都选择 voice。
+- 这是媒介预判，不要生成、补写或猜测小悠将要说的具体回复。
+
+最近对话：
+<recent>
+%s
+</recent>
+
+YoYo 当前文字：
+<user>
+%s
+</user>
+
+只输出合法 JSON：
+{
+  "medium": "voice | text",
+  "confidence": 0.0,
+  "reason": "简短说明这种媒介为什么符合当前真实语境"
+}""" % (
+            recent_context[: self.context_max_chars] or "暂无",
+            user_text[:4000],
+        )
+        result = chat_completion(
+            component="AppVoiceReplyDecision",
+            purpose="prefetch_reply_medium",
+            payload={
+                "model": self.model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你只判断小悠 App 本轮回复媒介，只输出合法 JSON，"
+                            "不生成聊天回复。"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": 0.15,
+                "max_tokens": 240,
+                **build_thinking_payload("XIAOYOU_APP_VOICE_ROUTE"),
+            },
+            timeout=self.timeout,
+            session_id=str(session_id or ""),
+            trace_id=str(trace_id or ""),
+            input_id=str(input_id or ""),
+        )
+        if not result.ok:
+            logger.warning(
+                "[AppVoiceReplyDecision] prefetch model unavailable "
+                "input_id=%s error=%s",
+                str(input_id or "-"),
+                str(getattr(result, "error_kind", "model_failed")),
+            )
+            return AppVoiceReplyDecision(reason="medium model unavailable")
+
+        data = _parse_json(result.content)
+        if not isinstance(data, dict):
+            logger.warning(
+                "[AppVoiceReplyDecision] invalid prefetch JSON input_id=%s",
+                str(input_id or "-"),
+            )
+            return AppVoiceReplyDecision(reason="invalid medium model JSON")
+
+        medium = str(data.get("medium") or "").strip().lower()
+        if medium not in ALLOWED_MEDIA:
+            medium = MEDIUM_TEXT
+        try:
+            confidence = max(
+                0.0,
+                min(1.0, float(data.get("confidence") or 0.0)),
+            )
+        except (TypeError, ValueError):
+            confidence = 0.0
+        decision = AppVoiceReplyDecision(
+            medium=medium,
+            confidence=confidence,
+            reason=str(data.get("reason") or "").strip()[:300],
+            model_ok=True,
+        )
+        logger.info(
+            "[AppVoiceReplyDecision] prefetched medium=%s confidence=%.2f "
+            "input_id=%s",
+            decision.medium,
+            decision.confidence,
+            str(input_id or "-"),
+        )
+        return decision
+
     def decide(
         self,
         *,

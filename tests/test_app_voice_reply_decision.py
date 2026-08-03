@@ -98,6 +98,38 @@ def test_text_turn_uses_model_voice_decision_without_local_intent_gate(
     assert "最近对话" in prompt
 
 
+def test_text_turn_medium_can_be_predicted_before_assistant_reply(
+    monkeypatch,
+):
+    module, calls = _load_service(
+        monkeypatch,
+        types.SimpleNamespace(
+            ok=True,
+            content=(
+                '{"medium":"voice","confidence":0.91,'
+                '"reason":"current relationship context suits spoken reply"}'
+            ),
+        ),
+    )
+    service = module.AppVoiceReplyDecisionService()
+
+    decision = service.decide_before_reply(
+        input_kind="text",
+        user_text="陪我说一会儿话",
+        session_id="yoyo",
+        trace_id="trace-prefetch",
+        input_id="text-prefetch",
+    )
+
+    assert decision.use_voice is True
+    assert decision.model_ok is True
+    assert len(calls) == 1
+    assert calls[0]["purpose"] == "prefetch_reply_medium"
+    prompt = calls[0]["payload"]["messages"][1]["content"]
+    assert "陪我说一会儿话" in prompt
+    assert "不要生成、补写或猜测" in prompt
+
+
 def test_voice_input_is_forced_to_voice_without_calling_model(monkeypatch):
     module, calls = _load_service(
         monkeypatch,

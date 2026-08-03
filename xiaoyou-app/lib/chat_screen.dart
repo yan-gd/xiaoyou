@@ -525,24 +525,41 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (_api == null || !_pollingAllowed) {
       return;
     }
-    _pollTimer = Timer.periodic(
-      Duration(seconds: _appInForeground ? 2 : 15),
-      (_) => _poll(),
+    _pollTimer = Timer(
+      Duration.zero,
+      () => _poll(waitForEvents: true),
     );
   }
 
-  Future<void> _poll() async {
+  void _scheduleLongPoll([Duration delay = const Duration(milliseconds: 80)]) {
+    _pollTimer?.cancel();
+    if (!mounted || _api == null || !_pollingAllowed) {
+      return;
+    }
+    _pollTimer = Timer(
+      delay,
+      () => _poll(waitForEvents: true),
+    );
+  }
+
+  Future<void> _poll({bool waitForEvents = false}) async {
     final api = _api;
     if (api == null ||
         !_pollingAllowed ||
         _connecting ||
         _polling ||
         _sending) {
+      if (waitForEvents && api != null && _pollingAllowed) {
+        _scheduleLongPoll(const Duration(milliseconds: 180));
+      }
       return;
     }
     _polling = true;
     try {
-      final events = await api.eventsAfter(_lastEventSequence);
+      final events = await api.eventsAfter(
+        _lastEventSequence,
+        waitSeconds: waitForEvents && _appInForeground ? 20 : 0,
+      );
       if (!mounted) {
         return;
       }
@@ -609,6 +626,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     } finally {
       _polling = false;
+      if (waitForEvents) {
+        _scheduleLongPoll(
+          _appInForeground
+              ? const Duration(milliseconds: 50)
+              : const Duration(seconds: 15),
+        );
+      }
     }
   }
 
@@ -4498,6 +4522,8 @@ class _MessageRowState extends State<_MessageRow>
         before.remoteUrl != after.remoteUrl ||
         before.localPath != after.localPath ||
         before.mimeType != after.mimeType ||
+        before.streaming != after.streaming ||
+        before.streamToken != after.streamToken ||
         before.localState != after.localState) {
       _prepareMedia();
     }
@@ -4505,6 +4531,11 @@ class _MessageRowState extends State<_MessageRow>
 
   void _prepareMedia() {
     _resolvedMediaFile = null;
+    if (widget.message.streaming &&
+        widget.message.streamToken.trim().isNotEmpty) {
+      _mediaFileFuture = null;
+      return;
+    }
     if (!MessageMediaCache.supports(widget.message)) {
       _mediaFileFuture = null;
       return;
@@ -4656,9 +4687,29 @@ class _MessageRowState extends State<_MessageRow>
       if (mounted) {
         setState(() => _voicePlaying = false);
       }
+      unawaited(_cacheCompletedVoice());
     });
     _voicePlayer = player;
     return player;
+  }
+
+  Future<void> _cacheCompletedVoice() async {
+    final api = widget.api;
+    final message = widget.message;
+    if (api == null || message.mediaId.isEmpty) {
+      return;
+    }
+    final completedMessage = message.copyWith(
+      streaming: false,
+      streamToken: '',
+    );
+    final file = await widget.mediaCache.resolveMessage(
+      completedMessage,
+      api,
+    );
+    if (mounted && file != null && await file.exists()) {
+      setState(() => _resolvedMediaFile = file);
+    }
   }
 
   Future<void> _toggleVoice() async {
@@ -4681,29 +4732,46 @@ class _MessageRowState extends State<_MessageRow>
     }
     setState(() => _voiceLoading = true);
     try {
-      final cached = _resolvedMediaFile ?? await _mediaFileFuture;
-      if (cached != null && await cached.exists()) {
+      if (message.streaming &&
+          message.streamToken.trim().isNotEmpty &&
+          widget.api != null) {
         await player.play(
-          DeviceFileSource(
-            cached.path,
-            mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
+          UrlSource(
+            widget.api!.streamingMediaUrl(
+              message.mediaId,
+              message.streamToken,
+            ),
+            mimeType:
+                message.mimeType.isEmpty ? 'audio/mpeg' : message.mimeType,
           ),
-        );
-      } else if (message.localPath.isNotEmpty &&
-          await File(message.localPath).exists()) {
-        await player.play(
-          DeviceFileSource(
-            message.localPath,
-            mimeType: message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
-          ),
-        );
-      } else if (message.mediaId.isNotEmpty && widget.api != null) {
-        final media = await widget.api!.downloadMedia(message.mediaId);
-        await player.play(
-          BytesSource(media.bytes, mimeType: media.mimeType),
         );
       } else {
-        return;
+        final cached = _resolvedMediaFile ?? await _mediaFileFuture;
+        if (cached != null && await cached.exists()) {
+          await player.play(
+            DeviceFileSource(
+              cached.path,
+              mimeType:
+                  message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
+            ),
+          );
+        } else if (message.localPath.isNotEmpty &&
+            await File(message.localPath).exists()) {
+          await player.play(
+            DeviceFileSource(
+              message.localPath,
+              mimeType:
+                  message.mimeType.isEmpty ? 'audio/mp4' : message.mimeType,
+            ),
+          );
+        } else if (message.mediaId.isNotEmpty && widget.api != null) {
+          final media = await widget.api!.downloadMedia(message.mediaId);
+          await player.play(
+            BytesSource(media.bytes, mimeType: media.mimeType),
+          );
+        } else {
+          return;
+        }
       }
     } catch (_) {
       if (mounted) {

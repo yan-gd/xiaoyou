@@ -10,6 +10,8 @@ class ChatMessage {
     this.remoteUrl = '',
     this.mimeType = '',
     this.durationMs = 0,
+    this.streaming = false,
+    this.streamToken = '',
     this.localPath = '',
     this.terminalStatus = '',
     this.requestedParts = 0,
@@ -25,6 +27,8 @@ class ChatMessage {
   final String remoteUrl;
   final String mimeType;
   final int durationMs;
+  final bool streaming;
+  final String streamToken;
   final String localPath;
   final String terminalStatus;
   final int requestedParts;
@@ -41,6 +45,8 @@ class ChatMessage {
     String? mediaId,
     String? mimeType,
     int? durationMs,
+    bool? streaming,
+    String? streamToken,
     String? localPath,
     String? localState,
   }) {
@@ -54,6 +60,8 @@ class ChatMessage {
       remoteUrl: remoteUrl,
       mimeType: mimeType ?? this.mimeType,
       durationMs: durationMs ?? this.durationMs,
+      streaming: streaming ?? this.streaming,
+      streamToken: streamToken ?? this.streamToken,
       localPath: localPath ?? this.localPath,
       terminalStatus: terminalStatus,
       requestedParts: requestedParts,
@@ -73,6 +81,8 @@ class ChatMessage {
       remoteUrl: '${value['remote_url'] ?? ''}',
       mimeType: '${value['mime_type'] ?? ''}',
       durationMs: asInt(value['duration_ms']),
+      streaming: value['streaming'] == true,
+      streamToken: '${value['stream_token'] ?? ''}',
       terminalStatus: '${value['terminal_status'] ?? ''}',
       requestedParts: asInt(value['requested_parts']),
       createdAt: asInt(value['created_at']),
@@ -92,6 +102,8 @@ class ChatMessage {
       'remote_url': remoteUrl,
       'mime_type': mimeType,
       'duration_ms': durationMs,
+      'streaming': streaming,
+      'stream_token': streamToken,
       'local_path': localPath,
       'terminal_status': terminalStatus,
       'requested_parts': requestedParts,

@@ -133,6 +133,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "plugins.xiaoyou_common.recent_state_service": types.ModuleType(
             "plugins.xiaoyou_common.recent_state_service"
         ),
+        "plugins.xiaoyou_common.route_prefetch": types.ModuleType(
+            "plugins.xiaoyou_common.route_prefetch"
+        ),
         "plugins.xiaoyou_common.runtime_paths": types.ModuleType(
             "plugins.xiaoyou_common.runtime_paths"
         ),
@@ -177,6 +180,18 @@ def _load_app_channel(monkeypatch, tmp_path):
     ].get_recent_state_service = lambda: types.SimpleNamespace(
         schedule_update=lambda *args, **kwargs: True
     )
+    def _resolve_route_prefetch(context, name, fallback):
+        values = getattr(context, "kwargs", {}).get(
+            "_test_route_prefetch",
+            {},
+        )
+        if name in values:
+            return values[name]
+        return fallback()
+
+    modules[
+        "plugins.xiaoyou_common.route_prefetch"
+    ].resolve_route_prefetch = _resolve_route_prefetch
     runtime_paths = modules["plugins.xiaoyou_common.runtime_paths"]
     runtime_paths.appdata_root = lambda: str(tmp_path)
     runtime_paths.runtime_path = (
@@ -421,6 +436,120 @@ def test_app_text_reply_uses_model_selected_voice_medium(
     assert decision_calls[0]["user_text"] == "用声音和我说嘛"
     assert synthesis_calls[0][0] == "好呀，那我就亲口告诉你～"
     assert context.kwargs["xiaoyou_app_voice_requested_by"] == "model"
+
+
+def test_app_text_reply_consumes_prefetched_medium_without_second_model(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-prefetch", "yoyo", platform="android")
+
+    class _DecisionService:
+        def decide(self, **_kwargs):
+            raise AssertionError("prefetched medium must avoid a second model")
+
+    class _VoiceService:
+        tts_available = True
+
+        def synthesize(self, *_args, **_kwargs):
+            return types.SimpleNamespace(
+                data=b"prefetched-voice",
+                mime_type="audio/mpeg",
+                duration_ms=1100,
+            )
+
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.voice_service = _VoiceService()
+    runtime.voice_reply_decision = _DecisionService()
+    context = module.Context(module.ContextType.TEXT, "陪我说说话")
+    context.kwargs = {
+        "session_id": "yoyo",
+        "receiver": "app:phone-prefetch",
+        "xiaoyou_app_device_id": "phone-prefetch",
+        "xiaoyou_input_id": "prefetch-1",
+        "xiaoyou_input_kind": "text",
+        "_test_route_prefetch": {
+            "APPVOICEREPLYDECISION": types.SimpleNamespace(
+                medium="voice",
+                confidence=0.93,
+                reason="voice suits this turn",
+                model_ok=True,
+                use_voice=True,
+            ),
+        },
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="好呀，我陪你聊一会儿。",
+    )
+
+    assert runtime.send(reply, context)
+    events = store.events_after("phone-prefetch")
+    assert len(events) == 1
+    assert events[0]["kind"] == "voice"
+    assert context.kwargs["xiaoyou_app_voice_decision"]["medium"] == "voice"
+
+
+def test_app_runtime_publishes_voice_event_before_synthesis_finishes(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-live-tts", "yoyo", platform="android")
+    observed = {}
+
+    class _VoiceService:
+        tts_available = True
+
+        def synthesize(self, text, on_audio_chunk=None, **_kwargs):
+            on_audio_chunk(b"first-frame", "audio/mpeg")
+            event = store.events_after("phone-live-tts")[0]
+            observed["streaming"] = event["streaming"]
+            observed["token"] = event["stream_token"]
+            on_audio_chunk(b"last-frame", "audio/mpeg")
+            return types.SimpleNamespace(
+                data=b"first-framelast-frame",
+                mime_type="audio/mpeg",
+                duration_ms=840,
+            )
+
+    runtime = object.__new__(module.AppRuntimeChannel)
+    runtime.store = store
+    runtime.canonical_session_id = "yoyo"
+    runtime.voice_service = _VoiceService()
+    runtime.voice_reply_decision = types.SimpleNamespace()
+    context = module.Context(module.ContextType.TEXT, "voice")
+    context.kwargs = {
+        "session_id": "yoyo",
+        "receiver": "app:phone-live-tts",
+        "xiaoyou_app_device_id": "phone-live-tts",
+        "xiaoyou_input_id": "live-tts-1",
+        "xiaoyou_input_kind": "text",
+        "xiaoyou_app_voice_medium_decided": True,
+        "xiaoyou_app_voice_reply": True,
+    }
+    reply = types.SimpleNamespace(
+        type=module.ReplyType.TEXT,
+        content="I can speak before synthesis finishes.",
+    )
+
+    assert runtime.send(reply, context)
+    assert observed["streaming"] is True
+    assert observed["token"]
+    event = store.events_after("phone-live-tts")[0]
+    assert event["streaming"] is False
+    assert event["duration_ms"] == 840
+    media = store.media(
+        event["media_id"],
+        "phone-live-tts",
+        session_id="yoyo",
+    )
+    assert media[0].read_bytes() == b"first-framelast-frame"
 
 
 def test_app_text_reply_stays_text_when_model_selects_text(
@@ -848,6 +977,54 @@ def test_app_voice_messages_keep_audio_transcript_and_receipt_text(
     assert user_voice["duration_ms"] == 2300
     assert assistant_voice["kind"] == "voice"
     assert assistant_voice["text"] == "我也想你呀"
+
+
+def test_streaming_voice_event_is_visible_on_first_chunk_and_then_sealed(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-stream", "yoyo", platform="android")
+
+    voice_media = store.start_media_stream(
+        b"first-frame",
+        "phone-stream",
+        "audio/mpeg",
+    )
+    assert voice_media is not None
+    assert store.queue_action(
+        action_id="stream-action-1",
+        session_id="yoyo",
+        device_id="phone-stream",
+        source="chat_channel",
+        voice_media=voice_media,
+        voice_text="stream this reply",
+    )
+
+    first_event = store.events_after("phone-stream")[0]
+    assert first_event["streaming"] is True
+    assert first_event["stream_token"] == voice_media["stream_token"]
+    assert store.append_media_stream(
+        voice_media["media_id"],
+        b"second-frame",
+    )
+    assert store.finish_media_stream(
+        voice_media["media_id"],
+        duration_ms=980,
+    )
+
+    completed_event = store.events_after("phone-stream")[0]
+    assert completed_event["streaming"] is False
+    assert completed_event["stream_token"] == ""
+    assert completed_event["duration_ms"] == 980
+    media = store.media(
+        voice_media["media_id"],
+        "phone-stream",
+        session_id="yoyo",
+    )
+    assert media is not None
+    assert media[0].read_bytes() == b"first-framesecond-frame"
 
 
 def test_outbound_dispatcher_queues_app_without_claiming_delivery(

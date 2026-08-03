@@ -63,6 +63,9 @@ def _load_module(monkeypatch):
         "plugins.xiaoyou_common.intent_fastpath": types.ModuleType(
             "plugins.xiaoyou_common.intent_fastpath"
         ),
+        "plugins.xiaoyou_common.route_prefetch": types.ModuleType(
+            "plugins.xiaoyou_common.route_prefetch"
+        ),
         "bridge": types.ModuleType("bridge"),
         "bridge.context": types.ModuleType("bridge.context"),
         "bridge.reply": types.ModuleType("bridge.reply"),
@@ -91,6 +94,11 @@ def _load_module(monkeypatch):
     context_service.load_long_memory_context = lambda *args, **kwargs: ""
     modules["plugins.xiaoyou_common.intent_fastpath"].might_need_capability = (
         lambda *args, **kwargs: False
+    )
+    modules[
+        "plugins.xiaoyou_common.route_prefetch"
+    ].resolve_route_prefetch = (
+        lambda _context, _name, fallback: fallback()
     )
     modules["bridge.context"].ContextType = SimpleNamespace(TEXT="text")
     modules["bridge.reply"].Reply = lambda *args, **kwargs: None

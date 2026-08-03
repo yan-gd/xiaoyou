@@ -193,6 +193,48 @@ def test_volcengine_tts_loudness_rate_is_configurable_and_clamped(
     assert module.AppVoiceService().tts_loudness_rate == 100
 
 
+def test_volcengine_tts_emits_each_provider_audio_chunk_immediately(
+    monkeypatch,
+):
+    module = _load_voice_service(monkeypatch)
+    monkeypatch.setenv("OPEN_AI_API_KEY", "asr-test-key")
+    monkeypatch.setenv("XIAOYOU_APP_TTS_API_KEY", "speech-test-key")
+    service = module.AppVoiceService()
+    audio_parts = [b"first-mp3-frame", b"second-mp3-frame"]
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            for index, part in enumerate(audio_parts):
+                yield json.dumps(
+                    {
+                        "code": 0,
+                        "sequence": -1 if index == 1 else index + 1,
+                        "data": base64.b64encode(part).decode("ascii"),
+                    }
+                ).encode("utf-8")
+
+    monkeypatch.setattr(
+        module.requests,
+        "post",
+        lambda *_args, **_kwargs: _Response(),
+    )
+    emitted = []
+
+    voice = service.synthesize(
+        "边合成边播放",
+        on_audio_chunk=lambda chunk, mime: emitted.append((chunk, mime)),
+    )
+
+    assert emitted == [
+        (audio_parts[0], "audio/mpeg"),
+        (audio_parts[1], "audio/mpeg"),
+    ]
+    assert voice.data == b"".join(audio_parts)
+
+
 def test_volcengine_tts_supports_legacy_app_id_access_key_auth(
     monkeypatch,
 ):

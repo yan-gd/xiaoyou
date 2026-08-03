@@ -489,11 +489,23 @@ class XiaoyouApi {
     );
   }
 
-  Future<List<Map<String, dynamic>>> eventsAfter(int sequence) async {
+  Future<List<Map<String, dynamic>>> eventsAfter(
+    int sequence, {
+    int waitSeconds = 0,
+  }) async {
+    final boundedWait = waitSeconds.clamp(0, 25);
     final payload = await _request(
       'GET',
       '/v1/events',
-      query: {'device_id': deviceId, 'after': '$sequence', 'limit': '100'},
+      query: {
+        'device_id': deviceId,
+        'after': '$sequence',
+        'limit': '100',
+        if (boundedWait > 0) 'wait': '$boundedWait',
+      },
+      responseTimeout: Duration(
+        seconds: boundedWait > 0 ? boundedWait + 10 : 35,
+      ),
     );
     final events = payload['events'];
     if (events is! List) {
@@ -515,6 +527,17 @@ class XiaoyouApi {
 
   String mediaUrl(String mediaId) {
     return _uri('/v1/media/$mediaId', {'device_id': deviceId}).toString();
+  }
+
+  String streamingMediaUrl(String mediaId, String streamToken) {
+    return _uri(
+      '/v1/media/$mediaId',
+      {
+        'device_id': deviceId,
+        'stream': '1',
+        'ticket': streamToken,
+      },
+    ).toString();
   }
 
   Map<String, String> get mediaHeaders => {'Authorization': 'Bearer $token'};
@@ -580,6 +603,7 @@ class XiaoyouApi {
     Map<String, String>? query,
     Map<String, dynamic>? body,
     bool authenticated = true,
+    Duration responseTimeout = const Duration(seconds: 35),
   }) async {
     final request = await _client.openUrl(method, _uri(path, query));
     request.persistentConnection = true;
@@ -594,9 +618,13 @@ class XiaoyouApi {
       request.add(bytes);
     }
     final response = await request.close().timeout(
-          const Duration(seconds: 35),
+          responseTimeout,
         );
-    return _jsonResponse(response, _uri(path, query));
+    return _jsonResponse(
+      response,
+      _uri(path, query),
+      timeout: responseTimeout,
+    );
   }
 
   Future<Map<String, dynamic>> _jsonResponse(

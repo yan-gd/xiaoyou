@@ -32,6 +32,9 @@ class MessageMediaCache {
     if (!supports(message)) {
       return null;
     }
+    if (message.streaming && message.streamToken.trim().isNotEmpty) {
+      return existingFor(message);
+    }
     final sourcePath = message.localPath.trim();
     if (sourcePath.isNotEmpty) {
       final source = File(sourcePath);

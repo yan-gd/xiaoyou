@@ -187,6 +187,7 @@ class AppVoiceService:
         session_id="",
         trace_id="",
         input_id="",
+        on_audio_chunk=None,
     ):
         if not self.tts_available:
             raise AppVoiceError("voice_not_configured")
@@ -200,9 +201,14 @@ class AppVoiceService:
                 audio_bytes, mime_type, duration_ms = (
                     self._synthesize_dashscope(text)
                 )
+                if on_audio_chunk is not None:
+                    on_audio_chunk(audio_bytes, mime_type)
             elif self.tts_provider in ("volcengine", "volc"):
                 audio_bytes, mime_type, duration_ms = (
-                    self._synthesize_volcengine(text)
+                    self._synthesize_volcengine(
+                        text,
+                        on_audio_chunk=on_audio_chunk,
+                    )
                 )
             else:
                 raise AppVoiceError("unsupported_tts_provider")
@@ -249,7 +255,7 @@ class AppVoiceService:
         )
         return SynthesizedVoice(audio_bytes, mime_type, duration_ms)
 
-    def _synthesize_volcengine(self, text):
+    def _synthesize_volcengine(self, text, on_audio_chunk=None):
         headers = {
             "Content-Type": "application/json",
             "X-Api-Resource-Id": self.tts_model,
@@ -305,11 +311,15 @@ class AppVoiceService:
             encoded = str(payload.get("data") or "").strip()
             if encoded:
                 try:
-                    chunks.append(base64.b64decode(encoded, validate=True))
+                    chunk = base64.b64decode(encoded, validate=True)
                 except ValueError as exc:
                     raise AppVoiceError(
                         "speech_synthesis_invalid_audio"
                     ) from exc
+                if chunk:
+                    chunks.append(chunk)
+                    if on_audio_chunk is not None:
+                        on_audio_chunk(chunk, "audio/mpeg")
             duration_ms = max(
                 duration_ms,
                 _volcengine_duration_ms(payload.get("addition")),

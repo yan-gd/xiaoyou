@@ -11,6 +11,7 @@ import hmac
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sqlite3
 import threading
@@ -199,6 +200,7 @@ class AppInboxStore:
         self.path = str(path)
         self.lock = threading.RLock()
         self.changed = threading.Condition(self.lock)
+        self.media_stream_changed = threading.Condition(self.lock)
         self.push_dispatcher = push_dispatcher
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         MEDIA_DIR.mkdir(parents=True, exist_ok=True)
@@ -301,6 +303,9 @@ class AppInboxStore:
                     device_id TEXT NOT NULL,
                     local_path TEXT NOT NULL,
                     mime_type TEXT NOT NULL,
+                    stream_token TEXT NOT NULL DEFAULT '',
+                    stream_status TEXT NOT NULL DEFAULT 'complete',
+                    stream_error TEXT NOT NULL DEFAULT '',
                     created_at INTEGER NOT NULL
                 );
                 """
@@ -354,6 +359,31 @@ class AppInboxStore:
                     ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            media_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(media)")
+            }
+            for column, definition in (
+                ("stream_token", "TEXT NOT NULL DEFAULT ''"),
+                ("stream_status", "TEXT NOT NULL DEFAULT 'complete'"),
+                ("stream_error", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column not in media_columns:
+                    connection.execute(
+                        "ALTER TABLE media ADD COLUMN %s %s"
+                        % (column, definition)
+                    )
+            # An unfinished stream cannot resume across a process restart.
+            # Keep the partial file for diagnostics/history, but stop clients
+            # from waiting forever for bytes that can no longer arrive.
+            connection.execute(
+                """
+                UPDATE media
+                SET stream_status='failed',
+                    stream_error='server_restarted'
+                WHERE stream_status='streaming'
+                """
+            )
             connection.execute(
                 """
                 UPDATE actions
@@ -658,6 +688,7 @@ class AppInboxStore:
         image_url="",
         voice_path="",
         voice_bytes=None,
+        voice_media=None,
         voice_mime_type="",
         voice_text="",
         voice_duration_ms=0,
@@ -691,6 +722,7 @@ class AppInboxStore:
             and not image_url
             and not voice_path
             and not voice_bytes
+            and not voice_media
         ):
             return False
 
@@ -706,8 +738,21 @@ class AppInboxStore:
                 return True
 
             media = self._copy_media(image_path, device_id) if image_path else None
+            existing_voice_media = voice_media
             voice_media = None
-            if voice_bytes:
+            if isinstance(existing_voice_media, dict):
+                media_id = str(
+                    existing_voice_media.get("media_id") or ""
+                ).strip()
+                mime_type = str(
+                    existing_voice_media.get("mime_type") or ""
+                ).strip()
+                if media_id and mime_type:
+                    voice_media = {
+                        "media_id": media_id,
+                        "mime_type": mime_type,
+                    }
+            elif voice_bytes:
                 voice_media = self.save_media_bytes(
                     voice_bytes,
                     device_id,
@@ -937,6 +982,158 @@ class AppInboxStore:
             "local_path": str(target),
         }
 
+    def start_media_stream(self, payload, device_id, mime_type):
+        """Create a durable media row as soon as the first TTS bytes arrive."""
+        payload = bytes(payload or b"")
+        device_id = _safe_device_id(device_id)
+        mime_type = str(mime_type or "audio/mpeg").split(
+            ";", 1
+        )[0].strip().lower()
+        if not payload or not device_id or len(payload) > 25 * 1024 * 1024:
+            return None
+        suffix = {
+            "audio/aac": ".aac",
+            "audio/m4a": ".m4a",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/opus": ".opus",
+            "audio/wav": ".wav",
+            "audio/webm": ".webm",
+        }.get(mime_type, ".bin")
+        media_id = uuid.uuid4().hex
+        stream_token = uuid.uuid4().hex + uuid.uuid4().hex
+        target = MEDIA_DIR / (media_id + suffix)
+        target.write_bytes(payload)
+        with self.media_stream_changed, self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO media(
+                    media_id, device_id, local_path, mime_type,
+                    stream_token, stream_status, created_at
+                ) VALUES(?, ?, ?, ?, ?, 'streaming', ?)
+                """,
+                (
+                    media_id,
+                    device_id,
+                    str(target),
+                    mime_type,
+                    stream_token,
+                    int(time.time()),
+                ),
+            )
+            self.media_stream_changed.notify_all()
+        return {
+            "media_id": media_id,
+            "mime_type": mime_type,
+            "local_path": str(target),
+            "stream_token": stream_token,
+        }
+
+    def append_media_stream(self, media_id, payload):
+        payload = bytes(payload or b"")
+        if not payload:
+            return True
+        with self.media_stream_changed, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT local_path, stream_status
+                FROM media
+                WHERE media_id=?
+                """,
+                (str(media_id or ""),),
+            ).fetchone()
+            if not row or str(row["stream_status"]) != "streaming":
+                return False
+            path = Path(str(row["local_path"])).resolve()
+            try:
+                path.relative_to(MEDIA_DIR.resolve())
+            except ValueError:
+                return False
+            current_size = path.stat().st_size if path.is_file() else 0
+            if current_size + len(payload) > 25 * 1024 * 1024:
+                raise ValueError("streaming_media_too_large")
+            with path.open("ab") as target:
+                target.write(payload)
+                target.flush()
+            self.media_stream_changed.notify_all()
+        return True
+
+    def finish_media_stream(self, media_id, duration_ms=0, error=""):
+        media_id = str(media_id or "").strip()
+        if not media_id:
+            return False
+        status = "failed" if error else "complete"
+        with self.media_stream_changed, self._connect() as connection:
+            updated = connection.execute(
+                """
+                UPDATE media
+                SET stream_status=?, stream_error=?
+                WHERE media_id=? AND stream_status='streaming'
+                """,
+                (status, str(error or "")[:160], media_id),
+            ).rowcount
+            if duration_ms:
+                connection.execute(
+                    """
+                    UPDATE events
+                    SET duration_ms=?
+                    WHERE media_id=?
+                    """,
+                    (max(0, int(duration_ms or 0)), media_id),
+                )
+            self.media_stream_changed.notify_all()
+        return bool(updated)
+
+    def media_stream(self, media_id, device_id, session_id="", token=""):
+        device_id = _safe_device_id(device_id)
+        session_id = str(session_id or "").strip()
+        token = str(token or "").strip()
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT media.*
+                FROM media
+                LEFT JOIN devices ON devices.device_id=media.device_id
+                WHERE media.media_id=?
+                  AND (
+                      media.device_id=?
+                      OR (? != '' AND devices.session_id=?)
+                  )
+                """,
+                (
+                    str(media_id or ""),
+                    device_id,
+                    session_id,
+                    session_id,
+                ),
+            ).fetchone()
+        if not row:
+            return None
+        expected = str(row["stream_token"] or "")
+        if token and (not expected or not hmac.compare_digest(token, expected)):
+            return None
+        path = Path(str(row["local_path"])).resolve()
+        try:
+            path.relative_to(MEDIA_DIR.resolve())
+        except ValueError:
+            return None
+        if not path.is_file():
+            return None
+        return {
+            "path": path,
+            "mime_type": str(row["mime_type"]),
+            "status": str(row["stream_status"] or "complete"),
+            "error": str(row["stream_error"] or ""),
+            "stream_token": expected,
+        }
+
+    def wait_media_stream_change(self, timeout=1):
+        with self.media_stream_changed:
+            self.media_stream_changed.wait(
+                timeout=max(0.05, min(float(timeout or 1), 2))
+            )
+
     def events_after(self, device_id, after=0, limit=50):
         device_id = _safe_device_id(device_id)
         if not device_id:
@@ -945,9 +1142,12 @@ class AppInboxStore:
         with self.lock, self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT e.*, a.source, a.terminal_status, a.requested_parts
+                SELECT e.*, a.source, a.terminal_status, a.requested_parts,
+                       m.stream_status AS media_stream_status,
+                       m.stream_token AS media_stream_token
                 FROM events e
                 JOIN actions a ON a.action_id=e.action_id
+                LEFT JOIN media m ON m.media_id=e.media_id
                 WHERE e.device_id=? AND e.sequence>?
                   AND (
                       a.terminal_status='queued'
@@ -970,6 +1170,13 @@ class AppInboxStore:
 
     @staticmethod
     def _event_dict(row):
+        row_keys = set(row.keys())
+        stream_status = (
+            str(row["media_stream_status"] or "")
+            if "media_stream_status" in row_keys
+            else ""
+        )
+        streaming = stream_status == "streaming"
         return {
             "sequence": int(row["sequence"]),
             "event_id": str(row["event_id"]),
@@ -986,6 +1193,12 @@ class AppInboxStore:
             "acknowledged": bool(row["acknowledged_at"]),
             "terminal_status": str(row["terminal_status"] or "queued"),
             "requested_parts": int(row["requested_parts"] or 0),
+            "streaming": streaming,
+            "stream_token": (
+                str(row["media_stream_token"] or "")
+                if streaming and "media_stream_token" in row_keys
+                else ""
+            ),
         }
 
     def history(self, device_id, before=0, limit=100):
@@ -1712,13 +1925,37 @@ class AppRuntimeChannel(ChatChannel):
         reply_type = getattr(getattr(reply, "type", None), "name", "")
         content = str(getattr(reply, "content", "") or "").strip()
         receiver = str(kwargs.get("receiver") or "")
+        session_id = str(
+            kwargs.get("session_id") or self.canonical_session_id
+        )
+        device_id = str(
+            kwargs.get("xiaoyou_app_device_id") or receiver[4:]
+        )
+        queue_base = {
+            "action_id": action_id,
+            "session_id": session_id,
+            "device_id": device_id,
+            "source": "chat_channel",
+            "trace_id": kwargs.get("xiaoyou_trace_id", ""),
+            "input_id": kwargs.get("xiaoyou_input_id", ""),
+            "source_message_ids": (
+                kwargs.get("xiaoyou_source_message_ids") or []
+            ),
+            "user_text": (
+                kwargs.get("long_memory_user_text")
+                or kwargs.get("short_memory_current_user_text", "")
+            ),
+        }
         parts = []
         image_path = ""
         image_url = ""
+        voice_path = ""
         voice_bytes = None
+        voice_media = None
         voice_mime_type = ""
         voice_text = ""
         voice_duration_ms = 0
+        stream_queued = False
         if reply_type == getattr(ReplyType.TEXT, "name", "TEXT"):
             use_voice = self._should_use_voice_reply(
                 content=content,
@@ -1726,21 +1963,57 @@ class AppRuntimeChannel(ChatChannel):
                 kwargs=kwargs,
             )
             if use_voice:
+                def on_audio_chunk(chunk, mime_type):
+                    nonlocal voice_media, stream_queued
+                    if voice_media is None:
+                        voice_media = self.store.start_media_stream(
+                            chunk,
+                            device_id,
+                            mime_type,
+                        )
+                        if voice_media is None:
+                            raise AppVoiceError("streaming_media_failed")
+                        stream_queued = self.store.queue_action(
+                            **queue_base,
+                            voice_media=voice_media,
+                            voice_text=content,
+                            voice_mime_type=mime_type,
+                        )
+                        if not stream_queued:
+                            raise AppVoiceError("streaming_action_failed")
+                        return
+                    if not self.store.append_media_stream(
+                        voice_media["media_id"],
+                        chunk,
+                    ):
+                        raise AppVoiceError("streaming_media_closed")
+
                 try:
                     voice = self.voice_service.synthesize(
                         content,
-                        session_id=str(
-                            kwargs.get("session_id")
-                            or self.canonical_session_id
-                        ),
+                        session_id=session_id,
                         trace_id=kwargs.get("xiaoyou_trace_id", ""),
                         input_id=kwargs.get("xiaoyou_input_id", ""),
+                        on_audio_chunk=on_audio_chunk,
                     )
-                    voice_bytes = voice.data
-                    voice_mime_type = voice.mime_type
-                    voice_duration_ms = voice.duration_ms
                     voice_text = content
+                    voice_duration_ms = voice.duration_ms
+                    if voice_media is not None:
+                        self.store.finish_media_stream(
+                            voice_media["media_id"],
+                            duration_ms=voice.duration_ms,
+                        )
+                    else:
+                        # Compatibility for a non-streaming provider or a test
+                        # double that returns a complete synthesized payload.
+                        voice_bytes = voice.data
+                        voice_mime_type = voice.mime_type
                 except AppVoiceError:
+                    if voice_media is not None:
+                        self.store.finish_media_stream(
+                            voice_media["media_id"],
+                            error="speech_synthesis_failed",
+                        )
                     logger.warning(
                         "[AppChannel] App voice reply fell back to text "
                         "action_id=%s requested_by=%s",
@@ -1750,7 +2023,8 @@ class AppRuntimeChannel(ChatChannel):
                             or "unknown"
                         ),
                     )
-                    parts = [content]
+                    if not stream_queued:
+                        parts = [content]
             else:
                 parts = [content]
         elif reply_type in ("IMAGE",):
@@ -1767,24 +2041,16 @@ class AppRuntimeChannel(ChatChannel):
             )
             return False
 
-        queued = self.store.queue_action(
-            action_id=action_id,
-            session_id=str(kwargs.get("session_id") or self.canonical_session_id),
-            device_id=str(kwargs.get("xiaoyou_app_device_id") or receiver[4:]),
-            source="chat_channel",
+        queued = stream_queued or self.store.queue_action(
+            **queue_base,
             parts=parts,
             image_path=image_path,
             image_url=image_url,
-            voice_path=locals().get("voice_path", ""),
+            voice_path=voice_path,
             voice_bytes=voice_bytes,
             voice_mime_type=voice_mime_type,
             voice_text=voice_text,
             voice_duration_ms=voice_duration_ms,
-            trace_id=kwargs.get("xiaoyou_trace_id", ""),
-            input_id=kwargs.get("xiaoyou_input_id", ""),
-            source_message_ids=kwargs.get("xiaoyou_source_message_ids") or [],
-            user_text=kwargs.get("long_memory_user_text")
-            or kwargs.get("short_memory_current_user_text", ""),
         )
         if queued:
             kwargs["xiaoyou_delivery_deferred"] = True
@@ -1806,30 +2072,26 @@ class AppRuntimeChannel(ChatChannel):
         if not getattr(self.voice_service, "tts_available", False):
             return False
 
-        input_messages = kwargs.get("xiaoyou_input_messages") or []
-        if not isinstance(input_messages, list):
-            input_messages = []
-        user_text = "\n".join(
-            str(item or "").strip()
-            for item in input_messages
-            if str(item or "").strip()
-        )
-        if not user_text:
-            user_text = str(
-                kwargs.get("long_memory_user_text")
-                or kwargs.get("short_memory_current_user_text")
-                or ""
-            ).strip()
+        user_text = self._voice_decision_user_text(context, kwargs)
         try:
-            decision = self.voice_reply_decision.decide(
-                input_kind="text",
-                user_text=user_text,
-                assistant_text=content,
-                session_id=str(
-                    kwargs.get("session_id") or self.canonical_session_id
+            from plugins.xiaoyou_common.route_prefetch import (
+                resolve_route_prefetch,
+            )
+
+            decision = resolve_route_prefetch(
+                context,
+                "APPVOICEREPLYDECISION",
+                lambda: self.voice_reply_decision.decide(
+                    input_kind="text",
+                    user_text=user_text,
+                    assistant_text=content,
+                    session_id=str(
+                        kwargs.get("session_id")
+                        or self.canonical_session_id
+                    ),
+                    trace_id=str(kwargs.get("xiaoyou_trace_id") or ""),
+                    input_id=str(kwargs.get("xiaoyou_input_id") or ""),
                 ),
-                trace_id=str(kwargs.get("xiaoyou_trace_id") or ""),
-                input_id=str(kwargs.get("xiaoyou_input_id") or ""),
             )
         except Exception:
             logger.exception(
@@ -1849,6 +2111,25 @@ class AppRuntimeChannel(ChatChannel):
         context.kwargs = kwargs
         return bool(decision.use_voice)
 
+    @staticmethod
+    def _voice_decision_user_text(context, kwargs):
+        input_messages = kwargs.get("xiaoyou_input_messages") or []
+        if not isinstance(input_messages, list):
+            input_messages = []
+        user_text = "\n".join(
+            str(item or "").strip()
+            for item in input_messages
+            if str(item or "").strip()
+        )
+        if not user_text:
+            user_text = str(
+                kwargs.get("long_memory_user_text")
+                or kwargs.get("short_memory_current_user_text")
+                or getattr(context, "content", "")
+                or ""
+            ).strip()
+        return user_text
+
 
 class AppRequestHandler(BaseHTTPRequestHandler):
     server_version = "XiaoyouApp/1.0"
@@ -1856,6 +2137,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     plugin = None
 
     def log_message(self, format_string, *args):
+        if args and isinstance(args[0], str) and "ticket=" in args[0]:
+            args = (
+                re.sub(r"([?&]ticket=)[^& ]+", r"\1[redacted]", args[0]),
+                *args[1:],
+            )
         logger.info("[AppChannel] http " + format_string, *args)
 
     def do_GET(self):
@@ -1863,10 +2149,25 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/health":
             self._json(200, {"ok": True, "service": "xiaoyou-app"})
             return
-        if not self._authorized():
-            return
         query = parse_qs(parsed.query)
         device_id = (query.get("device_id") or [""])[0]
+        if parsed.path.startswith("/v1/media/"):
+            media_id = parsed.path[len("/v1/media/"):].strip("/")
+            stream_token = (query.get("ticket") or [""])[0]
+            if _truthy((query.get("stream") or [""])[0]) and stream_token:
+                item = self.plugin.store.media_stream(
+                    media_id,
+                    device_id,
+                    session_id=self.plugin.canonical_session_id,
+                    token=stream_token,
+                )
+                if item is None:
+                    self._json(401, {"error": "invalid_media_stream_ticket"})
+                else:
+                    self._stream_media(media_id, device_id, item=item)
+                return
+        if not self._authorized():
+            return
         if parsed.path == "/v1/profile":
             from plugins.xiaoyou_common.inner_state_service import (
                 get_inner_state_service,
@@ -2001,7 +2302,10 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/v1/media/"):
             media_id = parsed.path[len("/v1/media/"):].strip("/")
-            self._media(media_id, device_id)
+            if _truthy((query.get("stream") or [""])[0]):
+                self._stream_media(media_id, device_id)
+            else:
+                self._media(media_id, device_id)
             return
         self._json(404, {"error": "not_found"})
 
@@ -2404,6 +2708,23 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(encoded)
 
     def _media(self, media_id, device_id):
+        deadline = time.monotonic() + 130
+        stream_item = self.plugin.store.media_stream(
+            media_id,
+            device_id,
+            session_id=self.plugin.canonical_session_id,
+        )
+        while (
+            stream_item is not None
+            and stream_item["status"] == "streaming"
+            and time.monotonic() < deadline
+        ):
+            self.plugin.store.wait_media_stream_change(timeout=1)
+            stream_item = self.plugin.store.media_stream(
+                media_id,
+                device_id,
+                session_id=self.plugin.canonical_session_id,
+            )
         item = self.plugin.store.media(
             media_id,
             device_id,
@@ -2420,6 +2741,63 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "private, max-age=86400")
         self.end_headers()
         self.wfile.write(payload)
+
+    def _stream_media(self, media_id, device_id, item=None):
+        item = item or self.plugin.store.media_stream(
+            media_id,
+            device_id,
+            session_id=self.plugin.canonical_session_id,
+        )
+        if not item:
+            self._json(404, {"error": "media_not_found"})
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", item["mime_type"])
+        self.send_header("Transfer-Encoding", "chunked")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        offset = 0
+        deadline = time.monotonic() + 130
+        try:
+            while time.monotonic() < deadline:
+                current = self.plugin.store.media_stream(
+                    media_id,
+                    device_id,
+                    session_id=self.plugin.canonical_session_id,
+                )
+                if current is None:
+                    break
+                path = current["path"]
+                size = path.stat().st_size if path.is_file() else 0
+                if size > offset:
+                    with path.open("rb") as source:
+                        source.seek(offset)
+                        while offset < size:
+                            payload = source.read(min(64 * 1024, size - offset))
+                            if not payload:
+                                break
+                            self.wfile.write(
+                                ("%X\r\n" % len(payload)).encode("ascii")
+                            )
+                            self.wfile.write(payload)
+                            self.wfile.write(b"\r\n")
+                            self.wfile.flush()
+                            offset += len(payload)
+                if current["status"] != "streaming":
+                    break
+                self.plugin.store.wait_media_stream_change(timeout=0.5)
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            logger.info(
+                "[AppChannel] media stream client closed media_id=%s",
+                str(media_id or "")[:16],
+            )
+        finally:
+            self.close_connection = True
 
     def _json(self, status, payload):
         encoded = json.dumps(
@@ -2591,6 +2969,40 @@ class AppChannel(Plugin):
         kwargs["xiaoyou_app_voice_medium_decided"] = True
         kwargs["xiaoyou_app_voice_reply"] = bool(use_voice)
         context.kwargs = kwargs
+
+    def can_prefetch_reply_medium_decision(self, e_context):
+        if not self.enabled or self.runtime is None:
+            return False
+        context = e_context["context"]
+        kwargs = getattr(context, "kwargs", {}) or {}
+        if str(kwargs.get("xiaoyou_transport") or "") != "app":
+            return False
+        if str(kwargs.get("xiaoyou_input_kind") or "").lower() != "text":
+            return False
+        if not getattr(self.runtime.voice_service, "tts_available", False):
+            return False
+        if not getattr(self.runtime.voice_reply_decision, "enabled", False):
+            return False
+        return bool(
+            self.runtime._voice_decision_user_text(context, kwargs)
+        )
+
+    def prefetch_reply_medium_decision(self, e_context):
+        context = e_context["context"]
+        kwargs = getattr(context, "kwargs", {}) or {}
+        user_text = self.runtime._voice_decision_user_text(context, kwargs)
+        decision = self.runtime.voice_reply_decision.decide_before_reply(
+            input_kind="text",
+            user_text=user_text,
+            session_id=str(
+                kwargs.get("session_id") or self.canonical_session_id
+            ),
+            trace_id=str(kwargs.get("xiaoyou_trace_id") or ""),
+            input_id=str(kwargs.get("xiaoyou_input_id") or ""),
+        )
+        if not decision.model_ok:
+            raise RuntimeError("App voice medium prefetch unavailable")
+        return decision
 
     def acknowledge(self, *, action_id, device_id, status, event_ids):
         receipt = self.store.acknowledge(

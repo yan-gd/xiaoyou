@@ -37,7 +37,7 @@ class _Context:
 
 def test_routes_start_together_and_resolve_in_priority_order():
     context = _Context()
-    ready = threading.Barrier(4)
+    ready = threading.Barrier(5)
 
     def provider(value, delay):
         ready.wait(timeout=1)
@@ -50,6 +50,7 @@ def test_routes_start_together_and_resolve_in_priority_order():
             "REMINDERLOVE": lambda: provider(False, 0.04),
             "XIAOYOULIFEPHOTO": lambda: provider("photo", 0.09),
             "XIAOYOUMCP": lambda: provider(None, 0.06),
+            "APPVOICEREPLYDECISION": lambda: provider("voice", 0.08),
         },
     )
     assert started is True
@@ -79,6 +80,14 @@ def test_routes_start_together_and_resolve_in_priority_order():
             lambda: "fallback",
         )
         is None
+    )
+    assert (
+        resolve_route_prefetch(
+            context,
+            "APPVOICEREPLYDECISION",
+            lambda: "fallback",
+        )
+        == "voice"
     )
     elapsed = time.monotonic() - began
 
