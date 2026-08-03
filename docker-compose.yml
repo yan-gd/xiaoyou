@@ -162,17 +162,24 @@ services: # Docker Compose 服务集合。
 
       # ===== 小悠生活照 =====
       XIAOYOU_LIFE_PHOTO_ENABLED: 'true' # 启用生活照意图判断、画面规划、Seedream生成与微信发送。
-      XIAOYOU_LIFE_PHOTO_PLANNER_MODEL: 'qwen3.7-max' # 结合语境、人格和记忆规划镜头与表情的模型。
-      XIAOYOU_LIFE_PHOTO_PLANNER_ENABLE_THINKING: 'true' # 生活照规划启用思考，复杂姿势更稳但耗时更长。
-      XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT: '75' # 规划请求最多等待75秒；常见耗时约25至35秒。
+      XIAOYOU_LIFE_PHOTO_PLANNER_MODEL: 'qwen3.7-plus' # 结合语境、人格和记忆规划镜头；人物一致性继续由档案、参考图和Seedream保证。
+      XIAOYOU_LIFE_PHOTO_PLANNER_ENABLE_THINKING: 'false' # 关闭规划深度思考，将常见规划等待从数十秒降到数秒。
+      XIAOYOU_LIFE_PHOTO_PLANNER_TIMEOUT: '30' # 规划请求最多等待30秒，超时不阻塞聊天消费者。
       XIAOYOU_LIFE_PHOTO_CONTEXT_MAX_CHARS: '9000' # 规划时注入的上下文最多9000字符。
       XIAOYOU_LIFE_PHOTO_MEMORY_TOP_N: '16' # 规划时最多检索16条相关长期记忆。
+      XIAOYOU_LIFE_PHOTO_ASYNC_USER_REQUESTS: 'true' # 用户要照片后由每会话后台队列生成，完成后仍按照片在前、回复在后的顺序发送。
       SEEDREAM_API_KEY: '${SEEDREAM_KEY}' # 火山方舟图片生成密钥，来自 .env 的 SEEDREAM_KEY，禁止写死。
       SEEDREAM_API_BASE: 'https://ark.cn-beijing.volces.com/api/v3' # 火山方舟图片生成 API 根地址。
       SEEDREAM_MODEL: 'doubao-seedream-5-0-lite-260128' # 当前使用的 Seedream 模型接入点名称。
       XIAOYOU_LIFE_PHOTO_SIZE: '2K' # 生成分辨率档位；提高会增加耗时与费用。
       XIAOYOU_LIFE_PHOTO_OUTPUT_FORMAT: 'jpeg' # 保存和发送格式，可用 jpeg 或 png；jpeg体积更小。
+      XIAOYOU_LIFE_PHOTO_RESPONSE_FORMAT: 'url' # Seedream返回临时下载地址，避免Base64令响应体额外膨胀约三分之一。
+      XIAOYOU_LIFE_PHOTO_REFERENCE_MAX_SIDE: '1280' # 四张身份参考图最长边缓存为1280像素，兼顾一致性与上传速度。
+      XIAOYOU_LIFE_PHOTO_REFERENCE_JPEG_QUALITY: '88' # 参考图轻量缓存的起始JPEG质量。
+      XIAOYOU_LIFE_PHOTO_REFERENCE_TARGET_MAX_KB: '500' # 每张身份参考图尽量压到500KB以内；缓存只保存在data。
       XIAOYOU_LIFE_PHOTO_TIMEOUT: '240' # 单次Seedream最多等待240秒；超时后不盲目重试，避免重复计费。
+      XIAOYOU_LIFE_PHOTO_DOWNLOAD_TIMEOUT: '60' # URL结果下载最多等待60秒。
+      XIAOYOU_LIFE_PHOTO_DOWNLOAD_MAX_MB: '40' # 防止异常URL消耗无界磁盘和内存。
       XIAOYOU_LIFE_PHOTO_PROACTIVE_ENABLED: 'true' # 允许小悠在合适语境主动分享生活照。
       # ===== 长期记忆：本地 SQLite + 模型语义向量 =====
       LONG_MEMORY_ENABLED: 'true' # 启用本地长期记忆写入与语义检索。

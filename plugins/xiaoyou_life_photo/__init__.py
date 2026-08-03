@@ -2,6 +2,7 @@
 import base64
 import copy
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -16,7 +17,6 @@ import requests
 import plugins
 from plugins import *
 from bridge.context import ContextType
-from bridge.reply import Reply, ReplyType
 from common.log import logger
 from plugins.xiaoyou_common.context_service import (
     build_context_snapshot,
@@ -30,8 +30,9 @@ from plugins.xiaoyou_common.photo_intent_service import (
     classify_photo_semantics,
 )
 from plugins.xiaoyou_common.outbound_dispatcher import (
+    context_is_current,
     record_assistant_message,
-    send_image,
+    send_action,
 )
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.runtime_paths import appdata_root, runtime_path
@@ -71,13 +72,14 @@ STATE_STORE = JsonStateStore(
     default_factory=lambda: {"schema_version": 2, "sessions": {}},
 )
 GENERATED_DIR = os.path.join(DATA_DIR, "generated")
+REFERENCE_CACHE_DIR = os.path.join(DATA_DIR, "reference_cache")
 LOCK = threading.RLock()
 
 
 @plugins.register(
     name="XiaoyouLifePhoto",
     desc="Memory-aware daily-life photos shared by Xiaoyou",
-    version="0.9-couple-visual-identity",
+    version="1.0-async-url-delivery",
     author="yoyo",
     desire_priority=31,
 )
@@ -88,11 +90,22 @@ class XiaoyouLifePhoto(Plugin):
         self.handlers[Event.ON_HANDLE_CONTEXT] = self.on_handle_context
         self.profile = self._load_profile()
         self.state = self._load_state()
+        self._http = requests.Session()
+        self._photo_job_condition = threading.Condition(threading.RLock())
+        self._pending_photo_jobs = {}
+        self._generation_locks_guard = threading.Lock()
+        self._generation_locks = {}
+        self._photo_worker = None
+        if self._enabled() and self._async_user_requests_enabled():
+            self._ensure_photo_worker()
         logger.info(
-            "[XiaoyouLifePhoto] inited enabled=%s model=%s references=%s",
+            "[XiaoyouLifePhoto] inited enabled=%s model=%s references=%s "
+            "planner=%s async_user_requests=%s",
             self._enabled(),
             self._seedream_model(),
             len(self._reference_paths()),
+            self._planner_model(),
+            self._async_user_requests_enabled(),
         )
 
     def on_handle_context(self, e_context: EventContext):
@@ -116,6 +129,7 @@ class XiaoyouLifePhoto(Plugin):
         if not current_text:
             return
 
+        route_wait_started = time.monotonic()
         semantic_route = resolve_route_prefetch(
             context,
             "XIAOYOULIFEPHOTO",
@@ -126,56 +140,55 @@ class XiaoyouLifePhoto(Plugin):
                 context=context,
             ),
         )
+        self._log_timing(
+            "photo_route_wait_elapsed",
+            route_wait_started,
+            session_id=session_id,
+            prefetched=bool(
+                (getattr(context, "kwargs", {}) or {})
+                .get("_xiaoyou_route_prefetch_results", {})
+                .get("XIAOYOULIFEPHOTO")
+            ),
+        )
         if not semantic_route.should_generate:
             return
 
-        plan = self._plan_photo(
-            mode="user_request",
-            session_id=session_id,
-            user_text=current_text,
-            context_text=str(context.content or ""),
-            semantic_route=semantic_route,
-        )
-        if not plan or not plan.get("should_generate"):
-            return
-
-        share = self._generate_share(session_id, plan, source="user_request")
-        if not share:
-            self._attach_generation_failure_fact(context)
-            return
-
-        receipt = send_image(
-            session_id=session_id,
-            source="xiaoyou_life_photo_delivery",
-            image_path=share["path"],
-            receiver=receiver,
-            channel=e_context["channel"],
-            context=context,
-            record_memory=False,
-        )
-        if receipt.stale:
-            self.discard_share(share)
+        if not self._async_user_requests_enabled():
+            self._run_user_photo_job(
+                {
+                    "job_id": uuid.uuid4().hex,
+                    "session_id": session_id,
+                    "receiver": receiver,
+                    "user_text": current_text,
+                    "context_text": str(context.content or ""),
+                    "semantic_route": semantic_route,
+                    "channel": e_context["channel"],
+                    "context": context,
+                    "input_id": str(kwargs.get("xiaoyou_input_id") or ""),
+                    "input_version": kwargs.get("xiaoyou_input_version"),
+                    "trace_id": str(kwargs.get("xiaoyou_trace_id") or ""),
+                    "queued_at": time.time(),
+                }
+            )
             e_context.action = EventAction.BREAK_PASS
             return
-        if not receipt.ok:
-            logger.warning(
-                "[XiaoyouLifePhoto] user-requested photo send failed action_id=%s error=%s",
-                receipt.action_id,
-                receipt.error,
-            )
-            self._attach_generation_failure_fact(context)
-            return
 
-        self._mark_sent(session_id, share, source="user_request")
-        caption = str(share.get("caption") or "").strip()
-        if caption:
-            e_context["reply"] = Reply(ReplyType.TEXT, caption)
+        job = {
+            "job_id": uuid.uuid4().hex,
+            "session_id": session_id,
+            "receiver": receiver,
+            "user_text": current_text,
+            "context_text": str(context.content or ""),
+            "semantic_route": semantic_route,
+            "channel": e_context["channel"],
+            "context": context,
+            "input_id": str(kwargs.get("xiaoyou_input_id") or ""),
+            "input_version": kwargs.get("xiaoyou_input_version"),
+            "trace_id": str(kwargs.get("xiaoyou_trace_id") or ""),
+            "queued_at": time.time(),
+        }
+        self._enqueue_user_photo_job(job)
         e_context.action = EventAction.BREAK_PASS
-        logger.info(
-            "[XiaoyouLifePhoto] user-requested photo sent session=%s has_caption=%s",
-            session_id,
-            bool(caption),
-        )
 
     def prefetch_route_decision(self, e_context):
         if not self._enabled():
@@ -197,12 +210,20 @@ class XiaoyouLifePhoto(Plugin):
             or not receiver
         ):
             return PhotoSemanticRoute()
-        return classify_photo_semantics(
-            text=current_text,
-            session_id=session_id,
-            pending_user_image=False,
-            context=context,
-        )
+        started_at = time.monotonic()
+        try:
+            return classify_photo_semantics(
+                text=current_text,
+                session_id=session_id,
+                pending_user_image=False,
+                context=context,
+            )
+        finally:
+            self._log_timing(
+                "photo_route_elapsed",
+                started_at,
+                session_id=session_id,
+            )
 
     def create_proactive_share(self, session_id, activity=None):
         session_id = str(session_id or "").strip()
@@ -214,15 +235,16 @@ class XiaoyouLifePhoto(Plugin):
         activity = activity if isinstance(activity, dict) else {}
         last_user_text = str(activity.get("last_user_text") or "").strip()
         proactive_intent = str(activity.get("proactive_intent") or "").strip()
-        plan = self._plan_photo(
-            mode="proactive",
-            session_id=session_id,
-            user_text=proactive_intent or last_user_text,
-            activity=activity,
-        )
-        if not plan or not plan.get("should_generate"):
-            return None
-        return self._generate_share(session_id, plan, source="proactive")
+        with self._session_generation_lock(session_id):
+            plan = self._plan_photo(
+                mode="proactive",
+                session_id=session_id,
+                user_text=proactive_intent or last_user_text,
+                activity=activity,
+            )
+            if not plan or not plan.get("should_generate"):
+                return None
+            return self._generate_share(session_id, plan, source="proactive")
 
     def mark_proactive_sent(self, session_id, share):
         self._mark_sent(session_id, share, source="proactive")
@@ -239,6 +261,197 @@ class XiaoyouLifePhoto(Plugin):
         except Exception:
             logger.exception("[XiaoyouLifePhoto] failed to discard unsent photo")
             return False
+
+    def _ensure_photo_worker(self):
+        with self._photo_job_condition:
+            if self._photo_worker and self._photo_worker.is_alive():
+                return
+            self._photo_worker = threading.Thread(
+                target=self._photo_worker_loop,
+                name="XiaoyouLifePhotoWorker",
+                daemon=True,
+            )
+            self._photo_worker.start()
+
+    def _enqueue_user_photo_job(self, job):
+        session_id = str((job or {}).get("session_id") or "").strip()
+        if not session_id:
+            return False
+        self._ensure_photo_worker()
+        with self._photo_job_condition:
+            replaced = self._pending_photo_jobs.get(session_id)
+            self._pending_photo_jobs[session_id] = dict(job)
+            self._photo_job_condition.notify()
+        logger.info(
+            "[XiaoyouLifePhoto] background photo queued session=%s job_id=%s "
+            "input_version=%s replaced_job=%s",
+            session_id,
+            job.get("job_id"),
+            job.get("input_version"),
+            (replaced or {}).get("job_id") or "-",
+        )
+        return True
+
+    def _photo_worker_loop(self):
+        while True:
+            with self._photo_job_condition:
+                while not self._pending_photo_jobs:
+                    self._photo_job_condition.wait()
+                session_id = next(iter(self._pending_photo_jobs))
+                job = self._pending_photo_jobs.pop(session_id)
+            try:
+                self._run_user_photo_job(job)
+            except Exception:
+                logger.exception(
+                    "[XiaoyouLifePhoto] background photo job crashed session=%s job_id=%s",
+                    session_id,
+                    job.get("job_id"),
+                )
+
+    def _run_user_photo_job(self, job):
+        session_id = str((job or {}).get("session_id") or "").strip()
+        if not session_id:
+            return False
+        job_started = time.monotonic()
+        with self._session_generation_lock(session_id):
+            if not self._photo_job_is_current(job):
+                self._log_photo_job_stale(job, "before_plan")
+                return False
+
+            plan = self._plan_photo(
+                mode="user_request",
+                session_id=session_id,
+                user_text=job.get("user_text", ""),
+                context_text=job.get("context_text", ""),
+                semantic_route=job.get("semantic_route"),
+            )
+            if not plan or not plan.get("should_generate"):
+                logger.info(
+                    "[XiaoyouLifePhoto] background photo plan declined "
+                    "session=%s job_id=%s",
+                    session_id,
+                    job.get("job_id"),
+                )
+                return False
+            if not self._photo_job_is_current(job):
+                self._log_photo_job_stale(job, "before_seedream")
+                return False
+
+            share = self._generate_share(
+                session_id,
+                plan,
+                source="user_request",
+            )
+            if not share:
+                logger.warning(
+                    "[XiaoyouLifePhoto] background photo generation failed "
+                    "session=%s job_id=%s",
+                    session_id,
+                    job.get("job_id"),
+                )
+                return False
+            if not self._photo_job_is_current(job):
+                self.discard_share(share)
+                self._log_photo_job_stale(job, "before_delivery")
+                return False
+
+            caption = str(share.get("caption") or "").strip()
+            delivery_started = time.monotonic()
+            receipt = send_action(
+                session_id=session_id,
+                source="xiaoyou_life_photo_delivery",
+                image_path=share["path"],
+                parts=[caption] if caption else [],
+                receiver=job.get("receiver", ""),
+                channel=job.get("channel"),
+                context=job.get("context"),
+                freshness_check=lambda: self._photo_job_is_current(job),
+                record_memory=False,
+                trace_id=job.get("trace_id", ""),
+                input_id=job.get("input_id", ""),
+            )
+            self._log_timing(
+                "delivery_elapsed",
+                delivery_started,
+                session_id=session_id,
+                job_id=job.get("job_id"),
+                ok=receipt.ok,
+                stale=receipt.stale,
+            )
+            if receipt.stale:
+                self.discard_share(share)
+                self._log_photo_job_stale(job, "delivery")
+                return False
+            if not receipt.ok:
+                self.discard_share(share)
+                logger.warning(
+                    "[XiaoyouLifePhoto] background photo send failed "
+                    "session=%s job_id=%s action_id=%s error=%s",
+                    session_id,
+                    job.get("job_id"),
+                    receipt.action_id,
+                    receipt.error,
+                )
+                return False
+
+            self._mark_sent(session_id, share, source="user_request")
+            self._log_timing(
+                "photo_background_total_elapsed",
+                job_started,
+                session_id=session_id,
+                job_id=job.get("job_id"),
+                has_caption=bool(caption),
+            )
+            logger.info(
+                "[XiaoyouLifePhoto] background photo sent session=%s "
+                "job_id=%s action_id=%s has_caption=%s",
+                session_id,
+                job.get("job_id"),
+                receipt.action_id,
+                bool(caption),
+            )
+            return True
+
+    def _photo_job_is_current(self, job):
+        return context_is_current(
+            channel=(job or {}).get("channel"),
+            context=(job or {}).get("context"),
+        )
+
+    def _log_photo_job_stale(self, job, stage):
+        logger.info(
+            "[XiaoyouLifePhoto] background photo discarded as stale "
+            "session=%s job_id=%s input_version=%s stage=%s",
+            (job or {}).get("session_id") or "-",
+            (job or {}).get("job_id") or "-",
+            (job or {}).get("input_version"),
+            stage,
+        )
+
+    def _session_generation_lock(self, session_id):
+        session_id = str(session_id or "").strip()
+        with self._generation_locks_guard:
+            lock = self._generation_locks.get(session_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._generation_locks[session_id] = lock
+            return lock
+
+    def _log_timing(self, metric, started_at, session_id="", **attrs):
+        elapsed = max(0.0, time.monotonic() - float(started_at))
+        details = " ".join(
+            "%s=%s" % (key, value)
+            for key, value in attrs.items()
+            if value is not None
+        )
+        logger.info(
+            "[XiaoyouLifePhotoTiming] %s=%.3f session=%s%s",
+            metric,
+            elapsed,
+            session_id or "-",
+            (" " + details) if details else "",
+        )
+        return elapsed
 
     def _plan_photo(
         self,
@@ -375,7 +588,7 @@ YoYo当前相关原话：
             user_text or "无明确原话，由小悠自主判断",
         )
 
-        model = os.getenv("XIAOYOU_LIFE_PHOTO_PLANNER_MODEL") or os.getenv("MODEL") or "qwen3.7-max"
+        model = self._planner_model()
         payload = {
             "model": model,
             "messages": [
@@ -389,6 +602,7 @@ YoYo当前相关原话：
             "max_tokens": int(os.getenv("XIAOYOU_LIFE_PHOTO_PLANNER_MAX_TOKENS", "1200")),
             **build_thinking_payload("XIAOYOU_LIFE_PHOTO_PLANNER"),
         }
+        plan_started = time.monotonic()
         try:
             result = chat_completion(
                 component="XiaoyouLifePhoto",
@@ -469,6 +683,14 @@ YoYo当前相关原话：
         except Exception:
             logger.exception("[XiaoyouLifePhoto] planner request failed")
             return None
+        finally:
+            self._log_timing(
+                "photo_plan_elapsed",
+                plan_started,
+                session_id=session_id,
+                model=model,
+                mode=mode,
+            )
 
     def _generate_share(self, session_id, plan, source):
         api_key = os.getenv("SEEDREAM_API_KEY") or os.getenv("ARK_API_KEY")
@@ -477,7 +699,8 @@ YoYo当前相关原话：
             return None
 
         reference_images = self._reference_data_urls(
-            include_yoyo=bool(plan.get("include_yoyo"))
+            include_yoyo=bool(plan.get("include_yoyo")),
+            session_id=session_id,
         )
         if not reference_images:
             logger.warning("[XiaoyouLifePhoto] no valid identity reference image")
@@ -493,7 +716,7 @@ YoYo当前相关原话：
             "image": reference_images,
             "size": os.getenv("XIAOYOU_LIFE_PHOTO_SIZE", "2K").strip() or "2K",
             "sequential_image_generation": "disabled",
-            "response_format": "b64_json",
+            "response_format": self._seedream_response_format(),
             "output_format": output_format,
             "watermark": False,
         }
@@ -504,12 +727,23 @@ YoYo当前相关原话：
         }
 
         try:
-            response = requests.post(
-                base + "/images/generations",
-                headers=headers,
-                json=payload,
-                timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_TIMEOUT", "240")),
-            )
+            seedream_started = time.monotonic()
+            try:
+                response = self._http.post(
+                    base + "/images/generations",
+                    headers=headers,
+                    json=payload,
+                    timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_TIMEOUT", "240")),
+                )
+            finally:
+                self._log_timing(
+                    "seedream_upload_and_generation_elapsed",
+                    seedream_started,
+                    session_id=session_id,
+                    model=payload["model"],
+                    references=len(reference_images),
+                    response_format=payload["response_format"],
+                )
             if response.status_code >= 400:
                 logger.warning(
                     "[XiaoyouLifePhoto] Seedream failed status=%s body=%s",
@@ -522,10 +756,14 @@ YoYo当前相关原话：
             if not data or not isinstance(data[0], dict):
                 logger.warning("[XiaoyouLifePhoto] Seedream response has no image")
                 return None
-            image_bytes = self._decode_image_result(data[0])
-            if not image_bytes:
-                return None
-            path = self._save_generated_image(image_bytes, output_format)
+            download_started = time.monotonic()
+            path = self._save_image_result(data[0], output_format)
+            self._log_timing(
+                "image_download_elapsed",
+                download_started,
+                session_id=session_id,
+                response_format=payload["response_format"],
+            )
             if not path:
                 return None
             return {
@@ -723,31 +961,184 @@ YoYo当前相关原话：
                 paths.append(real_path)
         return paths[:4]
 
-    def _reference_data_urls(self, include_yoyo=False):
+    def _reference_data_urls(self, include_yoyo=False, session_id=""):
+        started_at = time.monotonic()
         results = []
+        original_total = 0
+        optimized_total = 0
         max_bytes = max(1, int(os.getenv("XIAOYOU_LIFE_PHOTO_REFERENCE_MAX_MB", "8"))) * 1024 * 1024
-        for path in self._reference_paths():
+        paths = list(self._reference_paths())
+        if include_yoyo:
+            yoyo_path = self.relationship_profile.yoyo_reference_path()
+            if yoyo_path:
+                paths.append(yoyo_path)
+        for path in paths:
             try:
-                if os.path.getsize(path) > max_bytes:
+                original_size = os.path.getsize(path)
+                original_total += original_size
+                if original_size > max_bytes:
                     logger.warning("[XiaoyouLifePhoto] reference image too large path=%s", path)
                     continue
-                with open(path, "rb") as handle:
-                    raw = handle.read()
-                mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+                raw, mime = self._lightweight_reference(path)
+                if not raw:
+                    continue
+                optimized_total += len(raw)
                 results.append("data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")))
             except Exception:
                 logger.exception("[XiaoyouLifePhoto] failed to read reference image path=%s", path)
-        if include_yoyo:
-            path = self.relationship_profile.yoyo_reference_path()
-            try:
-                if path and os.path.getsize(path) <= max_bytes:
-                    with open(path, "rb") as handle:
-                        raw = handle.read()
-                    mime = mimetypes.guess_type(path)[0] or "image/jpeg"
-                    results.append("data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")))
-            except Exception:
-                logger.exception("[XiaoyouLifePhoto] failed to read private YoYo reference")
+        self._log_timing(
+            "reference_encode_elapsed",
+            started_at,
+            session_id=session_id,
+            references=len(results),
+            original_bytes=original_total,
+            optimized_bytes=optimized_total,
+        )
         return results
+
+    def _lightweight_reference(self, path):
+        real_path = os.path.realpath(str(path or ""))
+        if not real_path or not os.path.isfile(real_path):
+            return None, ""
+        stat = os.stat(real_path)
+        max_side = max(
+            768,
+            min(
+                2048,
+                int(
+                    os.getenv(
+                        "XIAOYOU_LIFE_PHOTO_REFERENCE_MAX_SIDE",
+                        "1280",
+                    )
+                ),
+            ),
+        )
+        quality = max(
+            70,
+            min(
+                95,
+                int(
+                    os.getenv(
+                        "XIAOYOU_LIFE_PHOTO_REFERENCE_JPEG_QUALITY",
+                        "88",
+                    )
+                ),
+            ),
+        )
+        target_bytes = max(
+            128,
+            int(
+                os.getenv(
+                    "XIAOYOU_LIFE_PHOTO_REFERENCE_TARGET_MAX_KB",
+                    "500",
+                )
+            ),
+        ) * 1024
+        cache_key = hashlib.sha256(
+            (
+                "%s|%s|%s|%s|%s|%s"
+                % (
+                    real_path,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    max_side,
+                    quality,
+                    target_bytes,
+                )
+            ).encode("utf-8")
+        ).hexdigest()
+        cache_path = os.path.join(REFERENCE_CACHE_DIR, cache_key + ".jpg")
+        try:
+            if os.path.isfile(cache_path):
+                with open(cache_path, "rb") as handle:
+                    cached = handle.read()
+                if self._valid_image_bytes(cached):
+                    return cached, "image/jpeg"
+        except Exception:
+            logger.exception(
+                "[XiaoyouLifePhoto] failed to read optimized reference cache path=%s",
+                cache_path,
+            )
+
+        try:
+            from PIL import Image, ImageOps
+
+            with Image.open(real_path) as source:
+                image = ImageOps.exif_transpose(source)
+                image.thumbnail(
+                    (max_side, max_side),
+                    getattr(Image, "Resampling", Image).LANCZOS,
+                )
+                if image.mode in ("RGBA", "LA"):
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, (255, 255, 255))
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+
+                encoded = b""
+                working = image
+                for resize_round in range(4):
+                    for candidate_quality in range(quality, 69, -4):
+                        output = io.BytesIO()
+                        working.save(
+                            output,
+                            format="JPEG",
+                            quality=candidate_quality,
+                            optimize=True,
+                            progressive=True,
+                            subsampling=1,
+                        )
+                        encoded = output.getvalue()
+                        if len(encoded) <= target_bytes:
+                            break
+                    if len(encoded) <= target_bytes:
+                        break
+                    if max(working.size) <= 640:
+                        break
+                    next_size = (
+                        max(1, int(working.width * 0.86)),
+                        max(1, int(working.height * 0.86)),
+                    )
+                    if next_size == working.size:
+                        break
+                    working = working.resize(
+                        next_size,
+                        getattr(Image, "Resampling", Image).LANCZOS,
+                    )
+        except Exception:
+            logger.exception(
+                "[XiaoyouLifePhoto] failed to optimize reference path=%s",
+                real_path,
+            )
+            with open(real_path, "rb") as handle:
+                raw = handle.read()
+            return raw, mimetypes.guess_type(real_path)[0] or "image/jpeg"
+
+        if not self._valid_image_bytes(encoded):
+            return None, ""
+        try:
+            os.makedirs(REFERENCE_CACHE_DIR, exist_ok=True)
+            temporary = cache_path + ".%s.tmp" % uuid.uuid4().hex
+            with open(temporary, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, cache_path)
+        except Exception:
+            logger.exception(
+                "[XiaoyouLifePhoto] failed to cache optimized reference path=%s",
+                cache_path,
+            )
+        logger.info(
+            "[XiaoyouLifePhoto] optimized reference source_bytes=%s cached_bytes=%s "
+            "path=%s",
+            stat.st_size,
+            len(encoded),
+            os.path.basename(real_path),
+        )
+        return encoded, "image/jpeg"
 
     def get_vision_identity_context(self, session_id):
         """Expose read-only visual identity facts to QwenVision."""
@@ -896,6 +1287,92 @@ YoYo当前相关原话：
         except Exception:
             return None
 
+    def _save_image_result(self, item, requested_format):
+        encoded = (item or {}).get("b64_json") or (item or {}).get("b64")
+        if encoded:
+            raw = self._decode_image_result(item)
+            return self._save_generated_image(raw, requested_format) if raw else ""
+
+        url = str((item or {}).get("url") or "").strip()
+        if not url:
+            logger.warning("[XiaoyouLifePhoto] image result has neither url nor base64")
+            return ""
+        return self._download_generated_image(url)
+
+    def _download_generated_image(self, url):
+        timeout = max(
+            5,
+            int(os.getenv("XIAOYOU_LIFE_PHOTO_DOWNLOAD_TIMEOUT", "60")),
+        )
+        max_bytes = max(
+            1,
+            int(os.getenv("XIAOYOU_LIFE_PHOTO_DOWNLOAD_MAX_MB", "40")),
+        ) * 1024 * 1024
+        month_dir = os.path.join(GENERATED_DIR, datetime.now().strftime("%Y-%m"))
+        os.makedirs(month_dir, exist_ok=True)
+        temporary = os.path.join(month_dir, ".%s.download" % uuid.uuid4().hex)
+        try:
+            with self._http.get(url, stream=True, timeout=timeout) as response:
+                if response.status_code >= 400:
+                    logger.warning(
+                        "[XiaoyouLifePhoto] generated image download failed "
+                        "status=%s",
+                        response.status_code,
+                    )
+                    return ""
+                content_length = int(response.headers.get("Content-Length") or 0)
+                if content_length > max_bytes:
+                    logger.warning(
+                        "[XiaoyouLifePhoto] generated image download rejected "
+                        "content_length=%s max_bytes=%s",
+                        content_length,
+                        max_bytes,
+                    )
+                    return ""
+                total = 0
+                with open(temporary, "wb") as handle:
+                    for chunk in response.iter_content(chunk_size=128 * 1024):
+                        if not chunk:
+                            continue
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise ValueError("generated image exceeds download limit")
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+
+            with open(temporary, "rb") as handle:
+                signature = handle.read(16)
+            if signature.startswith(b"\xff\xd8\xff"):
+                extension = "jpg"
+            elif signature.startswith(b"\x89PNG\r\n\x1a\n"):
+                extension = "png"
+            else:
+                logger.warning(
+                    "[XiaoyouLifePhoto] generated image download has invalid signature"
+                )
+                return ""
+            if os.path.getsize(temporary) < 1024:
+                logger.warning(
+                    "[XiaoyouLifePhoto] generated image download is unexpectedly small"
+                )
+                return ""
+            path = os.path.join(month_dir, "%s.%s" % (uuid.uuid4().hex, extension))
+            os.replace(temporary, path)
+            return path
+        except Exception:
+            logger.exception("[XiaoyouLifePhoto] generated image stream download failed")
+            return ""
+        finally:
+            try:
+                if os.path.isfile(temporary):
+                    os.remove(temporary)
+            except OSError:
+                logger.warning(
+                    "[XiaoyouLifePhoto] failed to remove image download temporary path=%s",
+                    temporary,
+                )
+
     def _decode_image_result(self, item):
         encoded = item.get("b64_json") or item.get("b64")
         if encoded:
@@ -913,7 +1390,7 @@ YoYo当前相关原话：
         if not url:
             return None
         try:
-            response = requests.get(
+            response = self._http.get(
                 url,
                 timeout=int(os.getenv("XIAOYOU_LIFE_PHOTO_DOWNLOAD_TIMEOUT", "60")),
             )
@@ -1089,14 +1566,6 @@ YoYo当前相关原话：
             except Exception:
                 return None
 
-    def _attach_generation_failure_fact(self, context):
-        context.content = "%s\n\n[本轮图片发送状态事实]\n照片没有成功生成或发送。不要声称已经发出图片；由小悠结合当前聊天自行决定如何自然回应。" % str(
-            context.content or ""
-        )
-        kwargs = getattr(context, "kwargs", {}) or {}
-        kwargs["xiaoyou_life_photo_failed"] = True
-        context.kwargs = kwargs
-
     def _session_allowed(self, session_id):
         canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
         return str(session_id or "").strip() == canonical
@@ -1106,6 +1575,25 @@ YoYo当前相关原话：
             "SEEDREAM_MODEL",
             "doubao-seedream-5-0-lite-260128",
         ).strip() or "doubao-seedream-5-0-lite-260128"
+
+    def _planner_model(self):
+        return os.getenv(
+            "XIAOYOU_LIFE_PHOTO_PLANNER_MODEL",
+            "qwen3.7-plus",
+        ).strip() or "qwen3.7-plus"
+
+    def _seedream_response_format(self):
+        value = os.getenv(
+            "XIAOYOU_LIFE_PHOTO_RESPONSE_FORMAT",
+            "url",
+        ).strip().lower()
+        return value if value in ("url", "b64_json") else "url"
+
+    def _async_user_requests_enabled(self):
+        return os.getenv(
+            "XIAOYOU_LIFE_PHOTO_ASYNC_USER_REQUESTS",
+            "true",
+        ).strip().lower() in ("1", "true", "yes", "on")
 
     def _enabled(self):
         return os.getenv("XIAOYOU_LIFE_PHOTO_ENABLED", "true").strip().lower() in (
