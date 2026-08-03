@@ -155,21 +155,34 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(null)
                     } else {
                         realtimeAudioExecutor.execute {
+                            val gain = synchronized(realtimeAudioLock) {
+                                realtimeAudioGain
+                            }
                             val amplified = amplifyPcm16(
                                 pcm,
-                                synchronized(realtimeAudioLock) {
-                                    realtimeAudioGain
-                                },
+                                gain,
                             )
-                            synchronized(realtimeAudioLock) {
-                                val track = realtimeAudioTrack
-                                if (track != null) {
+                            val track = synchronized(realtimeAudioLock) {
+                                realtimeAudioTrack
+                            }
+                            if (track != null) {
+                                try {
+                                    // AudioTrack.write can block while its
+                                    // native buffer drains. Never hold the
+                                    // state lock here: positionMs is handled
+                                    // on Android's main thread and used to
+                                    // stall every Flutter frame until this
+                                    // blocking write returned.
                                     track.write(
                                         amplified,
                                         0,
                                         amplified.size,
                                         AudioTrack.WRITE_BLOCKING,
                                     )
+                                } catch (_: Throwable) {
+                                    // A concurrent interruption may release
+                                    // the old track after we took the snapshot.
+                                    // The next reply will create a fresh one.
                                 }
                             }
                         }
@@ -177,12 +190,18 @@ class MainActivity : FlutterFragmentActivity() {
                     }
                 }
                 "positionMs" -> {
-                    val position = synchronized(realtimeAudioLock) {
-                        val frames =
-                            realtimeAudioTrack?.playbackHeadPosition?.toLong()
-                                ?.and(0xffffffffL)
-                                ?: 0L
-                        (frames * 1000L / realtimeAudioSampleRate).toInt()
+                    val snapshot = synchronized(realtimeAudioLock) {
+                        Pair(realtimeAudioTrack, realtimeAudioSampleRate)
+                    }
+                    val position = try {
+                        val frames = snapshot.first
+                            ?.playbackHeadPosition
+                            ?.toLong()
+                            ?.and(0xffffffffL)
+                            ?: 0L
+                        (frames * 1000L / snapshot.second).toInt()
+                    } catch (_: Throwable) {
+                        0
                     }
                     result.success(position)
                 }

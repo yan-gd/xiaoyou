@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'realtime_voice_player.dart';
@@ -17,16 +18,14 @@ const _voiceMuted = Color(0xff9c8792);
 const _voiceRose = Color(0xffb35282);
 const _voiceLavender = Color(0xff8d71bd);
 const _defaultVoiceRoomMoodAsset = 'assets/moods/平静.png';
-const _speechMouthMoodAsset = 'assets/moods/无语.png';
+const _speakingExpressionMoodAsset = 'assets/moods/开心.png';
 const _playbackEnvelopeFrameMs = 20;
-const _voiceRoomPortraitFramesPerLoop = 360;
 // Send 160 ms batches over one dedicated keep-alive connection. The server
 // queues and re-times these into O2.0's required 640-byte/20 ms frames without
 // holding the public HTTP request open for the duration of the audio.
 const _realtimeUploadBytes = 5120;
 
 final Map<String, Future<ui.Image>> _voiceRoomImageCache = {};
-Future<ui.FragmentProgram>? _voiceRoomFaceProgram;
 
 Future<ui.Image> _loadVoiceRoomImage(String asset) {
   return _voiceRoomImageCache.putIfAbsent(asset, () async {
@@ -49,23 +48,56 @@ Future<ui.Image> _loadVoiceRoomImage(String asset) {
   });
 }
 
-Future<ui.FragmentProgram> _loadVoiceRoomFaceProgram() {
-  return _voiceRoomFaceProgram ??= ui.FragmentProgram.fromAsset(
-    'shaders/digital_xiaoyou.frag',
-  );
-}
-
 Future<void> prewarmVoiceRoomVisuals({
   String moodAsset = _defaultVoiceRoomMoodAsset,
 }) async {
   try {
     await Future.wait<Object>([
-      _loadVoiceRoomFaceProgram(),
       _loadVoiceRoomImage(moodAsset),
-      _loadVoiceRoomImage(_speechMouthMoodAsset),
+      _loadVoiceRoomImage(_speakingExpressionMoodAsset),
     ]);
   } catch (error) {
     debugPrint('[VoiceRoom] visual prewarm unavailable: $error');
+  }
+}
+
+/// A vsync-backed clock that never asks the widget tree to render faster than
+/// the requested cadence. On 120 Hz phones an AnimationController notifies on
+/// every display frame, even though this scene only needs 60 visual updates.
+/// Skipping duplicate cadence frames keeps motion aligned to vsync without the
+/// jitter of a periodic Timer and halves the build/paint load on high-refresh
+/// devices.
+class _CappedVisualClock extends ChangeNotifier {
+  _CappedVisualClock({
+    required TickerProvider vsync,
+    required this.duration,
+    required this.maximumFramesPerSecond,
+  }) {
+    _ticker = vsync.createTicker(_tick)..start();
+  }
+
+  final Duration duration;
+  final int maximumFramesPerSecond;
+  late final Ticker _ticker;
+  int _lastFrame = -1;
+  double value = 0;
+
+  void _tick(Duration elapsed) {
+    final elapsedMicros = elapsed.inMicroseconds;
+    final frame = elapsedMicros * maximumFramesPerSecond ~/ 1000000;
+    if (frame == _lastFrame) {
+      return;
+    }
+    _lastFrame = frame;
+    final durationMicros = max(1, duration.inMicroseconds);
+    value = (elapsedMicros % durationMicros) / durationMicros;
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    super.dispose();
   }
 }
 
@@ -107,10 +139,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   StreamSubscription<Uint8List>? _pcmSubscription;
   StreamSubscription<double>? _amplitude;
   Timer? _clock;
-  late final AnimationController _particles = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 12),
-  )..repeat();
+  late final _CappedVisualClock _particles;
 
   _RoomPhase _phase = _RoomPhase.connecting;
   int _elapsedSeconds = 0;
@@ -126,8 +155,9 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   final Stopwatch _playbackClock = Stopwatch();
   final List<double> _playbackEnvelope = [];
   bool _playbackPositionSyncing = false;
-  int _playbackAnchorPositionMs = 0;
+  double _playbackAnchorPositionMs = 0;
   int _playbackAnchorClockMs = 0;
+  double _playbackPositionCorrectionMs = 0;
   int _lastPlaybackVisualClockMs = 0;
   double _renderedPlaybackLevel = 0.08;
   int _playbackEnvelopeGeneration = 0;
@@ -145,6 +175,11 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
   @override
   void initState() {
     super.initState();
+    _particles = _CappedVisualClock(
+      vsync: this,
+      duration: const Duration(seconds: 12),
+      maximumFramesPerSecond: 60,
+    );
     _moodAsset = widget.initialMoodAsset;
     _moodLabel = widget.initialMoodLabel;
     _clock = Timer.periodic(const Duration(seconds: 1), (_) {
@@ -154,7 +189,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     });
     _playbackClock.start();
     _playbackPositionClock = Timer.periodic(
-      const Duration(milliseconds: 180),
+      const Duration(milliseconds: 350),
       (_) => unawaited(_calibratePlaybackPosition()),
     );
     unawaited(prewarmVoiceRoomVisuals(moodAsset: _moodAsset));
@@ -381,15 +416,30 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
     _playbackEnvelope.clear();
     _playbackAnchorPositionMs = 0;
     _playbackAnchorClockMs = _playbackClock.elapsedMilliseconds;
+    _playbackPositionCorrectionMs = 0;
     _lastPlaybackVisualClockMs = _playbackAnchorClockMs;
     _renderedPlaybackLevel = 0.08;
     _level.value = 0.08;
   }
 
-  void _anchorPlaybackPosition(int positionMs) {
+  void _anchorPlaybackPosition(int positionMs, {bool hard = false}) {
     final nowMs = _playbackClock.elapsedMilliseconds;
-    _playbackAnchorPositionMs = max(0, positionMs);
-    _playbackAnchorClockMs = nowMs;
+    final safePosition = max(0, positionMs).toDouble();
+    if (hard || _playbackAnchorClockMs == 0) {
+      _playbackAnchorPositionMs = safePosition;
+      _playbackAnchorClockMs = nowMs;
+      _playbackPositionCorrectionMs = 0;
+      return;
+    }
+    final estimated = _playbackAnchorPositionMs +
+        max(0, nowMs - _playbackAnchorClockMs).toDouble();
+    final error = (safePosition - estimated).clamp(-180.0, 180.0);
+    // PlaybackHeadPosition is authoritative but can move in uneven native
+    // batches. Keep its error as a speed correction instead of snapping the
+    // visual clock to it and producing a visible pause/jump every calibration.
+    _playbackPositionCorrectionMs =
+        (_playbackPositionCorrectionMs * 0.35 + error * 0.65)
+            .clamp(-180.0, 180.0);
   }
 
   Future<void> _calibratePlaybackPosition() async {
@@ -424,16 +474,34 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
       return _level.value;
     }
     final nowMs = _playbackClock.elapsedMilliseconds;
+    final elapsedSinceAnchor =
+        max(0, nowMs - _playbackAnchorClockMs).toDouble();
+    final maximumCorrectionStep = elapsedSinceAnchor * 0.12;
+    final correctionStep = _playbackPositionCorrectionMs.clamp(
+      -maximumCorrectionStep,
+      maximumCorrectionStep,
+    );
     final estimatedPositionMs =
-        _playbackAnchorPositionMs + max(0, nowMs - _playbackAnchorClockMs);
+        _playbackAnchorPositionMs + elapsedSinceAnchor + correctionStep;
+    _playbackAnchorPositionMs = estimatedPositionMs;
+    _playbackAnchorClockMs = nowMs;
+    _playbackPositionCorrectionMs -= correctionStep;
     final playedMs = max(0, estimatedPositionMs - _replyPlaybackBaseMs);
     final exactIndex = playedMs / _playbackEnvelopeFrameMs;
     final lower =
         exactIndex.floor().clamp(0, _playbackEnvelope.length - 1).toInt();
     final upper = min(lower + 1, _playbackEnvelope.length - 1);
     final fraction = exactIndex - exactIndex.floor();
-    final target = _playbackEnvelope[lower] * (1 - fraction) +
+    var target = _playbackEnvelope[lower] * (1 - fraction) +
         _playbackEnvelope[upper] * fraction;
+    if (exactIndex >= _playbackEnvelope.length - 1) {
+      // Network chunks can arrive a little later than the native AudioTrack
+      // consumes them. Fade the visual energy toward rest while waiting for
+      // the next chunk instead of freezing on the final envelope sample.
+      final overflowFrames = exactIndex - (_playbackEnvelope.length - 1);
+      final restMix = (overflowFrames / 5).clamp(0.0, 1.0);
+      target += (0.08 - target) * restMix;
+    }
     final elapsedMs = (nowMs - _lastPlaybackVisualClockMs).clamp(1, 50);
     _lastPlaybackVisualClockMs = nowMs;
     final timeConstantMs = target > _renderedPlaybackLevel ? 38.0 : 72.0;
@@ -680,7 +748,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
             _resetPlaybackEnvelope();
             final playbackPositionMs = await _player.positionMs();
             _replyPlaybackBaseMs = playbackPositionMs;
-            _anchorPlaybackPosition(playbackPositionMs);
+            _anchorPlaybackPosition(playbackPositionMs, hard: true);
             _playbackReplyId = replyId;
             _replyAudioDurationMs = 0;
           }
@@ -792,10 +860,27 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
         body: Stack(
           children: [
             Positioned.fill(
-              child: AnimatedBuilder(
-                animation: _particles,
-                builder: (_, __) => CustomPaint(
-                  painter: _VoiceRoomBackgroundPainter(_particles.value),
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xfffffbfd),
+                      Color(0xffffeef6),
+                      Color(0xffeee9fa),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: RepaintBoundary(
+                child: AnimatedBuilder(
+                  animation: _particles,
+                  builder: (_, __) => CustomPaint(
+                    painter: _VoiceRoomParticlesPainter(_particles.value),
+                  ),
                 ),
               ),
             ),
@@ -866,7 +951,9 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
                             // keep one vsync source instead of rebuilding the
                             // whole orb twice on every display frame.
                             breath: 0.5 - 0.5 * cos(_particles.value * pi * 10),
-                            moodAsset: _moodAsset,
+                            moodAsset: _phase == _RoomPhase.speaking
+                                ? _speakingExpressionMoodAsset
+                                : _moodAsset,
                           ),
                         ),
                         const SizedBox(height: 24),
@@ -1411,7 +1498,10 @@ List<double> _pcmSpeechEnvelope(Uint8List pcm) {
     final end = min(pcm.length, start + bytesPerFrame);
     var energy = 0.0;
     var samples = 0;
-    for (var index = start; index + 1 < end; index += 2) {
+    // Four evenly spaced samples are enough for a visual RMS envelope. Reading
+    // every PCM sample on the UI isolate made large assistant audio events
+    // compete with animation frames without producing a visible difference.
+    for (var index = start; index + 1 < end; index += 8) {
       final raw = pcm[index] | (pcm[index + 1] << 8);
       final signed = raw >= 0x8000 ? raw - 0x10000 : raw;
       final normalized = signed / 32768.0;
@@ -1452,14 +1542,8 @@ class _VoiceOrbState extends State<_VoiceOrb>
     duration: const Duration(milliseconds: 118),
   );
   Timer? _nextBlink;
-  ui.FragmentShader? _faceShader;
   ui.Image? _faceImage;
-  ui.Image? _speechMouthImage;
   int _imageLoadGeneration = 0;
-  int _portraitFrame = -1;
-  double _portraitMouth = 0;
-  double _portraitProgress = 0;
-  _RoomPhase? _portraitPhase;
 
   double get _diameter => switch (widget.phase) {
         _RoomPhase.connecting => 214,
@@ -1494,14 +1578,6 @@ class _VoiceOrbState extends State<_VoiceOrb>
     };
   }
 
-  double get _mouthLevel {
-    if (widget.phase != _RoomPhase.speaking) {
-      return 0;
-    }
-    final normalized = ((widget.level - 0.08) / 0.92).clamp(0.0, 1.0);
-    return Curves.easeOutCubic.transform(normalized);
-  }
-
   @override
   void initState() {
     super.initState();
@@ -1515,6 +1591,23 @@ class _VoiceOrbState extends State<_VoiceOrb>
     if (oldWidget.moodAsset != widget.moodAsset) {
       unawaited(_loadFaceImage(widget.moodAsset));
     }
+    if (oldWidget.phase != _RoomPhase.speaking &&
+        widget.phase == _RoomPhase.speaking) {
+      _nextBlink?.cancel();
+      _nextBlink = null;
+      _blink.stop(canceled: false);
+      // The speaking portrait must stay completely static. The painter also
+      // receives zero immediately below; resetting after this frame avoids
+      // notifying AnimatedBuilder from inside didUpdateWidget.
+      SchedulerBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.phase == _RoomPhase.speaking) {
+          _blink.value = 0;
+        }
+      });
+    } else if (oldWidget.phase == _RoomPhase.speaking &&
+        widget.phase != _RoomPhase.speaking) {
+      _scheduleBlink();
+    }
   }
 
   @override
@@ -1527,27 +1620,17 @@ class _VoiceOrbState extends State<_VoiceOrb>
   Future<void> _loadVisualBundle(String asset) async {
     final generation = ++_imageLoadGeneration;
     try {
-      final programFuture = _loadVoiceRoomFaceProgram();
       final faceFuture = _loadVoiceRoomImage(asset);
-      final mouthFuture = _loadVoiceRoomImage(_speechMouthMoodAsset);
-      await Future.wait<Object>([
-        programFuture,
-        faceFuture,
-        mouthFuture,
-      ]);
+      await faceFuture;
       if (!mounted || generation != _imageLoadGeneration) {
         return;
       }
-      final program = await programFuture;
       final face = await faceFuture;
-      final mouth = await mouthFuture;
       if (!mounted || generation != _imageLoadGeneration) {
         return;
       }
       setState(() {
-        _faceShader = program.fragmentShader();
         _faceImage = face;
-        _speechMouthImage = mouth;
       });
     } catch (error) {
       debugPrint('[VoiceRoom] digital avatar visuals unavailable: $error');
@@ -1577,6 +1660,10 @@ class _VoiceOrbState extends State<_VoiceOrb>
       if (!mounted || widget.phase == _RoomPhase.ending) {
         return;
       }
+      if (widget.phase == _RoomPhase.speaking) {
+        _scheduleBlink();
+        return;
+      }
       await _blink.forward(from: 0);
       await _blink.reverse();
       if (mounted && _random.nextDouble() < 0.16) {
@@ -1594,18 +1681,6 @@ class _VoiceOrbState extends State<_VoiceOrb>
 
   @override
   Widget build(BuildContext context) {
-    // The glow remains tied to display vsync, but the much heavier two-texture
-    // portrait shader only needs a stable 30 fps. Sampling mouth/time together
-    // prevents the face layer from being repainted twice for one visible
-    // audio step while the outer orb still moves at the screen refresh rate.
-    final portraitFrame =
-        (widget.progress * _voiceRoomPortraitFramesPerLoop).floor();
-    if (_portraitFrame != portraitFrame || _portraitPhase != widget.phase) {
-      _portraitFrame = portraitFrame;
-      _portraitPhase = widget.phase;
-      _portraitMouth = _mouthLevel;
-      _portraitProgress = widget.progress;
-    }
     final pulse =
         1 + (widget.breath - 0.5) * (0.018 + widget.level.clamp(0, 1) * 0.025);
     return AnimatedBuilder(
@@ -1650,23 +1725,18 @@ class _VoiceOrbState extends State<_VoiceOrb>
                               child: Stack(
                                 fit: StackFit.expand,
                                 children: [
-                                  if (_faceImage != null &&
-                                      _speechMouthImage != null &&
-                                      _faceShader != null)
+                                  if (_faceImage != null)
                                     RepaintBoundary(
                                       child: CustomPaint(
                                         isComplex: true,
-                                        willChange: true,
                                         painter: _DigitalXiaoyouPainter(
                                           image: _faceImage!,
-                                          speechMouthImage: _speechMouthImage!,
-                                          fragmentShader: _faceShader!,
-                                          blink: Curves.easeInCubic.transform(
-                                            _blink.value,
-                                          ),
-                                          mouth: _portraitMouth,
-                                          activity: _activity,
-                                          progress: _portraitProgress,
+                                          blink: widget.phase ==
+                                                  _RoomPhase.speaking
+                                              ? 0
+                                              : Curves.easeInCubic.transform(
+                                                  _blink.value,
+                                                ),
                                         ),
                                       ),
                                     )
@@ -1721,48 +1791,66 @@ class _VoiceOrbState extends State<_VoiceOrb>
 class _DigitalXiaoyouPainter extends CustomPainter {
   const _DigitalXiaoyouPainter({
     required this.image,
-    required this.speechMouthImage,
-    required this.fragmentShader,
     required this.blink,
-    required this.mouth,
-    required this.activity,
-    required this.progress,
   });
 
   final ui.Image image;
-  final ui.Image speechMouthImage;
-  final ui.FragmentShader fragmentShader;
   final double blink;
-  final double mouth;
-  final double activity;
-  final double progress;
 
   @override
   void paint(Canvas canvas, Size size) {
-    fragmentShader
-      ..setFloat(0, size.width)
-      ..setFloat(1, size.height)
-      ..setFloat(2, blink)
-      ..setFloat(3, mouth)
-      ..setFloat(4, activity)
-      ..setFloat(5, progress)
-      ..setImageSampler(0, image)
-      ..setImageSampler(1, speechMouthImage);
-    canvas.drawRect(
-      Offset.zero & size,
-      Paint()..shader = fragmentShader,
+    final destination = Offset.zero & size;
+    final source = Rect.fromLTWH(
+      0,
+      0,
+      image.width.toDouble(),
+      image.height.toDouble(),
     );
+    final imagePaint = Paint()..filterQuality = FilterQuality.medium;
+    canvas.drawImageRect(image, source, destination, imagePaint);
+
+    _paintBlink(canvas, size);
+  }
+
+  void _paintBlink(Canvas canvas, Size size) {
+    final amount = Curves.easeInOut.transform(blink.clamp(0.0, 1.0));
+    if (amount < 0.015) {
+      return;
+    }
+    const eyeCenters = [Offset(0.405, 0.555), Offset(0.645, 0.555)];
+    for (final center in eyeCenters) {
+      final destination = Rect.fromCenter(
+        center: Offset(size.width * center.dx, size.height * center.dy),
+        width: size.width * 0.19,
+        height: size.height * 0.085,
+      );
+      canvas.drawOval(
+        destination.inflate(size.shortestSide * 0.006),
+        Paint()
+          ..shader = RadialGradient(
+            colors: [
+              const Color(0xffffd9dc).withValues(alpha: amount * 0.90),
+              const Color(0xffffe5e3).withValues(alpha: amount * 0.82),
+              Colors.transparent,
+            ],
+            stops: const [0, 0.72, 1],
+          ).createShader(destination),
+      );
+      final lashY = destination.center.dy;
+      canvas.drawLine(
+        Offset(destination.left + destination.width * 0.12, lashY),
+        Offset(destination.right - destination.width * 0.12, lashY),
+        Paint()
+          ..color = const Color(0xff2b1724).withValues(alpha: amount * 0.72)
+          ..strokeWidth = max(1.0, size.shortestSide * 0.006)
+          ..strokeCap = StrokeCap.round,
+      );
+    }
   }
 
   @override
   bool shouldRepaint(covariant _DigitalXiaoyouPainter oldDelegate) =>
-      oldDelegate.image != image ||
-      oldDelegate.speechMouthImage != speechMouthImage ||
-      oldDelegate.fragmentShader != fragmentShader ||
-      oldDelegate.blink != blink ||
-      oldDelegate.mouth != mouth ||
-      oldDelegate.activity != activity ||
-      oldDelegate.progress != progress;
+      oldDelegate.image != image || oldDelegate.blink != blink;
 }
 
 class _MoodOrbGlowPainter extends CustomPainter {
@@ -1788,22 +1876,30 @@ class _MoodOrbGlowPainter extends CustomPainter {
         : phase == _RoomPhase.speaking
             ? const Color(0xffff6eaf)
             : const Color(0xffb69af4);
-    canvas.drawCircle(
-      center + Offset(0, radius * 0.94),
-      radius * 0.78,
+    final shadowRect = Rect.fromCenter(
+      center: center + Offset(0, radius * 0.82),
+      width: radius * 1.16,
+      height: radius * 0.25,
+    );
+    canvas.drawOval(
+      shadowRect,
       Paint()
         ..shader = RadialGradient(
           colors: [
-            const Color(0xff331e35).withValues(alpha: 0.25),
+            const Color(0xff4a2b42).withValues(alpha: 0.16),
+            const Color(0xff8f6884).withValues(alpha: 0.07),
             Colors.transparent,
           ],
-        ).createShader(
-          Rect.fromCircle(
-            center: center + Offset(0, radius),
-            radius: radius,
-          ),
-        )
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 18),
+          stops: const [0, 0.55, 1],
+        ).createShader(shadowRect),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: center + Offset(0, radius * 0.86),
+        width: radius * 0.62,
+        height: radius * 0.09,
+      ),
+      Paint()..color = const Color(0xff40243b).withValues(alpha: 0.08),
     );
     for (var index = 0; index < 3; index++) {
       final spread =
@@ -1880,12 +1976,6 @@ class _MoodOrbSurfacePainter extends CustomPainter {
         sin(t * 0.8 + 0.4) * radius * 0.28,
         0.62,
       ),
-      (
-        const Color(0xffaa8cff),
-        sin(t * 0.7 + 2.4) * radius * 0.26,
-        cos(t * 1.1 + 0.8) * radius * 0.32,
-        0.58,
-      ),
     ];
     for (var index = 0; index < ribbons.length; index++) {
       final ribbon = ribbons[index];
@@ -1942,8 +2032,7 @@ class _MoodOrbSurfacePainter extends CustomPainter {
             Colors.white.withValues(alpha: 0.02),
           ],
         ).createShader(rect)
-        ..blendMode = BlendMode.screen
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+        ..blendMode = BlendMode.screen,
     );
 
     canvas.drawCircle(
@@ -2437,25 +2526,13 @@ class _LegacyVoiceOrbPainter extends CustomPainter {
       oldDelegate.fragmentShader != fragmentShader;
 }
 
-class _VoiceRoomBackgroundPainter extends CustomPainter {
-  const _VoiceRoomBackgroundPainter(this.progress);
+class _VoiceRoomParticlesPainter extends CustomPainter {
+  const _VoiceRoomParticlesPainter(this.progress);
 
   final double progress;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..shader = const LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Color(0xfffffbfd),
-          Color(0xffffeef6),
-          Color(0xffeee9fa),
-        ],
-      ).createShader(Offset.zero & size);
-    canvas.drawRect(Offset.zero & size, paint);
-
     final t = progress * pi * 2;
     final particlePaint = Paint()..color = const Color(0x66ffffff);
     for (var index = 0; index < 20; index++) {
@@ -2470,7 +2547,7 @@ class _VoiceRoomBackgroundPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _VoiceRoomBackgroundPainter oldDelegate) =>
+  bool shouldRepaint(covariant _VoiceRoomParticlesPainter oldDelegate) =>
       oldDelegate.progress != progress;
 }
 
