@@ -35,6 +35,11 @@ class AppPreferences {
     this.compactMessages = false,
     this.palette = 'rose',
     this.bubbleRadius = 19,
+    this.backgroundStyle = 'aurora',
+    this.bubbleStyle = 'soft',
+    this.motionLevel = 'full',
+    this.showAvatars = true,
+    this.showMessageTime = true,
   });
 
   final bool notificationsEnabled;
@@ -47,6 +52,11 @@ class AppPreferences {
   final bool compactMessages;
   final String palette;
   final double bubbleRadius;
+  final String backgroundStyle;
+  final String bubbleStyle;
+  final String motionLevel;
+  final bool showAvatars;
+  final bool showMessageTime;
 
   AppPreferences copyWith({
     bool? notificationsEnabled,
@@ -59,6 +69,11 @@ class AppPreferences {
     bool? compactMessages,
     String? palette,
     double? bubbleRadius,
+    String? backgroundStyle,
+    String? bubbleStyle,
+    String? motionLevel,
+    bool? showAvatars,
+    bool? showMessageTime,
   }) {
     return AppPreferences(
       notificationsEnabled: notificationsEnabled ?? this.notificationsEnabled,
@@ -73,6 +88,11 @@ class AppPreferences {
       compactMessages: compactMessages ?? this.compactMessages,
       palette: palette ?? this.palette,
       bubbleRadius: bubbleRadius ?? this.bubbleRadius,
+      backgroundStyle: backgroundStyle ?? this.backgroundStyle,
+      bubbleStyle: bubbleStyle ?? this.bubbleStyle,
+      motionLevel: motionLevel ?? this.motionLevel,
+      showAvatars: showAvatars ?? this.showAvatars,
+      showMessageTime: showMessageTime ?? this.showMessageTime,
     );
   }
 }
@@ -99,6 +119,11 @@ class SessionStore {
   static const _compactMessagesKey = 'xiaoyou.compact_messages';
   static const _paletteKey = 'xiaoyou.palette';
   static const _bubbleRadiusKey = 'xiaoyou.bubble_radius';
+  static const _backgroundStyleKey = 'xiaoyou.background_style';
+  static const _bubbleStyleKey = 'xiaoyou.bubble_style';
+  static const _motionLevelKey = 'xiaoyou.motion_level';
+  static const _showAvatarsKey = 'xiaoyou.show_avatars';
+  static const _showMessageTimeKey = 'xiaoyou.show_message_time';
   static const _favoriteMessageIdsKey = 'xiaoyou.favorite_message_ids';
   static const _tokenKey = 'xiaoyou.connection_token';
 
@@ -189,6 +214,10 @@ class SessionStore {
         .clamp(10, 24)
         .toDouble();
     final palette = await _preferences.getString(_paletteKey) ?? 'rose';
+    final backgroundStyle =
+        await _preferences.getString(_backgroundStyleKey) ?? 'aurora';
+    final bubbleStyle = await _preferences.getString(_bubbleStyleKey) ?? 'soft';
+    final motionLevel = await _preferences.getString(_motionLevelKey) ?? 'full';
     return AppPreferences(
       notificationsEnabled:
           await _preferences.getBool(_notificationsKey) ?? false,
@@ -205,9 +234,22 @@ class SessionStore {
           await _preferences.getBool(_systemPushEnabledKey) ?? false,
       fontScale: fontScale,
       compactMessages: await _preferences.getBool(_compactMessagesKey) ?? false,
-      palette:
-          const {'rose', 'lilac', 'peach'}.contains(palette) ? palette : 'rose',
+      palette: const {'rose', 'lilac', 'peach', 'sage', 'sky'}.contains(palette)
+          ? palette
+          : 'rose',
       bubbleRadius: bubbleRadius,
+      backgroundStyle:
+          const {'aurora', 'paper', 'starlight'}.contains(backgroundStyle)
+              ? backgroundStyle
+              : 'aurora',
+      bubbleStyle: const {'soft', 'glass', 'flat'}.contains(bubbleStyle)
+          ? bubbleStyle
+          : 'soft',
+      motionLevel: const {'full', 'gentle', 'off'}.contains(motionLevel)
+          ? motionLevel
+          : 'full',
+      showAvatars: await _preferences.getBool(_showAvatarsKey) ?? true,
+      showMessageTime: await _preferences.getBool(_showMessageTimeKey) ?? true,
     );
   }
 
@@ -246,6 +288,17 @@ class SessionStore {
       _bubbleRadiusKey,
       preferences.bubbleRadius,
     );
+    await _preferences.setString(
+      _backgroundStyleKey,
+      preferences.backgroundStyle,
+    );
+    await _preferences.setString(_bubbleStyleKey, preferences.bubbleStyle);
+    await _preferences.setString(_motionLevelKey, preferences.motionLevel);
+    await _preferences.setBool(_showAvatarsKey, preferences.showAvatars);
+    await _preferences.setBool(
+      _showMessageTimeKey,
+      preferences.showMessageTime,
+    );
   }
 
   Future<void> clear() async {
@@ -265,5 +318,10 @@ class SessionStore {
     await _preferences.remove(_compactMessagesKey);
     await _preferences.remove(_paletteKey);
     await _preferences.remove(_bubbleRadiusKey);
+    await _preferences.remove(_backgroundStyleKey);
+    await _preferences.remove(_bubbleStyleKey);
+    await _preferences.remove(_motionLevelKey);
+    await _preferences.remove(_showAvatarsKey);
+    await _preferences.remove(_showMessageTimeKey);
   }
 }

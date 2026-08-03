@@ -44,9 +44,23 @@ def test_disabling_fast_route_preserves_legacy_semantic_classification(monkeypat
 
 
 def test_adaptive_thinking_keeps_casual_chat_fast_and_complex_turns_deep(monkeypatch):
+    monkeypatch.setenv("XIAOYOU_CHAT_ENABLE_THINKING", "true")
     monkeypatch.setenv("XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED", "true")
     module = _load_module()
 
     assert module.should_use_chat_thinking("我想你了嘛") is False
     assert module.should_use_chat_thinking("请分析一下这套记忆架构为什么会重复") is True
     assert module.should_use_chat_thinking("补充", ["第一点", "第二点", "第三点"]) is True
+
+
+def test_chat_thinking_master_switch_disables_every_turn(monkeypatch):
+    monkeypatch.setenv("XIAOYOU_CHAT_ENABLE_THINKING", "false")
+    monkeypatch.setenv("XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED", "true")
+    module = _load_module()
+
+    assert module.should_use_chat_thinking("我想你了嘛") is False
+    assert module.should_use_chat_thinking("请分析一下这套记忆架构为什么会重复") is False
+    assert module.should_use_chat_thinking(
+        "补充",
+        ["第一点", "第二点", "第三点"],
+    ) is False

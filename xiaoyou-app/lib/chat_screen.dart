@@ -2225,26 +2225,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         child: Stack(
           children: [
             Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: palette.background,
-                    stops: const [0, 0.58, 1],
-                  ),
-                ),
+              child: _ConversationBackdrop(
+                palette: palette,
+                style: _preferences.backgroundStyle,
               ),
-            ),
-            const Positioned(
-              top: 88,
-              right: -96,
-              child: _SoftOrb(size: 250, color: Color(0x28e4a7c5)),
-            ),
-            const Positioned(
-              bottom: 80,
-              left: -110,
-              child: _SoftOrb(size: 280, color: Color(0x24c7b9eb)),
             ),
             Positioned.fill(
               child: SafeArea(
@@ -2319,6 +2303,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                           userBubbleColor: palette.userBubble,
                                           bubbleRadius:
                                               _preferences.bubbleRadius,
+                                          bubbleStyle: _preferences.bubbleStyle,
                                           compact: _preferences.compactMessages,
                                           favorite: _favoriteMessageIds
                                               .contains(message.id),
@@ -2335,14 +2320,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                               message.createdAt -
                                                       previous.createdAt >
                                                   180,
-                                          showAvatar: message.fromXiaoyou &&
+                                          avatarsEnabled:
+                                              _preferences.showAvatars,
+                                          showAvatar: _preferences
+                                                  .showAvatars &&
+                                              message.fromXiaoyou &&
                                               (next == null ||
                                                   !next.fromXiaoyou ||
                                                   next.createdAt -
                                                           message.createdAt >
                                                       180),
-                                          animate: index >=
-                                              max(0, _messages.length - 12),
+                                          showMessageTime:
+                                              _preferences.showMessageTime,
+                                          animate: _preferences.motionLevel !=
+                                                  'off' &&
+                                              index >=
+                                                  max(
+                                                    0,
+                                                    _messages.length -
+                                                        (_preferences
+                                                                    .motionLevel ==
+                                                                'gentle'
+                                                            ? 4
+                                                            : 12),
+                                                  ),
                                           onRendered: _markEventRendered,
                                           onFailedTap: _retryFailedMessage,
                                           onReply: _replyToMessage,
@@ -3009,6 +3010,8 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
+                        _AppearancePreview(preferences: _preferences),
+                        const SizedBox(height: 18),
                         const Text(
                           '聊天配色',
                           style: TextStyle(
@@ -3025,6 +3028,8 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                               ('rose', '樱粉', Color(0xffa85e85)),
                               ('lilac', '雾紫', Color(0xff826aa8)),
                               ('peach', '奶杏', Color(0xffb77661)),
+                              ('sage', '青黛', Color(0xff648b7c)),
+                              ('sky', '晴蓝', Color(0xff6684b7)),
                             ])
                               ChoiceChip(
                                 avatar: CircleAvatar(
@@ -3035,6 +3040,100 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                                 selected: _preferences.palette == item.$1,
                                 onSelected: (_) => _updatePreferences(
                                   _preferences.copyWith(palette: item.$1),
+                                ),
+                                showCheckmark: false,
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 15),
+                        const Text(
+                          '背景氛围',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final item in const [
+                              ('aurora', '柔光'),
+                              ('paper', '素笺'),
+                              ('starlight', '星雾'),
+                            ])
+                              ChoiceChip(
+                                label: Text(item.$2),
+                                selected:
+                                    _preferences.backgroundStyle == item.$1,
+                                onSelected: (_) => _updatePreferences(
+                                  _preferences.copyWith(
+                                    backgroundStyle: item.$1,
+                                  ),
+                                ),
+                                showCheckmark: false,
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 15),
+                        const Text(
+                          '气泡质感',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final item in const [
+                              ('soft', '柔和'),
+                              ('glass', '轻透'),
+                              ('flat', '简约'),
+                            ])
+                              ChoiceChip(
+                                label: Text(item.$2),
+                                selected: _preferences.bubbleStyle == item.$1,
+                                onSelected: (_) => _updatePreferences(
+                                  _preferences.copyWith(
+                                    bubbleStyle: item.$1,
+                                  ),
+                                ),
+                                showCheckmark: false,
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 15),
+                        const Text(
+                          '动效强度',
+                          style: TextStyle(
+                            color: _muted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final item in const [
+                              ('full', '灵动'),
+                              ('gentle', '轻柔'),
+                              ('off', '静止'),
+                            ])
+                              ChoiceChip(
+                                label: Text(item.$2),
+                                selected: _preferences.motionLevel == item.$1,
+                                onSelected: (_) => _updatePreferences(
+                                  _preferences.copyWith(
+                                    motionLevel: item.$1,
+                                  ),
                                 ),
                                 showCheckmark: false,
                               ),
@@ -3089,6 +3188,51 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     ),
                     onChanged: (value) => _updatePreferences(
                       _preferences.copyWith(compactMessages: value),
+                    ),
+                  ),
+                  SwitchListTile.adaptive(
+                    value: _preferences.showAvatars,
+                    title: const Text('显示小悠头像'),
+                    subtitle: const Text('在连续消息末尾显示她的头像'),
+                    secondary: const Icon(
+                      Icons.face_rounded,
+                      color: _rose,
+                    ),
+                    onChanged: (value) => _updatePreferences(
+                      _preferences.copyWith(showAvatars: value),
+                    ),
+                  ),
+                  SwitchListTile.adaptive(
+                    value: _preferences.showMessageTime,
+                    title: const Text('显示消息时间'),
+                    subtitle: const Text('关闭后仅保留日期分隔'),
+                    secondary: const Icon(
+                      Icons.schedule_rounded,
+                      color: _rose,
+                    ),
+                    onChanged: (value) => _updatePreferences(
+                      _preferences.copyWith(showMessageTime: value),
+                    ),
+                  ),
+                  ListTile(
+                    leading: const Icon(
+                      Icons.restart_alt_rounded,
+                      color: _rose,
+                    ),
+                    title: const Text('恢复默认外观'),
+                    subtitle: const Text('通知和连接设置不会改变'),
+                    onTap: () => _updatePreferences(
+                      _preferences.copyWith(
+                        fontScale: 1,
+                        compactMessages: false,
+                        palette: 'rose',
+                        bubbleRadius: 19,
+                        backgroundStyle: 'aurora',
+                        bubbleStyle: 'soft',
+                        motionLevel: 'full',
+                        showAvatars: true,
+                        showMessageTime: true,
+                      ),
                     ),
                   ),
                 ],
@@ -4277,12 +4421,15 @@ class _MessageRow extends StatefulWidget {
     required this.mediaCache,
     required this.userBubbleColor,
     required this.bubbleRadius,
+    required this.bubbleStyle,
     required this.compact,
     required this.favorite,
     required this.highlighted,
     required this.showDate,
     required this.beginsGroup,
+    required this.avatarsEnabled,
     required this.showAvatar,
+    required this.showMessageTime,
     required this.animate,
     required this.onRendered,
     required this.onFailedTap,
@@ -4295,12 +4442,15 @@ class _MessageRow extends StatefulWidget {
   final MessageMediaCache mediaCache;
   final Color userBubbleColor;
   final double bubbleRadius;
+  final String bubbleStyle;
   final bool compact;
   final bool favorite;
   final bool highlighted;
   final bool showDate;
   final bool beginsGroup;
+  final bool avatarsEnabled;
   final bool showAvatar;
+  final bool showMessageTime;
   final bool animate;
   final ValueChanged<ChatMessage> onRendered;
   final ValueChanged<ChatMessage> onFailedTap;
@@ -4582,20 +4732,33 @@ class _MessageRowState extends State<_MessageRow>
     final slideBegin = Offset(fromXiaoyou ? -0.06 : 0.06, 0.04);
     final outgoingLight =
         Color.lerp(widget.userBubbleColor, Colors.white, 0.14)!;
+    final glassBubble = widget.bubbleStyle == 'glass';
+    final flatBubble = widget.bubbleStyle == 'flat';
     final bubbleGradient = widget.highlighted
         ? const LinearGradient(
             colors: [Color(0xffffedf6), Color(0xffffdfef)],
           )
         : fromXiaoyou
-            ? const LinearGradient(
+            ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Color(0xfaffffff), Color(0xf6fffafd)],
+                colors: glassBubble
+                    ? const [Color(0xd9ffffff), Color(0xbffffafd)]
+                    : flatBubble
+                        ? const [Color(0xffffffff), Color(0xffffffff)]
+                        : const [Color(0xfaffffff), Color(0xf6fffafd)],
               )
             : LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [outgoingLight, widget.userBubbleColor],
+                colors: glassBubble
+                    ? [
+                        widget.userBubbleColor.withValues(alpha: 0.82),
+                        widget.userBubbleColor.withValues(alpha: 0.68),
+                      ]
+                    : flatBubble
+                        ? [widget.userBubbleColor, widget.userBubbleColor]
+                        : [outgoingLight, widget.userBubbleColor],
               );
     return FadeTransition(
       opacity: CurvedAnimation(
@@ -4622,7 +4785,7 @@ class _MessageRowState extends State<_MessageRow>
                   fromXiaoyou ? MainAxisAlignment.start : MainAxisAlignment.end,
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                if (fromXiaoyou) ...[
+                if (fromXiaoyou && widget.avatarsEnabled) ...[
                   SizedBox(
                     width: 36,
                     child: widget.showAvatar
@@ -4651,10 +4814,14 @@ class _MessageRowState extends State<_MessageRow>
                         border: Border.all(
                           color: widget.highlighted
                               ? _rose
-                              : fromXiaoyou
-                                  ? const Color(0xe8ffffff)
-                                  : Colors.white.withValues(alpha: 0.2),
-                          width: widget.highlighted ? 1.4 : 0.8,
+                              : glassBubble
+                                  ? Colors.white.withValues(alpha: 0.78)
+                                  : fromXiaoyou
+                                      ? const Color(0xe8ffffff)
+                                      : Colors.white.withValues(alpha: 0.2),
+                          width: widget.highlighted
+                              ? 1.4
+                              : (glassBubble ? 1.1 : 0.8),
                         ),
                         borderRadius: BorderRadius.only(
                           topLeft: Radius.circular(widget.bubbleRadius),
@@ -4668,18 +4835,33 @@ class _MessageRowState extends State<_MessageRow>
                             !fromXiaoyou ? 7 : widget.bubbleRadius,
                           ),
                         ),
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Color(0x14572a40),
-                            blurRadius: 18,
-                            offset: Offset(0, 6),
-                          ),
-                          BoxShadow(
-                            color: Color(0x0cffffff),
-                            blurRadius: 2,
-                            offset: Offset(0, -1),
-                          ),
-                        ],
+                        boxShadow: flatBubble
+                            ? const []
+                            : glassBubble
+                                ? const [
+                                    BoxShadow(
+                                      color: Color(0x10572a40),
+                                      blurRadius: 14,
+                                      offset: Offset(0, 5),
+                                    ),
+                                    BoxShadow(
+                                      color: Color(0x5cffffff),
+                                      blurRadius: 2,
+                                      offset: Offset(0, -1),
+                                    ),
+                                  ]
+                                : const [
+                                    BoxShadow(
+                                      color: Color(0x14572a40),
+                                      blurRadius: 18,
+                                      offset: Offset(0, 6),
+                                    ),
+                                    BoxShadow(
+                                      color: Color(0x0cffffff),
+                                      blurRadius: 2,
+                                      offset: Offset(0, -1),
+                                    ),
+                                  ],
                       ),
                       child: message.kind == 'image' ||
                               message.kind == 'sticker'
@@ -4706,37 +4888,40 @@ class _MessageRowState extends State<_MessageRow>
                 ],
               ],
             ),
-            Padding(
-              padding: EdgeInsets.only(
-                top: 4,
-                left: fromXiaoyou ? 40 : 0,
-                right: fromXiaoyou ? 0 : 28,
-              ),
-              child: Align(
-                alignment:
-                    fromXiaoyou ? Alignment.centerLeft : Alignment.centerRight,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      _formatTime(message.timestamp),
-                      style: const TextStyle(
-                        color: Color(0xffaaa0a5),
-                        fontSize: 10,
-                      ),
-                    ),
-                    if (widget.favorite) ...[
-                      const SizedBox(width: 4),
-                      const Icon(
-                        Icons.bookmark_rounded,
-                        color: _rose,
-                        size: 12,
-                      ),
+            if (widget.showMessageTime || widget.favorite)
+              Padding(
+                padding: EdgeInsets.only(
+                  top: 4,
+                  left: fromXiaoyou && widget.avatarsEnabled ? 40 : 0,
+                  right: fromXiaoyou ? 0 : 28,
+                ),
+                child: Align(
+                  alignment: fromXiaoyou
+                      ? Alignment.centerLeft
+                      : Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (widget.showMessageTime)
+                        Text(
+                          _formatTime(message.timestamp),
+                          style: const TextStyle(
+                            color: Color(0xffaaa0a5),
+                            fontSize: 10,
+                          ),
+                        ),
+                      if (widget.favorite) ...[
+                        if (widget.showMessageTime) const SizedBox(width: 4),
+                        const Icon(
+                          Icons.bookmark_rounded,
+                          color: _rose,
+                          size: 12,
+                        ),
+                      ],
                     ],
-                  ],
+                  ),
                 ),
               ),
-            ),
           ],
         ),
       ),
@@ -8664,6 +8849,193 @@ class _RomanticBackground extends StatelessWidget {
   }
 }
 
+class _ConversationBackdrop extends StatelessWidget {
+  const _ConversationBackdrop({
+    required this.palette,
+    required this.style,
+  });
+
+  final _AppearancePalette palette;
+  final String style;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = switch (style) {
+      'paper' => [
+          Color.lerp(palette.background.first, Colors.white, 0.7)!,
+          Color.lerp(palette.background[1], Colors.white, 0.6)!,
+          Color.lerp(palette.background.last, Colors.white, 0.52)!,
+        ],
+      'starlight' => [
+          Color.lerp(palette.background.first, Colors.white, 0.3)!,
+          palette.background[1],
+          Color.lerp(palette.background.last, const Color(0xffeeeaff), 0.24)!,
+        ],
+      _ => palette.background,
+    };
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: colors,
+              stops: const [0, 0.58, 1],
+            ),
+          ),
+        ),
+        if (style == 'aurora') ...[
+          const Positioned(
+            top: 88,
+            right: -96,
+            child: _SoftOrb(size: 250, color: Color(0x28e4a7c5)),
+          ),
+          const Positioned(
+            bottom: 80,
+            left: -110,
+            child: _SoftOrb(size: 280, color: Color(0x24c7b9eb)),
+          ),
+        ],
+        if (style == 'starlight')
+          const Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(painter: _StarlightPainter()),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _StarlightPainter extends CustomPainter {
+  const _StarlightPainter();
+
+  static const _stars = <(double, double, double)>[
+    (0.08, 0.14, 1.3),
+    (0.22, 0.28, 0.8),
+    (0.76, 0.11, 1.1),
+    (0.91, 0.34, 1.6),
+    (0.62, 0.44, 0.8),
+    (0.14, 0.58, 1.1),
+    (0.42, 0.71, 1.4),
+    (0.82, 0.78, 0.9),
+    (0.28, 0.9, 0.8),
+    (0.94, 0.94, 1.2),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final glow = Paint()
+      ..color = const Color(0x55ffffff)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.6);
+    final core = Paint()..color = const Color(0xb8ffffff);
+    for (final star in _stars) {
+      final center = Offset(size.width * star.$1, size.height * star.$2);
+      canvas.drawCircle(center, star.$3 * 2.2, glow);
+      canvas.drawCircle(center, star.$3, core);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _StarlightPainter oldDelegate) => false;
+}
+
+class _AppearancePreview extends StatelessWidget {
+  const _AppearancePreview({required this.preferences});
+
+  final AppPreferences preferences;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = _appearancePalette(preferences.palette);
+    final glass = preferences.bubbleStyle == 'glass';
+    final flat = preferences.bubbleStyle == 'flat';
+
+    BoxDecoration bubbleDecoration(bool outgoing) {
+      final color = outgoing ? palette.userBubble : Colors.white;
+      return BoxDecoration(
+        color: color.withValues(alpha: glass ? 0.72 : 1),
+        borderRadius: BorderRadius.circular(preferences.bubbleRadius),
+        border: Border.all(
+          color: glass
+              ? Colors.white.withValues(alpha: 0.82)
+              : Colors.white.withValues(alpha: outgoing ? 0.24 : 0.9),
+          width: glass ? 1.1 : 0.8,
+        ),
+        boxShadow: flat
+            ? const []
+            : const [
+                BoxShadow(
+                  color: Color(0x14572a40),
+                  blurRadius: 12,
+                  offset: Offset(0, 4),
+                ),
+              ],
+      );
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(22),
+      child: SizedBox(
+        height: 118,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            _ConversationBackdrop(
+              palette: palette,
+              style: preferences.backgroundStyle,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      if (preferences.showAvatars) ...[
+                        const _Avatar(size: 25),
+                        const SizedBox(width: 7),
+                      ],
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 7,
+                        ),
+                        decoration: bubbleDecoration(false),
+                        child: const Text(
+                          '今天也在这里陪你',
+                          style: TextStyle(color: _ink, fontSize: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Spacer(),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 7,
+                      ),
+                      decoration: bubbleDecoration(true),
+                      child: const Text(
+                        '好呀',
+                        style: TextStyle(color: Colors.white, fontSize: 12),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _SoftOrb extends StatelessWidget {
   const _SoftOrb({required this.size, required this.color});
 
@@ -8738,6 +9110,22 @@ _AppearancePalette _appearancePalette(String key) {
           Color(0xfff8eee6),
         ],
         userBubble: Color(0xffb77661),
+      ),
+    'sage' => const _AppearancePalette(
+        background: [
+          Color(0xfffbfffd),
+          Color(0xfff1f8f4),
+          Color(0xffe9f1ed),
+        ],
+        userBubble: Color(0xff648b7c),
+      ),
+    'sky' => const _AppearancePalette(
+        background: [
+          Color(0xfffcfdff),
+          Color(0xfff1f5fb),
+          Color(0xffe9eef8),
+        ],
+        userBubble: Color(0xff6684b7),
       ),
     _ => const _AppearancePalette(
         background: [

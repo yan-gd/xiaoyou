@@ -103,8 +103,8 @@ services: # Docker Compose 服务集合。
       XIAOYOU_ENABLE_THINKING: 'true' # 小悠统一模型网关的默认思考开关。
       XIAOYOU_THINKING_BUDGET: '4096' # 支持该参数的模型最多使用4096个思考Token；越大越慢且更耗额度。
       XIAOYOU_CHAT_MODEL: 'qwen3.7-max' # 小悠普通文字聊天使用的模型。
-      XIAOYOU_CHAT_ENABLE_THINKING: 'true' # 普通聊天启用思考，提高理解力但会增加延迟。
-      XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED: 'true' # 简短日常聊天关闭慢思考；分析、技术和多段复杂输入仍保留思考。
+      XIAOYOU_CHAT_ENABLE_THINKING: 'false' # 普通主聊天关闭慢思考，所有聊天轮次优先响应速度。
+      XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED: 'false' # 主开关关闭后不再做复杂轮次思考判断，也不额外预留思考Token。
       XIAOYOU_CHAT_THINKING_MIN_CHARS: '90' # 本轮可见输入达到90字符时自动保留深度思考。
       XIAOYOU_CHAT_MAX_TOKENS: '700' # 日常回复通常很短，但复杂分析可以自然展开到预留的完整输出预算。
       XIAOYOU_CONTEXT_MAX_CHARS: '7000' # 普通聊天动态 ContextPack 总预算；不含系统人格提示。

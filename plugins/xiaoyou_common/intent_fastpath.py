@@ -74,6 +74,16 @@ def is_obvious_casual_chat(normalized):
 
 def should_use_chat_thinking(text, input_messages=None):
     """Reserve slow reasoning for genuinely complex turns, not casual chat."""
+    chat_enabled = os.getenv(
+        "XIAOYOU_CHAT_ENABLE_THINKING",
+        os.getenv(
+            "XIAOYOU_ENABLE_THINKING",
+            os.getenv("ENABLE_THINKING", "true"),
+        ),
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if not chat_enabled:
+        return False
+
     enabled = os.getenv(
         "XIAOYOU_CHAT_ADAPTIVE_THINKING_ENABLED", "true"
     ).strip().lower() in ("1", "true", "yes", "on")
