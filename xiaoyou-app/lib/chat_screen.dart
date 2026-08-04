@@ -519,7 +519,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await _flushAcknowledgements();
       _startPolling();
       await _poll();
-      if (_preferences.notificationsEnabled && !testMode) {
+      if (_preferences.notificationsEnabled) {
         await _configureBackgroundNotifications(
           appInForeground: _appInForeground,
         );
@@ -1525,7 +1525,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     final api = _api;
     if (api == null ||
-        api.testMode ||
         !_preferences.notificationsEnabled ||
         !_systemNotificationsAllowed) {
       return api == null;
