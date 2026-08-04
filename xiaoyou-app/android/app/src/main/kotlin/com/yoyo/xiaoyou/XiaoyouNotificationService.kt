@@ -12,6 +12,7 @@ import android.media.AudioAttributes
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -64,6 +65,10 @@ class XiaoyouNotificationService : Service() {
         private const val POLL_DELAY_MS = 350L
         private const val ERROR_DELAY_MS = 3_000L
         private val registrationExecutor = Executors.newSingleThreadExecutor()
+        private fun cursorKey(id: String) = "cursor_$id"
+
+        @Volatile
+        private var activeService: XiaoyouNotificationService? = null
 
         fun configure(
             context: Context,
@@ -127,6 +132,39 @@ class XiaoyouNotificationService : Service() {
                 .apply()
             XiaoyouSystemPush.disable(context) {}
             context.stopService(Intent(context, XiaoyouNotificationService::class.java))
+        }
+
+        fun updateAppForeground(context: Context, foreground: Boolean) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            if (!preferences.getBoolean(KEY_ENABLED, false)) {
+                return
+            }
+            preferences.edit().putBoolean(KEY_FOREGROUND, foreground).apply()
+            val service = activeService
+            if (service != null) {
+                service.applyAppForeground(foreground)
+            } else if (!foreground) {
+                startFallbackService(context, forceBackground = true)
+            }
+        }
+
+        fun updateCursor(context: Context, deviceId: String, sequence: Long) {
+            val normalizedDeviceId = deviceId.trim()
+            if (normalizedDeviceId.isEmpty() || sequence <= 0L) {
+                return
+            }
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            val key = cursorKey(normalizedDeviceId)
+            if (sequence > preferences.getLong(key, 0L)) {
+                preferences.edit().putLong(key, sequence).apply()
+            }
+            activeService?.advanceCursor(normalizedDeviceId, sequence)
         }
 
         fun systemPushStatus(context: Context): Map<String, Any> =
@@ -348,8 +386,12 @@ class XiaoyouNotificationService : Service() {
     @Volatile
     private var vibrate = true
 
+    @Volatile
+    private var activeConnection: HttpURLConnection? = null
+
     override fun onCreate() {
         super.onCreate()
+        activeService = this
         createServiceChannel()
         startForeground(SERVICE_NOTIFICATION_ID, buildServiceNotification())
     }
@@ -371,7 +413,18 @@ class XiaoyouNotificationService : Service() {
 
     override fun onDestroy() {
         running = false
+        activeConnection?.disconnect()
+        activeConnection = null
         executor.shutdownNow()
+        if (activeService === this) {
+            activeService = null
+        }
+        if (
+            cursorPreferences.getBoolean(KEY_ENABLED, false) &&
+            !cursorPreferences.getBoolean(KEY_FOREGROUND, true)
+        ) {
+            scheduleRestart()
+        }
         super.onDestroy()
     }
 
@@ -422,6 +475,33 @@ class XiaoyouNotificationService : Service() {
         persistCursor()
     }
 
+    private fun applyAppForeground(foreground: Boolean) {
+        if (baseUrl.isEmpty() || token.isEmpty() || deviceId.isEmpty()) {
+            restoreConfiguration(forceBackground = !foreground)
+        }
+        appForeground = foreground
+        cursorPreferences.edit().putBoolean(KEY_FOREGROUND, foreground).apply()
+        if (deviceId.isNotEmpty()) {
+            sequence = max(
+                sequence,
+                cursorPreferences.getLong(cursorKey(deviceId), 0L),
+            )
+        }
+        if (foreground) {
+            activeConnection?.disconnect()
+        }
+        Log.i(
+            TAG,
+            "Background delivery handoff foreground=$foreground sequence=$sequence",
+        )
+    }
+
+    private fun advanceCursor(nextDeviceId: String, nextSequence: Long) {
+        if (deviceId == nextDeviceId && nextSequence > sequence) {
+            sequence = nextSequence
+        }
+    }
+
     private fun restoreConfiguration(forceBackground: Boolean) {
         val preferences = cursorPreferences
         if (!preferences.getBoolean(KEY_ENABLED, false)) {
@@ -470,6 +550,15 @@ class XiaoyouNotificationService : Service() {
     }
 
     private fun pollOnce() {
+        val wakeLock = getSystemService(PowerManager::class.java)
+            ?.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "$packageName:XiaoyouBackgroundPoll",
+            )
+            ?.apply {
+                setReferenceCounted(false)
+                acquire(45_000L)
+            }
         val encodedDevice = URLEncoder.encode(deviceId, Charsets.UTF_8.name())
         val url = URL(
             "$baseUrl/v1/events?device_id=$encodedDevice&after=$sequence&limit=100&wait=25",
@@ -482,6 +571,7 @@ class XiaoyouNotificationService : Service() {
             setRequestProperty("Accept", "application/json")
             setRequestProperty("Authorization", "Bearer $token")
         }
+        activeConnection = connection
         try {
             val status = connection.responseCode
             if (status !in 200..299) {
@@ -491,6 +581,9 @@ class XiaoyouNotificationService : Service() {
             val payload = connection.inputStream.bufferedReader(Charsets.UTF_8).use {
                 it.readText()
             }
+            if (appForeground) {
+                return
+            }
             val events = JSONObject(payload).optJSONArray("events") ?: return
             val pushDelivery = JSONObject(payload).optJSONObject("push_delivery")
                 ?: JSONObject()
@@ -499,6 +592,9 @@ class XiaoyouNotificationService : Service() {
                     XiaoyouSystemPush.isActive(this)
             var newestSequence = sequence
             for (index in 0 until events.length()) {
+                if (appForeground) {
+                    return
+                }
                 val event = events.optJSONObject(index) ?: continue
                 val eventSequence = event.optLong("sequence", 0L)
                 if (eventSequence <= sequence) {
@@ -531,6 +627,12 @@ class XiaoyouNotificationService : Service() {
             }
         } finally {
             connection.disconnect()
+            if (activeConnection === connection) {
+                activeConnection = null
+            }
+            if (wakeLock?.isHeld == true) {
+                wakeLock.release()
+            }
         }
     }
 
@@ -746,8 +848,6 @@ class XiaoyouNotificationService : Service() {
             (if (sound) "sound" else "silent") + "_" +
             (if (vibration) "vibrate" else "still")
     }
-
-    private fun cursorKey(id: String) = "cursor_$id"
 
     private fun persistCursor() {
         val id = deviceId

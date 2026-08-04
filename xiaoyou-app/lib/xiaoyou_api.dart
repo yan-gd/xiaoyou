@@ -26,6 +26,14 @@ class XiaoyouApi {
   final String deviceId;
   final HttpClient _client = HttpClient();
   final HttpClient _audioClient = HttpClient();
+  HttpClient _eventClient = _newEventClient();
+
+  static HttpClient _newEventClient() {
+    return HttpClient()
+      ..connectionTimeout = const Duration(seconds: 12)
+      ..idleTimeout = const Duration(seconds: 30)
+      ..maxConnectionsPerHost = 1;
+  }
 
   Future<void> health() async {
     await _request('GET', '/v1/health', authenticated: false);
@@ -44,7 +52,9 @@ class XiaoyouApi {
     );
   }
 
-  Future<ChatHistory> history() async {
+  Future<ChatHistory> history({
+    Set<String> stopAfterMessageIds = const {},
+  }) async {
     final messagesById = <String, ChatMessage>{};
     final seenCursors = <String>{};
     var cursor = '';
@@ -64,6 +74,7 @@ class XiaoyouApi {
         asInt(payload['last_event_sequence']),
       );
       final values = payload['messages'];
+      var pageOverlapsLocalArchive = false;
       if (values is List) {
         for (final value in values.whereType<Map>()) {
           final message = ChatMessage.fromJson(
@@ -71,11 +82,14 @@ class XiaoyouApi {
           );
           if (message.id.isNotEmpty) {
             messagesById[message.id] = message;
+            pageOverlapsLocalArchive = pageOverlapsLocalArchive ||
+                stopAfterMessageIds.contains(message.id);
           }
         }
       }
       cursor = '${payload['next_cursor'] ?? ''}'.trim();
-      if (payload['has_more'] != true ||
+      if (pageOverlapsLocalArchive ||
+          payload['has_more'] != true ||
           cursor.isEmpty ||
           !seenCursors.add(cursor)) {
         break;
@@ -494,6 +508,7 @@ class XiaoyouApi {
     int waitSeconds = 0,
   }) async {
     final boundedWait = waitSeconds.clamp(0, 25);
+    final client = _eventClient;
     final payload = await _request(
       'GET',
       '/v1/events',
@@ -506,6 +521,7 @@ class XiaoyouApi {
       responseTimeout: Duration(
         seconds: boundedWait > 0 ? boundedWait + 10 : 35,
       ),
+      client: client,
     );
     final events = payload['events'];
     if (events is! List) {
@@ -590,6 +606,13 @@ class XiaoyouApi {
   void close() {
     _client.close(force: true);
     _audioClient.close(force: true);
+    _eventClient.close(force: true);
+  }
+
+  void cancelEventWait() {
+    final previous = _eventClient;
+    _eventClient = _newEventClient();
+    previous.close(force: true);
   }
 
   static String _dateKey(DateTime value) =>
@@ -604,8 +627,12 @@ class XiaoyouApi {
     Map<String, dynamic>? body,
     bool authenticated = true,
     Duration responseTimeout = const Duration(seconds: 35),
+    HttpClient? client,
   }) async {
-    final request = await _client.openUrl(method, _uri(path, query));
+    final request = await (client ?? _client).openUrl(
+      method,
+      _uri(path, query),
+    );
     request.persistentConnection = true;
     request.headers.set(HttpHeaders.acceptHeader, 'application/json');
     if (authenticated) {

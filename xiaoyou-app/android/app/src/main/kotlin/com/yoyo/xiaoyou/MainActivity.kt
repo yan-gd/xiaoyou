@@ -97,8 +97,45 @@ class MainActivity : FlutterFragmentActivity() {
                     startActivity(intent)
                     result.success(null)
                 }
+                "openExternalUrl" -> {
+                    val rawUrl = call.argument<String>("url").orEmpty().trim()
+                    val uri = runCatching { Uri.parse(rawUrl) }.getOrNull()
+                    if (
+                        uri == null ||
+                        uri.host.isNullOrBlank() ||
+                        (uri.scheme != "https" && uri.scheme != "http")
+                    ) {
+                        result.error(
+                            "invalid_external_url",
+                            "Only absolute HTTP(S) URLs are allowed.",
+                            null,
+                        )
+                    } else {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, uri))
+                            result.success(null)
+                        } catch (error: Throwable) {
+                            result.error(
+                                "external_url_unavailable",
+                                error.message,
+                                null,
+                            )
+                        }
+                    }
+                }
                 "configureBackgroundNotifications" ->
                     configureBackgroundNotifications(call, result)
+                "updateBackgroundCursor" -> {
+                    val deviceId = call.argument<String>("deviceId").orEmpty()
+                    val sequence =
+                        call.argument<Number>("lastEventSequence")?.toLong() ?: 0L
+                    XiaoyouNotificationService.updateCursor(
+                        this,
+                        deviceId,
+                        sequence,
+                    )
+                    result.success(true)
+                }
                 "systemPushStatus" ->
                     result.success(
                         XiaoyouNotificationService.systemPushStatus(this),
@@ -289,6 +326,16 @@ class MainActivity : FlutterFragmentActivity() {
         } finally {
             track.release()
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        XiaoyouNotificationService.updateAppForeground(this, true)
+    }
+
+    override fun onStop() {
+        XiaoyouNotificationService.updateAppForeground(this, false)
+        super.onStop()
     }
 
     override fun onDestroy() {

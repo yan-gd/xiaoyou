@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import QRCode from 'qrcode'
+import LegalPage, { ComplianceLinks, legalDocumentFromPath } from './LegalPage'
 import {
   ArrowClockwise,
   ArrowRight,
@@ -626,7 +627,11 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (auth: AuthState) => 
         {!guardianOpen && error && <div className="form-error" role="alert">{error}</div>}
         <p className="security-note"><ShieldIcon /> 管理员认证经加密通道传递；访客只有公开只读权限</p>
       </section>
-      <footer className="login-footer"><span>07 · 07</span><i />命运不是枷锁，而是无论相隔多远，仍能看见彼此的那条线。</footer>
+      <footer className="login-footer">
+        <span>07 · 07</span><i />
+        <span className="login-footer-copy">命运不是枷锁，而是无论相隔多远，仍能看见彼此的那条线。</span>
+        <ComplianceLinks compact />
+      </footer>
     </main>
   )
 }
@@ -1309,7 +1314,10 @@ function Dashboard({ auth, onLogout }: { auth: AuthState; onLogout: () => void }
         </aside>
       </div>
 
-      <footer className="astral-footer"><div><Sparkle size={15} weight="fill" /><span>THE DISTANT OBSERVER</span><strong>你能看见她的星象，但不会触及她的命仪。</strong></div><p>xiaoyou.yoyoyan.cn <i /> FATEBOUND RESONANCE · 07/07</p></footer>
+      <footer className="astral-footer">
+        <div><Sparkle size={15} weight="fill" /><span>THE DISTANT OBSERVER</span><strong>你能看见她的星象，但不会触及她的命仪。</strong></div>
+        <div className="astral-compliance"><span>xiaoyou.yoyoyan.cn · FATEBOUND RESONANCE</span><ComplianceLinks compact /></div>
+      </footer>
       {isAdmin && selectedAction && <ConfirmModal action={selectedAction} busy={actionBusy} onClose={() => !actionBusy && setSelectedAction(null)} onConfirm={performAction} />}
       {isAdmin && qrOpen && <QrModal state={qr} loading={qrLoading} onClose={() => setQrOpen(false)} onRefresh={refreshQr} />}
       {isAdmin && logsOpen && <LogPanel lines={logs} loading={logsLoading} onClose={() => setLogsOpen(false)} onRefresh={refreshLogs} />}
@@ -1322,7 +1330,7 @@ function LoadingGate() {
   return <main className="loading-gate"><div className="loading-sigil"><span /><span /><i /></div><p>正在校准命轨坐标</p></main>
 }
 
-export default function App() {
+function ObservatoryApp() {
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [loading, setLoading] = useState(true)
   useEffect(() => { api.getMe().then(setAuth).catch(() => setAuth(null)).finally(() => setLoading(false)) }, [])
@@ -1335,4 +1343,10 @@ export default function App() {
   }, [auth, loading])
 
   return <div className={`app scene-${scene}`}><VideoStage scene={scene} /><div className="stellar-noise" aria-hidden="true" />{content}<MusicAtmosphere scene={scene} /></div>
+}
+
+export default function App() {
+  const legalDocument = legalDocumentFromPath(window.location.pathname)
+  if (legalDocument) return <LegalPage kind={legalDocument} />
+  return <ObservatoryApp />
 }

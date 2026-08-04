@@ -68,6 +68,46 @@ void main() {
     }
   });
 
+  test('history stops paging once the newest page overlaps local archive',
+      () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var requests = 0;
+    final subscription = server.listen((request) async {
+      requests += 1;
+      final responseBody =
+          '{"messages":[{"id":"new","role":"assistant","kind":"text",'
+          '"text":"new message","created_at":20},'
+          '{"id":"known","role":"user","kind":"text",'
+          '"text":"known message","created_at":10}],'
+          '"last_event_sequence":12,"has_more":true,'
+          '"next_cursor":"must-not-be-requested"}';
+      final encoded = utf8.encode(responseBody);
+      request.response
+        ..headers.contentType = ContentType.json
+        ..contentLength = encoded.length
+        ..add(encoded);
+      await request.response.close();
+    });
+    final api = XiaoyouApi(
+      baseUrl: 'http://${server.address.address}:${server.port}',
+      token: 'test-token-with-at-least-24-characters',
+      deviceId: 'test-device',
+    );
+
+    try {
+      final history = await api.history(
+        stopAfterMessageIds: {'known'},
+      );
+      expect(requests, 1);
+      expect(history.messages.map((message) => message.id), ['known', 'new']);
+      expect(history.lastEventSequence, 12);
+    } finally {
+      api.close();
+      await subscription.cancel();
+      await server.close(force: true);
+    }
+  });
+
   test('API reuses its HTTP connection across requests', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final remotePorts = <int>{};

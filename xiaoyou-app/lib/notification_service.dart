@@ -171,6 +171,22 @@ class AppNotificationService {
     ).timeout(const Duration(seconds: 8));
   }
 
+  Future<void> updateBackgroundCursor({
+    required String deviceId,
+    required int lastEventSequence,
+  }) async {
+    if (!Platform.isAndroid || deviceId.trim().isEmpty) {
+      return;
+    }
+    await _systemChannel.invokeMethod<bool>(
+      'updateBackgroundCursor',
+      {
+        'deviceId': deviceId,
+        'lastEventSequence': lastEventSequence,
+      },
+    ).timeout(const Duration(seconds: 3));
+  }
+
   Future<SystemPushStatus> systemPushStatus() async {
     if (!Platform.isAndroid) {
       return const SystemPushStatus();

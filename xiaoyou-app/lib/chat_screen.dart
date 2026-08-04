@@ -14,6 +14,7 @@ import 'chat_models.dart';
 import 'media_cache_service.dart';
 import 'media_save_service.dart';
 import 'notification_service.dart';
+import 'legal.dart';
 import 'relationship_universe_screen.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
@@ -153,6 +154,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _appInForeground = false;
       if (Platform.isAndroid) {
         _pollTimer?.cancel();
+        _api?.cancelEventWait();
         if (_preferences.notificationsEnabled) {
           unawaited(_configureBackgroundNotifications(appInForeground: false));
         }
@@ -459,7 +461,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await _restoreLocalArchive(baseUrl);
       await api.health();
       await api.registerDevice();
-      final history = await api.history();
+      final history = await api.history(
+        stopAfterMessageIds: _messages
+            .where((message) => message.id.isNotEmpty)
+            .map((message) => message.id)
+            .toSet(),
+      );
       if (!mounted) {
         api.close();
         return;
@@ -492,6 +499,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _scheduleArchiveSave(immediate: true);
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
+      unawaited(_syncBackgroundCursor());
       unawaited(_primeMediaCache(history.messages, api));
       await WidgetsBinding.instance.endOfFrame;
       await _flushAcknowledgements();
@@ -564,6 +572,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return;
       }
       if (events.isNotEmpty) {
+        final previousSequence = _lastEventSequence;
         final known = _messages.map((message) => message.id).toSet();
         final additions = <ChatMessage>[];
         final actions = <String>{};
@@ -582,6 +591,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (message.actionId.isNotEmpty) {
             actions.add(message.actionId);
           }
+        }
+        if (_lastEventSequence > previousSequence) {
+          unawaited(_syncBackgroundCursor());
         }
         if (additions.isNotEmpty) {
           final shouldFollow = !_showJumpToBottom;
@@ -1474,6 +1486,22 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<void> _syncBackgroundCursor() async {
+    final api = _api;
+    if (!Platform.isAndroid || api == null) {
+      return;
+    }
+    try {
+      await _notificationService.updateBackgroundCursor(
+        deviceId: api.deviceId,
+        lastEventSequence: _lastEventSequence,
+      );
+    } catch (_) {
+      // Lifecycle handoff also carries the cursor. This lightweight sync
+      // prevents duplicate notifications after long foreground sessions.
     }
   }
 
@@ -2872,6 +2900,84 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 children: [
                   ListTile(
                     leading: const _SettingsIcon(
+                      icon: Icons.privacy_tip_outlined,
+                    ),
+                    title: const Text('隐私政策'),
+                    subtitle: const Text('了解信息收集、使用、存储与第三方服务'),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 19),
+                    onTap: () async {
+                      try {
+                        await openLegalUrl(xiaoyouPrivacyPolicyUrl);
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('暂时无法打开隐私政策，请检查网络后重试'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  const Divider(height: 1, indent: 72),
+                  ListTile(
+                    leading: const _SettingsIcon(
+                      icon: Icons.description_outlined,
+                    ),
+                    title: const Text('用户协议'),
+                    subtitle: const Text('查看服务规则与 AI 内容使用说明'),
+                    trailing: const Icon(Icons.open_in_new_rounded, size: 19),
+                    onTap: () async {
+                      try {
+                        await openLegalUrl(xiaoyouUserAgreementUrl);
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('暂时无法打开用户协议，请检查网络后重试'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                  const Divider(height: 1, indent: 72),
+                  ListTile(
+                    leading: const _SettingsIcon(
+                      icon: Icons.verified_user_outlined,
+                    ),
+                    title: const Text('备案与运营信息'),
+                    subtitle: const Text(
+                      '运营者：鄢国栋\n'
+                      'App：$xiaoyouAppFilingNumber\n'
+                      '网站：$xiaoyouWebsiteFilingNumber',
+                    ),
+                    isThreeLine: true,
+                    trailing: const Icon(
+                      Icons.open_in_new_rounded,
+                      size: 19,
+                    ),
+                    onTap: () async {
+                      try {
+                        await openLegalUrl(xiaoyouIcpQueryUrl);
+                      } catch (_) {
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('暂时无法打开备案查询，请检查网络后重试'),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              _SettingsCard(
+                children: [
+                  ListTile(
+                    leading: const _SettingsIcon(
                       icon: Icons.notifications_active_outlined,
                     ),
                     title: const Text('后台消息提醒'),
@@ -3300,7 +3406,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               ),
               const SizedBox(height: 18),
               const Text(
-                '小悠 App · 私人单联系人会话',
+                '小悠 App · $xiaoyouAppFilingNumber',
                 style: TextStyle(color: Color(0xffaa9da4), fontSize: 12),
               ),
             ],
