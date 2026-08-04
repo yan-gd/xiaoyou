@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 
 @dataclass(slots=True)
@@ -32,13 +33,27 @@ class Database:
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            connection.close()
+            raise
         return connection
 
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Run one transaction and always release its SQLite descriptors."""
+        connection = self._connect()
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS admins (
@@ -209,7 +224,7 @@ class Database:
 
         inserted_count = 0
         inserted_total = 0
-        with self._connect() as db:
+        with self._connection() as db:
             # A snapshot can contain hundreds of already-seen log events. Keep
             # all dedupe inserts and the cumulative-counter update in one
             # connection and one transaction rather than reopening SQLite for
@@ -236,7 +251,7 @@ class Database:
         return inserted_count
 
     def total_token_usage(self) -> int:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute(
                 "SELECT value FROM persistent_counters WHERE name = 'total_tokens'"
             ).fetchone()
@@ -258,7 +273,7 @@ class Database:
                 time.localtime(observed_at)[:3] + (0, 0, 0, 0, 0, -1)
             )
         )
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute(
                 "SELECT COALESCE(SUM(total_tokens), 0) AS total FROM token_usage_events WHERE observed_at >= ?",
                 (start,),
@@ -283,7 +298,7 @@ class Database:
         safe_host_memory = max(0.0, float(host_memory_percent or 0.0))
         safe_container_cpu = max(0.0, float(container_cpu_percent or 0.0))
         safe_container_memory = max(0.0, float(container_memory_percent or 0.0))
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute(
                 """INSERT INTO metric_snapshots(
                     observed_at, cpu_percent, memory_percent,
@@ -320,7 +335,7 @@ class Database:
     def metric_history(self, hours: int = 24) -> list[dict]:
         safe_hours = max(1, min(int(hours), 168))
         since = int(time.time()) - safe_hours * 3600
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(
                 """SELECT observed_at, host_cpu_percent, host_memory_percent,
                           container_cpu_percent, container_memory_percent,
@@ -335,7 +350,7 @@ class Database:
     def prune_metric_history(self, retention_hours: int = 168) -> int:
         safe_hours = max(24, min(int(retention_hours), 2160))
         cutoff = int(time.time()) - safe_hours * 3600
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 "DELETE FROM metric_snapshots WHERE observed_at < ?",
                 (cutoff,),
@@ -343,7 +358,7 @@ class Database:
             return max(0, int(cursor.rowcount or 0))
 
     def admin_count(self) -> int:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute("SELECT COUNT(*) AS count FROM admins").fetchone()
             return int(row["count"])
 
@@ -355,7 +370,7 @@ class Database:
         recovery_code_hashes: list[str],
     ) -> int:
         now = int(time.time())
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 "INSERT INTO admins(username, password_hash, totp_secret_encrypted, created_at) VALUES (?, ?, ?, ?)",
                 (username, password_hash, totp_secret_encrypted, now),
@@ -368,7 +383,7 @@ class Database:
             return admin_id
 
     def get_admin(self, username: str) -> AdminRecord | None:
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute(
                 "SELECT id, username, password_hash, totp_secret_encrypted FROM admins WHERE username = ?",
                 (username,),
@@ -384,7 +399,7 @@ class Database:
 
     def use_recovery_code(self, admin_id: int, code_hash: str) -> bool:
         now = int(time.time())
-        with self._connect() as db:
+        with self._connection() as db:
             cursor = db.execute(
                 "UPDATE recovery_codes SET used_at = ? WHERE admin_id = ? AND code_hash = ? AND used_at IS NULL",
                 (now, admin_id, code_hash),
@@ -401,7 +416,7 @@ class Database:
         expires_at: int,
     ) -> None:
         now = int(time.time())
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             db.execute(
                 """INSERT INTO sessions(
@@ -422,7 +437,7 @@ class Database:
 
     def get_session(self, token_hash: str) -> SessionRecord | None:
         now = int(time.time())
-        with self._connect() as db:
+        with self._connection() as db:
             row = db.execute(
                 """SELECT s.token_hash, s.admin_id, a.username, s.csrf_token, s.expires_at
                    FROM sessions s JOIN admins a ON a.id = s.admin_id
@@ -446,11 +461,11 @@ class Database:
         )
 
     def delete_session(self, token_hash: str) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
 
     def delete_admin_sessions(self, admin_id: int) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute("DELETE FROM sessions WHERE admin_id = ?", (admin_id,))
 
     def add_audit(
@@ -461,7 +476,7 @@ class Database:
         ip_address: str,
         detail: str = "",
     ) -> None:
-        with self._connect() as db:
+        with self._connection() as db:
             db.execute(
                 "INSERT INTO audit_log(admin_id, action, result, ip_address, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -476,7 +491,7 @@ class Database:
 
     def recent_audit(self, limit: int = 12) -> list[dict]:
         limit = max(1, min(int(limit), 50))
-        with self._connect() as db:
+        with self._connection() as db:
             rows = db.execute(
                 "SELECT id, action, result, created_at, ip_address FROM audit_log ORDER BY id DESC LIMIT ?",
                 (limit,),

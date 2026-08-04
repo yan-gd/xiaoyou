@@ -16,6 +16,7 @@ ExecStart=/opt/xiaoyou-observatory/.venv/bin/uvicorn backend.app.main:app --host
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
+LimitNOFILE=65536
 UMask=0077
 
 # The service needs setuid sudo for the fixed root-owned helper. The helper and
