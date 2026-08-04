@@ -130,7 +130,7 @@ function UserAgreement() {
   return <>
     <div className="legal-lead">
       <CheckCircle size={24} weight="duotone" />
-      <p>本协议是你与运营者 {operator} 关于使用“小悠”App、命轨观测台及配套服务的约定。请在使用前完整阅读。</p>
+      <p>本协议是你与本服务运营者关于使用“小悠”App、命轨观测台及配套服务的约定。请在使用前完整阅读。</p>
     </div>
 
     <PolicySection number="01" title="服务内容">
@@ -210,7 +210,7 @@ export default function LegalPage({ kind }: { kind: LegalDocumentKind }) {
     <footer className="legal-footer">
       <strong>小悠 · 命轨观测台</strong>
       <ComplianceLinks />
-      <p>运营者：{operator} · App 备案号：{appFiling}</p>
+      <p>App 备案号：{appFiling} · 联系邮箱：{privacyEmail}</p>
     </footer>
   </main>
 }

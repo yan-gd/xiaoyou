@@ -2941,36 +2941,6 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                       }
                     },
                   ),
-                  const Divider(height: 1, indent: 72),
-                  ListTile(
-                    leading: const _SettingsIcon(
-                      icon: Icons.verified_user_outlined,
-                    ),
-                    title: const Text('备案与运营信息'),
-                    subtitle: const Text(
-                      '运营者：鄢国栋\n'
-                      'App：$xiaoyouAppFilingNumber\n'
-                      '网站：$xiaoyouWebsiteFilingNumber',
-                    ),
-                    isThreeLine: true,
-                    trailing: const Icon(
-                      Icons.open_in_new_rounded,
-                      size: 19,
-                    ),
-                    onTap: () async {
-                      try {
-                        await openLegalUrl(xiaoyouIcpQueryUrl);
-                      } catch (_) {
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('暂时无法打开备案查询，请检查网络后重试'),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                  ),
                 ],
               ),
               const SizedBox(height: 14),
@@ -3405,9 +3375,31 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 ],
               ),
               const SizedBox(height: 18),
-              const Text(
-                '小悠 App · $xiaoyouAppFilingNumber',
-                style: TextStyle(color: Color(0xffaa9da4), fontSize: 12),
+              TextButton(
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xffaa9da4),
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  textStyle: const TextStyle(fontSize: 12),
+                ),
+                onPressed: () async {
+                  try {
+                    await openLegalUrl(xiaoyouIcpQueryUrl);
+                  } catch (_) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('暂时无法打开备案查询，请检查网络后重试'),
+                        ),
+                      );
+                    }
+                  }
+                },
+                child: const Text('小悠 App · $xiaoyouAppFilingNumber'),
               ),
             ],
           ),

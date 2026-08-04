@@ -8,7 +8,6 @@ const xiaoyouPrivacyPolicyUrl = 'https://xiaoyou.yoyoyan.cn/privacy';
 const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
-const xiaoyouWebsiteFilingNumber = '渝ICP备2026017342号-1';
 
 const _privacyConsentVersion = '2026-08-04';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
@@ -179,15 +178,6 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
                 child: TextButton(
                   onPressed: () => SystemNavigator.pop(),
                   child: const Text('不同意并退出'),
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                '运营者：鄢国栋 · App 备案号：$xiaoyouAppFilingNumber',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Color(0xffaa9da4),
-                  fontSize: 11,
                 ),
               ),
             ],

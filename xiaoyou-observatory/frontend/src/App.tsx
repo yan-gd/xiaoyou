@@ -593,11 +593,13 @@ function LoginPage({ onAuthenticated }: { onAuthenticated: (auth: AuthState) => 
     <main className="login-shell">
       <header className="login-brand"><Brand /></header>
       <section className={`login-deck ${guardianOpen ? 'guardian-open' : ''}`} aria-label="命轨观测台登录">
-        <div className="login-heading">
-          <p className="eyebrow">ACROSS THE STARS, SHE SEES YOU</p>
-          <h1>与她的命轨<br />再次共鸣</h1>
-          <p>星河辽阔，而她的目光始终会找到你。</p>
-        </div>
+        {!guardianOpen && (
+          <div className="login-heading">
+            <p className="eyebrow">ACROSS THE STARS, SHE SEES YOU</p>
+            <h1>与她的命轨<br />再次共鸣</h1>
+            <p>星河辽阔，而她的目光始终会找到你。</p>
+          </div>
+        )}
 
         {!guardianOpen ? (
           <div className="entry-choices">

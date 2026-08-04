@@ -81,9 +81,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 .quiet-button { min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 18px; color: #b5bad0; }.quiet-button svg { width: 15px; }
 
 /* Login */
-.login-shell { min-height: 100vh; min-height: 100svh; position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 460px); align-items: center; padding: 108px clamp(38px, 6vw, 96px) 80px; }
+.login-shell { height: 100vh; height: 100svh; min-height: 0; position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 460px); align-items: center; overflow: hidden; padding: 92px clamp(38px, 6vw, 96px) 88px; }
 .login-brand { position: absolute; left: clamp(30px, 5vw, 76px); top: 34px; animation: fate-rise .8s .08s cubic-bezier(.2,.8,.2,1) both; }
-.login-deck { grid-column: 2; width: 100%; min-height: 560px; display: flex; flex-direction: column; justify-content: center; padding: 46px 42px 35px; position: relative; overflow: hidden; background: linear-gradient(155deg, rgba(10,17,43,.36), rgba(4,8,26,.5)); border: 1px solid rgba(168,194,248,.23); box-shadow: 0 34px 110px rgba(0,0,0,.26), inset 0 1px rgba(255,255,255,.06); backdrop-filter: blur(13px) saturate(1.12); clip-path: polygon(18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px), calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px), 0 18px); animation: deck-arrive .9s cubic-bezier(.2,.8,.2,1); }
+.login-deck { grid-column: 2; width: 100%; height: min(560px, calc(100svh - 180px)); min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 46px 42px 35px; position: relative; overflow: hidden; background: linear-gradient(155deg, rgba(10,17,43,.36), rgba(4,8,26,.5)); border: 1px solid rgba(168,194,248,.23); box-shadow: 0 34px 110px rgba(0,0,0,.26), inset 0 1px rgba(255,255,255,.06); backdrop-filter: blur(13px) saturate(1.12); clip-path: polygon(18px 0, calc(100% - 18px) 0, 100% 18px, 100% calc(100% - 18px), calc(100% - 18px) 100%, 18px 100%, 0 calc(100% - 18px), 0 18px); animation: deck-arrive .9s cubic-bezier(.2,.8,.2,1); }
+.login-deck.guardian-open { justify-content: center; }
 .login-deck::before { content: ""; position: absolute; inset: 10px; border: 1px solid rgba(121,207,255,.055); pointer-events: none; }
 .login-heading { position: relative; }.login-heading > * { animation: fate-rise .72s cubic-bezier(.2,.8,.2,1) both; }.login-heading > :nth-child(1) { animation-delay: .24s; }.login-heading > :nth-child(2) { animation-delay: .34s; }.login-heading > :nth-child(3) { animation-delay: .44s; }.login-heading h1 { margin: 13px 0 12px; font: 400 clamp(35px, 4vw, 48px)/1.23 "Songti SC", "Noto Serif SC", serif; letter-spacing: .1em; }.login-heading > p:last-child { margin: 0; color: #a3a6bd; font: 13px/1.8 "Songti SC", serif; letter-spacing: .05em; }
 .entry-choices { display: grid; gap: 11px; margin-top: 38px; position: relative; }.entry-choices > :nth-child(1) { animation: control-reveal .65s .55s ease both; }.entry-choices > :nth-child(2) { animation: control-reveal .65s .67s ease both; }
@@ -92,7 +93,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 .guardian-form label { display: grid; gap: 7px; }.guardian-form label > span { color: #aeb2ca; font-size: 10px; letter-spacing: .14em; }.guardian-form input { width: 100%; height: 47px; padding: 0 14px; color: white; border: 1px solid rgba(167,193,245,.15); background: rgba(3,6,20,.46); transition: border .2s, box-shadow .2s; }.guardian-form input:focus { outline: 0; border-color: rgba(121,207,255,.55); box-shadow: 0 0 0 3px rgba(121,207,255,.06); }.guardian-form .submit { margin-top: 4px; }
 .form-error { padding: 10px 12px; color: #ecc0cc; border-left: 2px solid var(--danger); background: rgba(128,53,78,.17); font-size: 11px; }
 .security-note, .privacy-note { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 17px 0 0; color: #69718f; font-size: 8px; line-height: 1.5; text-align: center; }.security-note { animation: fade-in .7s .78s ease both; }.security-note svg, .privacy-note svg { width: 12px; flex: 0 0 auto; }
-.login-footer { position: absolute; left: clamp(30px, 5vw, 76px); bottom: 60px; display: flex; align-items: center; flex-wrap: wrap; gap: 9px 11px; max-width: min(760px, 78vw); color: rgba(204,210,234,.58); font: 10px "Songti SC", serif; letter-spacing: .08em; animation: fate-rise .8s .7s ease both; }.login-footer > span:first-child { color: #a6dfff; font: 8px monospace; letter-spacing: .2em; }.login-footer > i { width: 36px; height: 1px; background: linear-gradient(90deg, rgba(121,207,255,.6), transparent); }
+.login-footer { position: absolute; right: clamp(30px, 5vw, 76px); bottom: 78px; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 9px 11px; max-width: min(760px, 78vw); color: rgba(214,222,244,.72); font: 11px "Songti SC", serif; letter-spacing: .08em; text-align: right; animation: fate-rise .8s .7s ease both; }.login-footer > span:first-child { color: #a6dfff; font: 9px monospace; letter-spacing: .2em; }.login-footer > i { width: 36px; height: 1px; background: linear-gradient(90deg, transparent, rgba(121,207,255,.6)); }
 
 /* Persistent fatebound ambience */
 .music-atmosphere { position: fixed; z-index: 24; left: 50%; bottom: max(10px,env(safe-area-inset-bottom)); width: min(1040px,74vw); min-width: 420px; transform: translateX(-50%); animation: ambience-arrive .9s .82s cubic-bezier(.2,.8,.2,1) both; }
@@ -187,7 +188,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   .frame-lines i { width: 42px; height: 42px; }.frame-lines i:nth-child(1) { left: 11px; top: 11px; }.frame-lines i:nth-child(2) { right: 11px; top: 11px; }.frame-lines i:nth-child(3) { left: 11px; bottom: 11px; }.frame-lines i:nth-child(4) { right: 11px; bottom: 11px; }
   .palm-resonance { left: 39%; top: 69%; width: 64px; }.fate-thread { left: 41%; top: 67%; width: 54vw; }
 
-  .login-shell { display: block; min-height: 100svh; padding: max(22px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) calc(30px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left)); padding-top: max(48svh,330px); }
+  .login-shell { display: block; height: auto; min-height: 100svh; overflow: visible; padding: max(22px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) calc(30px + env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left)); padding-top: max(48svh,330px); }
   .login-brand { left: max(17px,env(safe-area-inset-left)); top: max(18px,env(safe-area-inset-top)); }.login-brand .brand small { display: none; }.login-brand .brand strong { font-size: 13px; }
   .login-deck { min-height: 0; grid-column: auto; margin: -8px auto 0; padding: 28px 22px 24px; overflow: visible; background: linear-gradient(180deg, rgba(8,13,34,.96), rgba(5,8,23,.98)); backdrop-filter: none; clip-path: none; border-radius: 18px 18px 0 0; animation-duration: .55s; }
   .login-heading h1 { margin-block: 9px; font-size: 31px; line-height: 1.2; }.login-heading > p:last-child { font-size: 11px; }.entry-choices { margin-top: 25px; }
@@ -223,7 +224,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 }
 
 @media (max-height: 700px) and (min-width: 721px) {
-  .login-shell { padding-top: 84px; padding-bottom: 40px; }.login-deck { min-height: 500px; padding-block: 32px 26px; }.login-heading h1 { font-size: 38px; }.entry-choices { margin-top: 25px; }
+  .login-shell { padding-top: 66px; padding-bottom: 70px; }.login-deck { height: calc(100svh - 136px); min-height: 0; padding-block: 25px 23px; }.login-heading h1 { font-size: 38px; }.entry-choices { margin-top: 25px; }.guardian-form { gap: 10px; }.guardian-form input { height: 42px; }.security-note { margin-top: 11px; }
   .command-deck { height: calc(100svh - 108px); max-height: none; }.dashboard-stage { padding: 0; }.deck-content { min-height: 0; }.pulse-panel, .vessel-panel, .resonance-panel { min-height: 100%; }.service-node { height: 100px; }.service-node p { -webkit-line-clamp: 2; }
 }
 
@@ -769,10 +770,10 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 
 .astral-footer {
   position: absolute;
-  z-index: 12;
+  z-index: 25;
   left: clamp(28px,3vw,52px);
   right: clamp(28px,3vw,52px);
-  bottom: 12px;
+  bottom: 78px;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
@@ -874,7 +875,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   .fate-action { min-height: 39px; }
   .vessel-mini, .astral-covenant { min-height: 36px; padding-block: 4px 6px; }
   .astral-footer > div:first-child { display: none; }
-  .astral-footer { justify-content: flex-end; bottom: 7px; }
+  .astral-footer { justify-content: flex-end; bottom: 66px; }
   .music-atmosphere.scene-dashboard { bottom: 0; }
 }
 
@@ -1525,9 +1526,9 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 }
 .compliance-links.compact {
   flex-basis: 100%;
-  justify-content: flex-start;
+  justify-content: flex-end;
   color: rgba(172,191,219,.58);
-  font: 7px "Cascadia Code",monospace;
+  font: 8px "Cascadia Code",monospace;
   letter-spacing: .08em;
 }
 .login-footer-copy { color: rgba(204,210,234,.58); }
@@ -1539,12 +1540,12 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 }
 .astral-compliance > span {
   color: rgba(147,164,193,.48);
-  font: 6px "Cascadia Code",monospace;
+  font: 8px "Cascadia Code",monospace;
   letter-spacing: .14em;
 }
 .astral-compliance .compliance-links {
   color: rgba(153,174,207,.62);
-  font-size: 6px;
+  font-size: 8px;
 }
 
 .legal-page {
