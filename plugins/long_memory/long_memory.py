@@ -586,6 +586,19 @@ class LongTermMemory(Plugin):
 
         session_id = context.get("session_id", self.user_id)
         kwargs = getattr(context, "kwargs", {}) or {}
+        if (
+            kwargs.get("xiaoyou_ephemeral_session")
+            or str(session_id or "").startswith("app_test_")
+        ):
+            kwargs["xiaoyou_skip_long_memory_write"] = True
+            kwargs["long_memory_context_ready"] = True
+            kwargs["long_memory_context"] = ""
+            context.kwargs = kwargs
+            logger.info(
+                "[LongTermMemory] ephemeral App session skipped session=%s",
+                str(session_id or "-")[:40],
+            )
+            return
         kwargs["long_memory_user_text"] = user_text
         if (
             self.governance_enabled

@@ -115,6 +115,9 @@ def _load_app_channel(monkeypatch, tmp_path):
         "common": types.ModuleType("common"),
         "common.log": types.ModuleType("common.log"),
         "plugins.xiaoyou_common": types.ModuleType("plugins.xiaoyou_common"),
+        "plugins.xiaoyou_common.app_auth_service": types.ModuleType(
+            "plugins.xiaoyou_common.app_auth_service"
+        ),
         "plugins.xiaoyou_common.app_transport": types.ModuleType(
             "plugins.xiaoyou_common.app_transport"
         ),
@@ -154,6 +157,9 @@ def _load_app_channel(monkeypatch, tmp_path):
     modules["bridge.reply"].ReplyType = _ReplyType
     modules["channel.chat_channel"].ChatChannel = _ChatChannel
     modules["common.log"].logger = _Logger()
+    modules[
+        "plugins.xiaoyou_common.app_auth_service"
+    ].AppAuthService = type("AppAuthService", (), {})
 
     app_transport = modules["plugins.xiaoyou_common.app_transport"]
     app_transport.app_receiver = lambda device_id: "app:" + str(device_id)

@@ -771,17 +771,17 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 .astral-footer {
   position: absolute;
   z-index: 25;
-  left: clamp(28px,3vw,52px);
+  left: 58.5%;
   right: clamp(28px,3vw,52px);
-  bottom: 78px;
+  bottom: 8px;
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
   color: rgba(147,164,193,.5);
   pointer-events: none;
 }
-.astral-footer > div:first-child { display: grid; grid-template-columns: 22px auto; gap: 2px 7px; align-items: center; }
+.astral-footer > div:first-child { display: none; grid-template-columns: 22px auto; gap: 2px 7px; align-items: center; }
 .astral-footer > div:first-child svg { grid-row: 1 / 3; color: rgba(198,226,255,.72); filter: drop-shadow(0 0 8px rgba(121,207,255,.45)); }
 .astral-footer span { font: 6px "Cascadia Code",monospace; letter-spacing: .2em; }
 .astral-footer strong { color: rgba(193,206,229,.58); font: 400 9px "Songti SC",serif; }
@@ -875,7 +875,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   .fate-action { min-height: 39px; }
   .vessel-mini, .astral-covenant { min-height: 36px; padding-block: 4px 6px; }
   .astral-footer > div:first-child { display: none; }
-  .astral-footer { justify-content: flex-end; bottom: 66px; }
+  .astral-footer { justify-content: flex-end; bottom: 8px; }
   .music-atmosphere.scene-dashboard { bottom: 0; }
 }
 
@@ -1525,7 +1525,8 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   opacity: .48;
 }
 .compliance-links.compact {
-  flex-basis: 100%;
+  flex-basis: auto;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   color: rgba(172,191,219,.58);
   font: 8px "Cascadia Code",monospace;
@@ -1533,9 +1534,11 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
 }
 .login-footer-copy { color: rgba(204,210,234,.58); }
 .astral-compliance {
-  display: grid;
-  justify-items: end;
-  gap: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  white-space: nowrap;
   pointer-events: auto;
 }
 .astral-compliance > span {
@@ -1748,7 +1751,7 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 1px solid 
   .login-footer-copy { display: none; }
   .login-footer .compliance-links.compact { display: inline-flex; justify-content: center; font-size: 8px; line-height: 1.6; }
   .astral-footer { justify-content: center; }
-  .astral-compliance { justify-items: center; }
+  .astral-compliance { justify-content: center; white-space: normal; }
   .astral-compliance > span { display: none; }
   .astral-compliance .compliance-links { font-size: 8px; }
 

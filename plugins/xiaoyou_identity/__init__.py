@@ -93,6 +93,15 @@ class XiaoyouIdentity(Plugin):
         receiver = str(kwargs.get("receiver") or temporary_session).strip()
         if not temporary_session or not receiver:
             return
+        if (
+            kwargs.get("xiaoyou_ephemeral_session")
+            or temporary_session.startswith("app_test_")
+        ):
+            logger.info(
+                "[XiaoyouIdentity] ephemeral App session kept isolated session=%s",
+                self._mask(temporary_session),
+            )
+            return
 
         profile = self._extract_profile(kwargs.get("msg"), context)
 

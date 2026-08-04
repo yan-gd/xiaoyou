@@ -7,11 +7,29 @@ import 'dart:typed_data';
 import 'chat_models.dart';
 import 'relationship_models.dart';
 
+class XiaoyouLoginResult {
+  const XiaoyouLoginResult({
+    required this.token,
+    required this.accountId,
+    required this.testMode,
+    required this.deviceId,
+    required this.expiresAt,
+  });
+
+  final String token;
+  final String accountId;
+  final bool testMode;
+  final String deviceId;
+  final int expiresAt;
+}
+
 class XiaoyouApi {
   XiaoyouApi({
     required String baseUrl,
     required this.token,
     required this.deviceId,
+    this.accountId = 'yoyo',
+    this.testMode = false,
   }) : baseUri = Uri.parse(baseUrl.replaceFirst(RegExp(r'/+$'), '')) {
     _client.connectionTimeout = const Duration(seconds: 12);
     _client.idleTimeout = const Duration(seconds: 30);
@@ -24,6 +42,8 @@ class XiaoyouApi {
   final Uri baseUri;
   final String token;
   final String deviceId;
+  final String accountId;
+  final bool testMode;
   final HttpClient _client = HttpClient();
   final HttpClient _audioClient = HttpClient();
   HttpClient _eventClient = _newEventClient();
@@ -33,6 +53,67 @@ class XiaoyouApi {
       ..connectionTimeout = const Duration(seconds: 12)
       ..idleTimeout = const Duration(seconds: 30)
       ..maxConnectionsPerHost = 1;
+  }
+
+  static Future<XiaoyouLoginResult> login({
+    required String baseUrl,
+    required String username,
+    required String password,
+    required String deviceId,
+    bool remember = true,
+  }) async {
+    final base = Uri.parse(baseUrl.replaceFirst(RegExp(r'/+$'), ''));
+    final path = '${base.path}/v1/auth/login'.replaceAll(
+      RegExp(r'/{2,}'),
+      '/',
+    );
+    final uri = base.replace(path: path);
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 12)
+      ..idleTimeout = const Duration(seconds: 15);
+    try {
+      final request = await client.postUrl(uri);
+      request.headers.contentType = ContentType.json;
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      request.write(
+        jsonEncode({
+          'username': username,
+          'password': password,
+          'device_id': deviceId,
+          'remember': remember,
+        }),
+      );
+      final response = await request.close().timeout(
+            const Duration(seconds: 15),
+          );
+      final payload = jsonDecode(
+        await utf8.decoder.bind(response).join(),
+      );
+      if (response.statusCode < 200 ||
+          response.statusCode >= 300 ||
+          payload is! Map) {
+        if (response.statusCode == 401) {
+          throw const HttpException('invalid_credentials');
+        }
+        throw HttpException('login_http_${response.statusCode}');
+      }
+      final values = payload.cast<String, dynamic>();
+      final token = '${values['access_token'] ?? ''}'.trim();
+      final accountId = '${values['account_id'] ?? ''}'.trim();
+      final scopedDeviceId = '${values['device_id'] ?? ''}'.trim();
+      if (token.isEmpty || accountId.isEmpty || scopedDeviceId.isEmpty) {
+        throw const FormatException('invalid_login_response');
+      }
+      return XiaoyouLoginResult(
+        token: token,
+        accountId: accountId,
+        testMode: values['test_mode'] == true,
+        deviceId: scopedDeviceId,
+        expiresAt: asInt(values['expires_at']),
+      );
+    } finally {
+      client.close(force: true);
+    }
   }
 
   Future<void> health() async {

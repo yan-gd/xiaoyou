@@ -412,6 +412,8 @@ def record_assistant_message(
     session_id = str(session_id or "").strip()
     text = str(text or "").strip()
     source = str(source or "outbound").strip() or "outbound"
+    if session_id.startswith("app_test_"):
+        return "" if return_record_id else False
     if not session_id or not text:
         return False
     try:
@@ -479,6 +481,8 @@ def record_delivered_assistant_long_memory(
     """Queue a delivered assistant turn for role-bound long-memory governance."""
     session_id = str(session_id or "").strip()
     text = str(text or "").strip()
+    if session_id.startswith("app_test_"):
+        return False
     if not session_id or not text:
         return False
     try:

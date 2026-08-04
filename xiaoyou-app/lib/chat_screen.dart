@@ -390,6 +390,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       baseUrl: saved.baseUrl,
       token: token,
       deviceId: saved.deviceId,
+      accountId: saved.accountId,
+      testMode: saved.testMode,
       persist: false,
     );
   }
@@ -441,6 +443,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     required String baseUrl,
     required String token,
     required String deviceId,
+    String accountId = 'yoyo',
+    bool testMode = false,
     required bool persist,
   }) async {
     if (_connecting) {
@@ -454,11 +458,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       baseUrl: baseUrl,
       token: token,
       deviceId: deviceId,
+      accountId: accountId,
+      testMode: testMode,
     );
     final previousApi = _api;
     var activated = false;
     try {
-      await _restoreLocalArchive(baseUrl);
+      await _restoreLocalArchive(
+        baseUrl,
+        accountId: accountId,
+        testMode: testMode,
+      );
       await api.health();
       await api.registerDevice();
       final history = await api.history(
@@ -475,6 +485,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         baseUrl: baseUrl.replaceFirst(RegExp(r'/+$'), ''),
         deviceId: deviceId,
         appLockEnabled: _lockEnabled,
+        accountId: accountId,
+        testMode: testMode,
       );
       if (persist) {
         await _sessionStore.saveConnection(connection, token);
@@ -500,12 +512,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
       unawaited(_syncBackgroundCursor());
-      unawaited(_primeMediaCache(history.messages, api));
+      if (!testMode) {
+        unawaited(_primeMediaCache(history.messages, api));
+      }
       await WidgetsBinding.instance.endOfFrame;
       await _flushAcknowledgements();
       _startPolling();
       await _poll();
-      if (_preferences.notificationsEnabled) {
+      if (_preferences.notificationsEnabled && !testMode) {
         await _configureBackgroundNotifications(
           appInForeground: _appInForeground,
         );
@@ -618,7 +632,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (!_appInForeground && _preferences.notificationsEnabled) {
             unawaited(_notifyIncoming(additions));
           }
-          unawaited(_primeMediaCache(additions, api));
+          if (!api.testMode) {
+            unawaited(_primeMediaCache(additions, api));
+          }
           if (shouldFollow) {
             _scrollToEnd();
           }
@@ -686,8 +702,25 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _scheduleArchiveSave();
   }
 
-  Future<void> _restoreLocalArchive(String baseUrl) async {
-    final scope = baseUrl.replaceFirst(RegExp(r'/+$'), '').trim().toLowerCase();
+  Future<void> _restoreLocalArchive(
+    String baseUrl, {
+    required String accountId,
+    required bool testMode,
+  }) async {
+    if (testMode) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _archiveScope = '';
+        _messages.clear();
+      });
+      return;
+    }
+    final scope = [
+      baseUrl.replaceFirst(RegExp(r'/+$'), '').trim().toLowerCase(),
+      accountId.trim().toLowerCase(),
+    ].join('|');
     if (scope.isEmpty || scope == _archiveScope) {
       return;
     }
@@ -1409,22 +1442,47 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (draft == null || !mounted) {
       return;
     }
-    var token = draft.token;
-    if (token.isEmpty) {
-      token = await _sessionStore.readToken() ?? '';
-    }
     if (!draft.baseUrl.startsWith('https://') ||
-        token.length < 24 ||
+        draft.username.isEmpty ||
+        draft.password.isEmpty ||
         draft.deviceId.isEmpty) {
-      _showNotice('连接信息不完整', '请输入 HTTPS 地址、有效连接令牌和设备名称。');
+      _showNotice('登录信息不完整', '请输入 HTTPS 地址、账号、密码和设备名称。');
       return;
     }
-    await _connect(
-      baseUrl: draft.baseUrl,
-      token: token,
-      deviceId: draft.deviceId,
-      persist: true,
-    );
+    setState(() {
+      _connecting = true;
+      _status = '正在验证账号…';
+    });
+    try {
+      final login = await XiaoyouApi.login(
+        baseUrl: draft.baseUrl,
+        username: draft.username,
+        password: draft.password,
+        deviceId: draft.deviceId,
+        remember: draft.remember,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() => _connecting = false);
+      await _connect(
+        baseUrl: draft.baseUrl,
+        token: login.token,
+        deviceId: login.deviceId,
+        accountId: login.accountId,
+        testMode: login.testMode,
+        persist: draft.remember,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _connecting = false;
+        _status = '登录失败';
+      });
+      _showNotice('无法登录小悠', _friendlyNetworkError(error));
+    }
   }
 
   Future<bool> _setAppLock(bool enabled) async {
@@ -1467,6 +1525,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
     final api = _api;
     if (api == null ||
+        api.testMode ||
         !_preferences.notificationsEnabled ||
         !_systemNotificationsAllowed) {
       return api == null;
@@ -1849,7 +1908,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('忘记本机登录？'),
-        content: const Text('只会删除这台手机保存的地址和连接令牌，不会删除聊天记录或服务器数据。'),
+        content: const Text('只会删除这台手机保存的地址和登录状态，不会删除聊天记录或服务器数据。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -2482,13 +2541,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 class _ConnectionDraft {
   const _ConnectionDraft({
     required this.baseUrl,
-    required this.token,
+    required this.username,
+    required this.password,
     required this.deviceId,
+    required this.remember,
   });
 
   final String baseUrl;
-  final String token;
+  final String username;
+  final String password;
   final String deviceId;
+  final bool remember;
 }
 
 class _ConnectionSheet extends StatefulWidget {
@@ -2502,9 +2565,11 @@ class _ConnectionSheet extends StatefulWidget {
 
 class _ConnectionSheetState extends State<_ConnectionSheet> {
   late final TextEditingController _baseController;
-  late final TextEditingController _tokenController;
+  late final TextEditingController _usernameController;
+  late final TextEditingController _passwordController;
   late final TextEditingController _deviceController;
-  bool _hideToken = true;
+  bool _hidePassword = true;
+  bool _remember = true;
 
   @override
   void initState() {
@@ -2512,7 +2577,10 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
     _baseController = TextEditingController(
       text: widget.saved?.baseUrl ?? 'https://xiaoyou.yoyoyan.cn/xiaoyou-app',
     );
-    _tokenController = TextEditingController();
+    _usernameController = TextEditingController(
+      text: widget.saved?.accountId ?? 'yoyo',
+    );
+    _passwordController = TextEditingController();
     _deviceController = TextEditingController(
       text: widget.saved?.deviceId ?? 'yoyo-phone',
     );
@@ -2521,7 +2589,8 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
   @override
   void dispose() {
     _baseController.dispose();
-    _tokenController.dispose();
+    _usernameController.dispose();
+    _passwordController.dispose();
     _deviceController.dispose();
     super.dispose();
   }
@@ -2531,8 +2600,10 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
       context,
       _ConnectionDraft(
         baseUrl: _baseController.text.trim(),
-        token: _tokenController.text.trim(),
+        username: _usernameController.text.trim(),
+        password: _passwordController.text,
         deviceId: _deviceController.text.trim(),
+        remember: _remember,
       ),
     );
   }
@@ -2574,7 +2645,7 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
               Text(
                 widget.saved == null
                     ? '只需连接一次，以后打开就能直接找到小悠'
-                    : '令牌留空会继续使用本机安全存储中的令牌',
+                    : '重新验证账号后更新这台设备的登录状态',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: _muted, height: 1.4),
               ),
@@ -2590,18 +2661,31 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
               ),
               const SizedBox(height: 14),
               TextField(
-                controller: _tokenController,
-                obscureText: _hideToken,
+                controller: _usernameController,
+                enableSuggestions: false,
+                autocorrect: false,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: '账号',
+                  prefixIcon: Icon(Icons.person_outline_rounded),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _passwordController,
+                obscureText: _hidePassword,
                 enableSuggestions: false,
                 autocorrect: false,
                 textInputAction: TextInputAction.next,
                 decoration: InputDecoration(
-                  labelText: widget.saved == null ? '连接令牌' : '新连接令牌（可留空）',
-                  prefixIcon: const Icon(Icons.key_rounded),
+                  labelText: '密码',
+                  prefixIcon: const Icon(Icons.lock_outline_rounded),
                   suffixIcon: IconButton(
-                    onPressed: () => setState(() => _hideToken = !_hideToken),
+                    onPressed: () => setState(
+                      () => _hidePassword = !_hidePassword,
+                    ),
                     icon: Icon(
-                      _hideToken
+                      _hidePassword
                           ? Icons.visibility_off_rounded
                           : Icons.visibility_rounded,
                     ),
@@ -2617,6 +2701,13 @@ class _ConnectionSheetState extends State<_ConnectionSheet> {
                   labelText: '设备名称',
                   prefixIcon: Icon(Icons.phone_iphone_rounded),
                 ),
+              ),
+              SwitchListTile.adaptive(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('记住登录'),
+                subtitle: const Text('账号令牌保存在系统安全存储中'),
+                value: _remember,
+                onChanged: (value) => setState(() => _remember = value),
               ),
               const SizedBox(height: 16),
               const _SecurityNote(),
@@ -2656,7 +2747,7 @@ class _SecurityNote extends StatelessWidget {
           SizedBox(width: 10),
           Expanded(
             child: Text(
-              '地址和设备名保存在系统偏好中；连接令牌使用系统安全存储，不会写进聊天记录。',
+              '密码只用于本次验证；登录令牌使用系统安全存储，不会写进聊天记录。',
               style: TextStyle(color: _muted, height: 1.4, fontSize: 12),
             ),
           ),
@@ -7070,7 +7161,7 @@ class _LockScreen extends StatelessWidget {
                 ),
                 TextButton(
                   onPressed: authenticating ? null : onReconnect,
-                  child: const Text('使用连接令牌重新登录'),
+                  child: const Text('使用账号密码重新登录'),
                 ),
                 const Spacer(),
               ],
@@ -9387,8 +9478,10 @@ String _searchMessageSummary(ChatMessage message) {
 
 String _friendlyNetworkError(Object error) {
   final message = '$error';
-  if (message.contains('401') || message.contains('unauthorized')) {
-    return '连接令牌不正确，请重新填写。';
+  if (message.contains('401') ||
+      message.contains('unauthorized') ||
+      message.contains('invalid_credentials')) {
+    return '账号或密码不正确，请重新填写。';
   }
   if (message.contains('timed out') || message.contains('Timeout')) {
     return '连接服务器超时，请检查网络后重试。';

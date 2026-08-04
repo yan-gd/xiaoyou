@@ -501,7 +501,15 @@ class XiaoyouLifePhoto(Plugin):
         recent_shares = self._format_recent_shares(session_id)
         profile_text = json.dumps(self.profile, ensure_ascii=False, indent=2)
         time_context = context_snapshot.time_context
+        ephemeral_session = self._is_ephemeral_session(session_id)
         character_desc = os.getenv("CHARACTER_DESC", "").strip()
+        if ephemeral_session:
+            character_desc = (
+                "你是小悠。当前是一个全新且完全隔离的测试会话。"
+                "保留小悠自然、细腻、俏皮的表达和生活照能力，但不得读取、"
+                "暗示或复用其他用户的身份、关系、记忆、承诺、地点、照片或提醒。"
+                "只依据当前测试会话里明确出现的信息规划照片。"
+            )
 
         if mode == "proactive":
             task = """统一主动决策中枢已经结合完整语境和小悠当前内在状态选择了photo。你现在负责把这份真实分享意图规划成照片，而不是重新用关键词判断媒介。若语境已经明显失效或意图不安全可返回should_generate=false，否则应忠实实现。不要按固定题材轮播，也不要为了完成任务硬凑自拍、美食或穿搭。
@@ -640,6 +648,10 @@ YoYo当前相关原话：
             gaze = str(data.get("gaze") or "").strip()[:300]
             pose = str(data.get("pose") or "").strip()[:600]
             include_yoyo = as_bool(data.get("include_yoyo", False))
+            if ephemeral_session:
+                # The trial account may exercise photo generation, but it must
+                # never pull the owner's face reference or relationship profile.
+                include_yoyo = False
             pose_constraints = normalize_constraints(data.get("physical_constraints"))
             hands_free_required = (
                 as_bool(data.get("hands_free_required", False))
@@ -1568,7 +1580,12 @@ YoYo当前相关原话：
 
     def _session_allowed(self, session_id):
         canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
-        return str(session_id or "").strip() == canonical
+        value = str(session_id or "").strip()
+        return value == canonical or self._is_ephemeral_session(value)
+
+    @staticmethod
+    def _is_ephemeral_session(session_id):
+        return str(session_id or "").strip().startswith("app_test_")
 
     def _seedream_model(self):
         return os.getenv(

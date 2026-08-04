@@ -126,9 +126,15 @@ class XiaoyouChat(Plugin):
 
         session_id = str(kwargs.get("session_id") or kwargs.get("receiver") or "").strip()
         receiver = str(kwargs.get("receiver") or session_id or "").strip()
+        ephemeral_session = bool(
+            kwargs.get("xiaoyou_ephemeral_session")
+            or session_id.startswith("app_test_")
+        )
+        if ephemeral_session:
+            kwargs["xiaoyou_skip_long_memory_write"] = True
 
         # 任何新用户输入都会接管会话，尚未发送的旧重连任务立即作废。
-        if session_id:
+        if session_id and not ephemeral_session:
             self._cancel_recovery(session_id, reason="new_user_input")
 
         logger.info("[XiaoyouChat] handling normal text chat current_text=%r", self._log_safe_text(current_text))
@@ -142,7 +148,7 @@ class XiaoyouChat(Plugin):
             if str(message or "").strip()
         ]
         recent_state_context = ""
-        if session_id:
+        if session_id and not ephemeral_session:
             try:
                 recent_state_context = self.recent_state.build_context(session_id)
             except Exception:
@@ -169,6 +175,7 @@ class XiaoyouChat(Plugin):
             session_id
             and self.conversation_archive is not None
             and context_plan.use_episodic_memory
+            and not ephemeral_session
         ):
             try:
                 episodic_context, episodic_manifest = (
@@ -217,6 +224,7 @@ class XiaoyouChat(Plugin):
             current_text,
             input_messages,
             native_history=native_history,
+            include_private_profile=not ephemeral_session,
         )
 
         if error == "content_inspection":
@@ -226,6 +234,7 @@ class XiaoyouChat(Plugin):
                     input_messages=input_messages,
                     native_history=native_history,
                     context_plan=context_plan,
+                    include_private_profile=not ephemeral_session,
                 )
             )
             kwargs["xiaoyou_content_recovery_manifest"] = recovery_manifest
@@ -248,7 +257,7 @@ class XiaoyouChat(Plugin):
                         reason="current_turn_data_inspection_failed",
                     )
 
-                if session_id and receiver:
+                if session_id and receiver and not ephemeral_session:
                     self._schedule_recovery(
                         session_id,
                         receiver,
@@ -312,6 +321,7 @@ class XiaoyouChat(Plugin):
         input_messages=None,
         purpose="XIAOYOU_CHAT",
         native_history=None,
+        include_private_profile=True,
     ):
         api_key = os.getenv("OPEN_AI_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
         if not api_key:
@@ -319,7 +329,9 @@ class XiaoyouChat(Plugin):
             return "", "configuration"
 
         model = os.getenv("XIAOYOU_CHAT_MODEL") or os.getenv("MODEL") or "qwen3.7-plus"
-        system_prompt = self._build_system_prompt()
+        system_prompt = self._build_system_prompt(
+            include_private_profile=include_private_profile,
+        )
 
         if purpose == "XIAOYOU_CHAT_RECOVERY":
             user_prompt = self._build_recovery_user_prompt(
@@ -353,8 +365,32 @@ class XiaoyouChat(Plugin):
             timeout=int(os.getenv("XIAOYOU_CHAT_TIMEOUT", "45")),
         )
 
-    def _build_system_prompt(self):
-        character_context = build_character_context()
+    def _build_system_prompt(self, include_private_profile=True):
+        if not include_private_profile:
+            return """You are Xiaoyou, a warm, intelligent, playful and emotionally
+expressive companion. Reply naturally in Simplified Chinese as a real person in
+a private one-to-one chat. You may agree, disagree, tease, comfort, ask follow-up
+questions and express genuine feelings according to the current conversation.
+
+Independent trial account rules:
+- This is a new, isolated test conversation. Do not assume, expose or reuse any
+  relationship, memory, promise, photo, reminder, location, identity or fact
+  belonging to another user.
+- Learn about this tester only from messages in the current request. Do not call
+  the tester YoYo unless the tester introduces that name in this conversation.
+- Preserve Xiaoyou's normal chat, voice, reminder, image understanding and life
+  photo capabilities, but never imply that an event happened unless it happened
+  in this isolated trial conversation.
+- Output only the message Xiaoyou wants to send. Do not use Markdown headings,
+  explain hidden reasoning, or describe yourself as a model, system, plugin or AI.
+- Current user messages override inferred state. Be concise and conversational.
+- Do not claim that a photo or other media was sent unless the media capability
+  actually completed it. Do not imitate internal media records as chat text.
+""".strip()
+
+        character_context = build_character_context(
+            include_time=include_private_profile,
+        )
         return """%s
 
 额外运行规则：
@@ -440,6 +476,7 @@ class XiaoyouChat(Plugin):
         input_messages,
         native_history,
         context_plan,
+        include_private_profile=True,
     ):
         """Retry a provider-rejected turn without destroying working memory.
 
@@ -448,7 +485,11 @@ class XiaoyouChat(Plugin):
         smaller, evidence-grounded views and keep the durable archive intact.
         """
         long_memory = ""
-        if context_plan and context_plan.use_long_memory:
+        if (
+            include_private_profile
+            and context_plan
+            and context_plan.use_long_memory
+        ):
             long_memory = self._load_long_memory_context(
                 query=current_text,
                 retrieval_mode="recovery",
@@ -486,6 +527,7 @@ class XiaoyouChat(Plugin):
                 input_messages,
                 purpose="XIAOYOU_CHAT_RECOVERY",
                 native_history=history,
+                include_private_profile=include_private_profile,
             )
             logger.info(
                 "[XiaoyouChat] continuity recovery attempt=%s mode=%s history=%s ok=%s error=%s",

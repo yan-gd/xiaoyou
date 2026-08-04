@@ -909,6 +909,8 @@ class VoiceRoomMemoryProjector:
 
     def project(self, turn):
         session_id = _clean_text(turn.get("session_id"), 128)
+        if session_id.startswith("app_test_"):
+            return False
         user_text = _clean_text(turn.get("user_text"))
         assistant_text = _clean_text(turn.get("assistant_text"))
         turn_id = _clean_text(turn.get("turn_id"), 128)

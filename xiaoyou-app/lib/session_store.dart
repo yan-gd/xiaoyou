@@ -8,17 +8,23 @@ class SavedConnection {
     required this.baseUrl,
     required this.deviceId,
     required this.appLockEnabled,
+    this.accountId = 'yoyo',
+    this.testMode = false,
   });
 
   final String baseUrl;
   final String deviceId;
   final bool appLockEnabled;
+  final String accountId;
+  final bool testMode;
 
   SavedConnection copyWith({bool? appLockEnabled}) {
     return SavedConnection(
       baseUrl: baseUrl,
       deviceId: deviceId,
       appLockEnabled: appLockEnabled ?? this.appLockEnabled,
+      accountId: accountId,
+      testMode: testMode,
     );
   }
 }
@@ -107,6 +113,8 @@ class SessionStore {
   static const _baseUrlKey = 'xiaoyou.base_url';
   static const _deviceIdKey = 'xiaoyou.device_id';
   static const _appLockKey = 'xiaoyou.app_lock';
+  static const _accountIdKey = 'xiaoyou.account_id';
+  static const _testModeKey = 'xiaoyou.test_mode';
   static const _draftKey = 'xiaoyou.chat_draft';
   static const _notificationsKey = 'xiaoyou.notifications';
   static const _notificationSoundKey = 'xiaoyou.notification_sound';
@@ -140,6 +148,9 @@ class SessionStore {
       baseUrl: baseUrl,
       deviceId: deviceId,
       appLockEnabled: await _preferences.getBool(_appLockKey) ?? false,
+      accountId:
+          (await _preferences.getString(_accountIdKey))?.trim() ?? 'yoyo',
+      testMode: await _preferences.getBool(_testModeKey) ?? false,
     );
   }
 
@@ -156,6 +167,8 @@ class SessionStore {
     await _preferences.setString(_baseUrlKey, connection.baseUrl);
     await _preferences.setString(_deviceIdKey, connection.deviceId);
     await _preferences.setBool(_appLockKey, connection.appLockEnabled);
+    await _preferences.setString(_accountIdKey, connection.accountId);
+    await _preferences.setBool(_testModeKey, connection.testMode);
   }
 
   Future<void> setAppLockEnabled(bool enabled) async {
@@ -306,6 +319,8 @@ class SessionStore {
     await _preferences.remove(_baseUrlKey);
     await _preferences.remove(_deviceIdKey);
     await _preferences.remove(_appLockKey);
+    await _preferences.remove(_accountIdKey);
+    await _preferences.remove(_testModeKey);
     await _preferences.remove(_draftKey);
     await _preferences.remove(_favoriteMessageIdsKey);
     await _preferences.remove(_notificationsKey);

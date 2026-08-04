@@ -40,6 +40,7 @@ from plugins.xiaoyou_common.app_transport import (
     register_app_service,
     register_app_store,
 )
+from plugins.xiaoyou_common.app_auth_service import AppAuthService
 from plugins.xiaoyou_common.conversation_coordinator import note_user_activity
 from plugins.xiaoyou_common.outbound_dispatcher import (
     record_assistant_message,
@@ -1652,6 +1653,8 @@ class AppRuntimeChannel(ChatChannel):
         text,
         message_id,
         device_id,
+        session_id=None,
+        ephemeral=False,
         client_sequence=None,
         client_created_at=None,
     ):
@@ -1666,10 +1669,11 @@ class AppRuntimeChannel(ChatChannel):
             raise ValueError("invalid_message_id")
         if not device_id:
             raise ValueError("invalid_device_id")
+        session_id = str(session_id or self.canonical_session_id).strip()
 
         inserted = self.store.accept_input(
             message_id=message_id,
-            session_id=self.canonical_session_id,
+            session_id=session_id,
             device_id=device_id,
             text=text,
             client_sequence=client_sequence,
@@ -1683,6 +1687,8 @@ class AppRuntimeChannel(ChatChannel):
             message_id=message_id,
             device_id=device_id,
             voice_reply=False,
+            session_id=session_id,
+            ephemeral=ephemeral,
         )
         return True
 
@@ -1694,6 +1700,8 @@ class AppRuntimeChannel(ChatChannel):
         duration_ms,
         message_id,
         device_id,
+        session_id=None,
+        ephemeral=False,
         client_sequence=None,
         client_created_at=None,
     ):
@@ -1703,6 +1711,7 @@ class AppRuntimeChannel(ChatChannel):
             raise ValueError("invalid_message_id")
         if not device_id:
             raise ValueError("invalid_device_id")
+        session_id = str(session_id or self.canonical_session_id).strip()
         existing = self.store.input_by_id(message_id, device_id)
         if existing and existing["status"] != "failed":
             return {
@@ -1714,7 +1723,7 @@ class AppRuntimeChannel(ChatChannel):
         transcript = self.voice_service.transcribe(
             audio_bytes,
             mime_type,
-            session_id=self.canonical_session_id,
+            session_id=session_id,
             input_id=message_id,
         )
         media = self.store.save_media_bytes(audio_bytes, device_id, mime_type)
@@ -1722,7 +1731,7 @@ class AppRuntimeChannel(ChatChannel):
             raise ValueError("invalid_audio")
         inserted = self.store.accept_input(
             message_id=message_id,
-            session_id=self.canonical_session_id,
+            session_id=session_id,
             device_id=device_id,
             kind="voice",
             text=transcript,
@@ -1746,6 +1755,8 @@ class AppRuntimeChannel(ChatChannel):
             message_id=message_id,
             device_id=device_id,
             voice_reply=True,
+            session_id=session_id,
+            ephemeral=ephemeral,
         )
         return {
             "accepted": True,
@@ -1766,6 +1777,8 @@ class AppRuntimeChannel(ChatChannel):
         kind,
         message_id,
         device_id,
+        session_id=None,
+        ephemeral=False,
         client_sequence=None,
         client_created_at=None,
     ):
@@ -1781,6 +1794,7 @@ class AppRuntimeChannel(ChatChannel):
             raise ValueError("invalid_message_id")
         if not device_id:
             raise ValueError("invalid_device_id")
+        session_id = str(session_id or self.canonical_session_id).strip()
         if not mime_type.startswith("image/"):
             raise ValueError("invalid_image_type")
         existing = self.store.input_by_id(message_id, device_id)
@@ -1801,7 +1815,7 @@ class AppRuntimeChannel(ChatChannel):
         )
         inserted = self.store.accept_input(
             message_id=message_id,
-            session_id=self.canonical_session_id,
+            session_id=session_id,
             device_id=device_id,
             kind=kind,
             text=visible_text,
@@ -1824,6 +1838,8 @@ class AppRuntimeChannel(ChatChannel):
             kind=kind,
             message_id=message_id,
             device_id=device_id,
+            session_id=session_id,
+            ephemeral=ephemeral,
         )
         return {
             "accepted": True,
@@ -1835,10 +1851,20 @@ class AppRuntimeChannel(ChatChannel):
             "mime_type": media["mime_type"],
         }
 
-    def _produce_text(self, *, text, message_id, device_id, voice_reply):
+    def _produce_text(
+        self,
+        *,
+        text,
+        message_id,
+        device_id,
+        voice_reply,
+        session_id=None,
+        ephemeral=False,
+    ):
+        session_id = str(session_id or self.canonical_session_id).strip()
         receiver = app_receiver(device_id)
         kwargs = {
-            "session_id": self.canonical_session_id,
+            "session_id": session_id,
             "receiver": receiver,
             "isgroup": False,
             "origin_ctype": ContextType.TEXT,
@@ -1853,6 +1879,7 @@ class AppRuntimeChannel(ChatChannel):
             # the shared version clock, discards the older in-flight reply and
             # starts a fresh request with ShortMemory continuity.
             "xiaoyou_input_immediate": True,
+            "xiaoyou_ephemeral_session": bool(ephemeral),
         }
         context = Context(ContextType.TEXT, text)
         context.kwargs = kwargs
@@ -1863,14 +1890,15 @@ class AppRuntimeChannel(ChatChannel):
             attach_input_trace(context, source="app_receive")
         except Exception:
             logger.exception("[AppChannel] failed to attach input trace")
-        note_user_activity(
-            self.canonical_session_id,
-            activity_ts=time.time(),
-            source="app_input",
-            turn_id=message_id,
-            trace_id=context.get("xiaoyou_trace_id", ""),
-            input_id=message_id,
-        )
+        if not ephemeral:
+            note_user_activity(
+                session_id,
+                activity_ts=time.time(),
+                source="app_input",
+                turn_id=message_id,
+                trace_id=context.get("xiaoyou_trace_id", ""),
+                input_id=message_id,
+            )
         try:
             self.produce(context)
         except Exception:
@@ -1878,10 +1906,20 @@ class AppRuntimeChannel(ChatChannel):
             raise
         self.store.mark_input_status(message_id, "queued")
 
-    def _produce_image(self, *, image_path, kind, message_id, device_id):
+    def _produce_image(
+        self,
+        *,
+        image_path,
+        kind,
+        message_id,
+        device_id,
+        session_id=None,
+        ephemeral=False,
+    ):
+        session_id = str(session_id or self.canonical_session_id).strip()
         receiver = app_receiver(device_id)
         kwargs = {
-            "session_id": self.canonical_session_id,
+            "session_id": session_id,
             "receiver": receiver,
             "isgroup": False,
             "origin_ctype": ContextType.IMAGE,
@@ -1892,6 +1930,7 @@ class AppRuntimeChannel(ChatChannel):
             "xiaoyou_defer_memory_until_delivery": True,
             "xiaoyou_input_kind": kind,
             "xiaoyou_app_voice_reply": False,
+            "xiaoyou_ephemeral_session": bool(ephemeral),
         }
         context = Context(ContextType.IMAGE, str(image_path))
         context.kwargs = kwargs
@@ -1902,14 +1941,15 @@ class AppRuntimeChannel(ChatChannel):
             attach_input_trace(context, source="app_receive")
         except Exception:
             logger.exception("[AppChannel] failed to attach image input trace")
-        note_user_activity(
-            self.canonical_session_id,
-            activity_ts=time.time(),
-            source="app_image_input",
-            turn_id=message_id,
-            trace_id=context.get("xiaoyou_trace_id", ""),
-            input_id=message_id,
-        )
+        if not ephemeral:
+            note_user_activity(
+                session_id,
+                activity_ts=time.time(),
+                source="app_image_input",
+                turn_id=message_id,
+                trace_id=context.get("xiaoyou_trace_id", ""),
+                input_id=message_id,
+            )
         try:
             self.produce(context)
         except Exception:
@@ -2135,6 +2175,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     server_version = "XiaoyouApp/1.0"
     protocol_version = "HTTP/1.1"
     plugin = None
+    auth_context = None
 
     def log_message(self, format_string, *args):
         if args and isinstance(args[0], str) and "ticket=" in args[0]:
@@ -2158,7 +2199,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 item = self.plugin.store.media_stream(
                     media_id,
                     device_id,
-                    session_id=self.plugin.canonical_session_id,
+                    session_id="",
                     token=stream_token,
                 )
                 if item is None:
@@ -2166,15 +2207,18 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 else:
                     self._stream_media(media_id, device_id, item=item)
                 return
-        if not self._authorized():
+        if not self._authorized(device_id):
             return
+        device_id = self._device_id(device_id)
         if parsed.path == "/v1/profile":
             from plugins.xiaoyou_common.inner_state_service import (
                 get_inner_state_service,
             )
 
-            state = get_inner_state_service().get(
-                self.plugin.canonical_session_id,
+            state = (
+                {}
+                if self._test_mode()
+                else get_inner_state_service().get(self._session_id())
             )
             self._json(
                 200,
@@ -2185,7 +2229,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/v1/relationship/entries":
             entries = self.plugin.relationship.list_entries(
-                self.plugin.canonical_session_id,
+                self._session_id(),
                 include_drafts=True,
             )
             self._json(200, {"entries": entries})
@@ -2284,16 +2328,28 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             self._sse(device_id, query)
             return
         if parsed.path == "/v1/history":
-            history = self.plugin.store.history_page(
-                self.plugin.canonical_session_id,
-                cursor=(query.get("cursor") or [""])[0],
-                limit=self._integer((query.get("limit") or [100])[0], 100),
-            )
+            if self._test_mode():
+                history = {
+                    "messages": [],
+                    "next_cursor": "",
+                    "has_more": False,
+                }
+            else:
+                history = self.plugin.store.history_page(
+                    self._session_id(),
+                    cursor=(query.get("cursor") or [""])[0],
+                    limit=self._integer(
+                        (query.get("limit") or [100])[0],
+                        100,
+                    ),
+                )
             self._json(
                 200,
                 {
                     **history,
-                    "history_scope": "session",
+                    "history_scope": (
+                        "ephemeral" if self._test_mode() else "session"
+                    ),
                     "last_event_sequence": self.plugin.store.latest_sequence(
                         device_id
                     ),
@@ -2311,7 +2367,23 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
-        if not self._authorized():
+        if parsed.path == "/v1/auth/login":
+            try:
+                payload = self._body()
+                result = self.plugin.auth.login(
+                    payload.get("username"),
+                    payload.get("password"),
+                    payload.get("device_id"),
+                    remember=payload.get("remember", True),
+                )
+                if result is None:
+                    self._json(401, {"error": "invalid_credentials"})
+                else:
+                    self._json(200, result)
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                self._json(400, {"error": "invalid_login_request"})
+            return
+        if not self._authorized(self.headers.get("X-Device-Id", "")):
             return
         try:
             if parsed.path == "/v1/image-messages":
@@ -2323,7 +2395,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     ),
                     kind=self.headers.get("X-Message-Kind", "image"),
                     message_id=self.headers.get("X-Message-Id"),
-                    device_id=self.headers.get("X-Device-Id"),
+                    device_id=self._device_id(
+                        self.headers.get("X-Device-Id")
+                    ),
+                    session_id=self._session_id(),
+                    ephemeral=self._test_mode(),
                     client_sequence=self._integer(
                         self.headers.get("X-Client-Sequence"), 0
                     ),
@@ -2344,7 +2420,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         self.headers.get("X-Audio-Duration-Ms"), 0
                     ),
                     message_id=self.headers.get("X-Message-Id"),
-                    device_id=self.headers.get("X-Device-Id"),
+                    device_id=self._device_id(
+                        self.headers.get("X-Device-Id")
+                    ),
+                    session_id=self._session_id(),
+                    ephemeral=self._test_mode(),
                     client_sequence=self._integer(
                         self.headers.get("X-Client-Sequence"), 0
                     ),
@@ -2362,7 +2442,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 room_id = parsed.path[
                     len(voice_room_prefix):-len("/audio")
                 ].strip("/")
-                device_id = _safe_device_id(
+                device_id = self._device_id(
                     self.headers.get("X-Device-Id")
                 )
                 if not room_id or not device_id:
@@ -2389,7 +2469,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 audio_bytes = self._voice_body()
                 result = self.plugin.voice_rooms.process_turn(
                     room_id=room_id,
-                    device_id=self.headers.get("X-Device-Id"),
+                    device_id=self._device_id(
+                        self.headers.get("X-Device-Id")
+                    ),
                     turn_id=self.headers.get("X-Turn-Id"),
                     audio_bytes=audio_bytes,
                     mime_type=self.headers.get(
@@ -2403,11 +2485,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 return
             payload = self._body()
             if parsed.path == "/v1/voice-rooms":
-                device_id = _safe_device_id(payload.get("device_id"))
+                device_id = self._device_id(payload.get("device_id"))
                 if not device_id:
                     raise ValueError("invalid_device_id")
                 room = self.plugin.voice_rooms.create_room(
-                    session_id=self.plugin.canonical_session_id,
+                    session_id=self._session_id(),
                     device_id=device_id,
                     title=payload.get("title", "耳边的一会儿"),
                 )
@@ -2425,7 +2507,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 room_id = parsed.path[
                     len(voice_room_prefix):-len("/truncate")
                 ].strip("/")
-                device_id = _safe_device_id(payload.get("device_id"))
+                device_id = self._device_id(payload.get("device_id"))
                 if not room_id or not device_id:
                     raise ValueError("invalid_voice_room_request")
                 result = self.plugin.voice_rooms.truncate(
@@ -2446,7 +2528,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 room_id = parsed.path[
                     len(voice_room_prefix):-len("/finish")
                 ].strip("/")
-                device_id = _safe_device_id(payload.get("device_id"))
+                device_id = self._device_id(payload.get("device_id"))
                 if not device_id:
                     raise ValueError("invalid_device_id")
                 room = self.plugin.voice_rooms.finish_room(
@@ -2461,7 +2543,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             if parsed.path == "/v1/devices":
-                device_id = _safe_device_id(payload.get("device_id"))
+                device_id = self._device_id(payload.get("device_id"))
                 if not device_id:
                     raise ValueError("invalid_device_id")
                 push_options = {}
@@ -2477,7 +2559,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         push_options[key] = payload[key]
                 self.plugin.store.register_device(
                     device_id,
-                    self.plugin.canonical_session_id,
+                    self._session_id(),
                     platform=payload.get("platform", ""),
                     **push_options,
                 )
@@ -2487,7 +2569,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 accepted = self.plugin.runtime.submit_text(
                     text=payload.get("text"),
                     message_id=payload.get("message_id"),
-                    device_id=payload.get("device_id"),
+                    device_id=self._device_id(payload.get("device_id")),
+                    session_id=self._session_id(),
+                    ephemeral=self._test_mode(),
                     client_sequence=payload.get("client_sequence"),
                     client_created_at=payload.get("created_at"),
                 )
@@ -2505,16 +2589,16 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     get_inner_state_service,
                 )
 
-                device_id = _safe_device_id(payload.get("device_id"))
+                device_id = self._device_id(payload.get("device_id"))
                 if not device_id:
                     raise ValueError("invalid_device_id")
                 day = str(payload.get("day") or "").strip()
                 history = self.plugin.store.history(device_id, limit=300)
                 state = get_inner_state_service().get(
-                    self.plugin.canonical_session_id,
+                    self._session_id(),
                 )
                 entry = self.plugin.relationship.draft_daily_journal(
-                    session_id=self.plugin.canonical_session_id,
+                    session_id=self._session_id(),
                     day=day,
                     messages=history,
                     mood=_mood_descriptor(state),
@@ -2530,7 +2614,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     len(journal_prefix):-len("/confirm")
                 ].strip("/")
                 entry = self.plugin.relationship.confirm_journal(
-                    self.plugin.canonical_session_id,
+                    self._session_id(),
                     entry_id,
                     body=payload.get("body"),
                 )
@@ -2541,7 +2625,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/v1/relationship/capsules":
                 entry = self.plugin.relationship.create_capsule(
-                    session_id=self.plugin.canonical_session_id,
+                    session_id=self._session_id(),
                     title=payload.get("title"),
                     text=payload.get("text"),
                     unlock_at=payload.get("unlock_at"),
@@ -2558,7 +2642,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     len(capsule_prefix):-len("/open")
                 ].strip("/")
                 entry = self.plugin.relationship.open_capsule(
-                    self.plugin.canonical_session_id,
+                    self._session_id(),
                     entry_id,
                 )
                 if entry is None:
@@ -2568,7 +2652,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/v1/relationship/voice-memories":
                 entry = self.plugin.relationship.record_voice_memory(
-                    session_id=self.plugin.canonical_session_id,
+                    session_id=self._session_id(),
                     started_at=payload.get("started_at"),
                     ended_at=payload.get("ended_at"),
                     turn_count=payload.get("turn_count"),
@@ -2582,7 +2666,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 action_id = parsed.path[len(prefix):].strip("/")
                 receipt = self.plugin.acknowledge(
                     action_id=action_id,
-                    device_id=payload.get("device_id"),
+                    device_id=self._device_id(payload.get("device_id")),
                     status=payload.get("terminal_status", "complete"),
                     event_ids=payload.get("event_ids") or [],
                 )
@@ -2614,15 +2698,38 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             logger.exception("[AppChannel] request failed path=%s", parsed.path)
             self._json(500, {"error": "internal_error"})
 
-    def _authorized(self):
-        expected = self.plugin.token
+    def _authorized(self, requested_device_id=""):
         supplied = str(self.headers.get("Authorization") or "")
         if supplied.startswith("Bearer "):
             supplied = supplied[7:].strip()
-        if expected and hmac.compare_digest(supplied, expected):
+        self.auth_context = self.plugin.auth.authenticate(
+            supplied,
+            requested_device_id=requested_device_id,
+        )
+        if self.auth_context is not None:
             return True
         self._json(401, {"error": "unauthorized"})
         return False
+
+    def _session_id(self):
+        context = self.auth_context
+        return (
+            context.session_id
+            if context is not None
+            else self.plugin.canonical_session_id
+        )
+
+    def _device_id(self, requested=""):
+        context = self.auth_context
+        if context is not None and context.device_id:
+            return _safe_device_id(context.device_id)
+        return _safe_device_id(requested)
+
+    def _test_mode(self):
+        return bool(
+            self.auth_context is not None
+            and self.auth_context.test_mode
+        )
 
     def _body(self):
         length = self._integer(self.headers.get("Content-Length"), 0)
@@ -2712,7 +2819,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         stream_item = self.plugin.store.media_stream(
             media_id,
             device_id,
-            session_id=self.plugin.canonical_session_id,
+            session_id=self._session_id(),
         )
         while (
             stream_item is not None
@@ -2723,12 +2830,12 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             stream_item = self.plugin.store.media_stream(
                 media_id,
                 device_id,
-                session_id=self.plugin.canonical_session_id,
+                session_id=self._session_id(),
             )
         item = self.plugin.store.media(
             media_id,
             device_id,
-            session_id=self.plugin.canonical_session_id,
+            session_id=self._session_id(),
         )
         if not item:
             self._json(404, {"error": "media_not_found"})
@@ -2746,7 +2853,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         item = item or self.plugin.store.media_stream(
             media_id,
             device_id,
-            session_id=self.plugin.canonical_session_id,
+            session_id=self._session_id(),
         )
         if not item:
             self._json(404, {"error": "media_not_found"})
@@ -2766,7 +2873,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                 current = self.plugin.store.media_stream(
                     media_id,
                     device_id,
-                    session_id=self.plugin.canonical_session_id,
+                    session_id="",
                 )
                 if current is None:
                     break
@@ -2836,6 +2943,7 @@ class AppChannel(Plugin):
             os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
         )
         self.token = os.getenv("XIAOYOU_APP_TOKEN", "").strip()
+        self.auth = AppAuthService(self.canonical_session_id)
         self.store = None
         self.runtime = None
         self.httpd = None
@@ -2844,9 +2952,10 @@ class AppChannel(Plugin):
         if not self.enabled:
             logger.info("[AppChannel] disabled")
             return
-        if len(self.token) < 24:
+        if not self.auth.enabled and len(self.token) < 24:
             logger.error(
-                "[AppChannel] disabled: XIAOYOU_APP_TOKEN must contain at least 24 characters"
+                "[AppChannel] disabled: configure account password hashes and "
+                "XIAOYOU_APP_AUTH_SECRET, or a legacy XIAOYOU_APP_TOKEN"
             )
             self.enabled = False
             return
