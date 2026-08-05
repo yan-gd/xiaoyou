@@ -66,6 +66,27 @@ DATABASE_PATH = runtime_path(
     env_var="XIAOYOU_APP_DB_PATH",
 )
 MEDIA_DIR = Path(appdata_root()) / "app_channel" / "media"
+AI_PROVIDER_NAME = (
+    os.getenv("XIAOYOU_AI_PROVIDER_NAME", "小悠").strip() or "小悠"
+)
+AI_PROVIDER_CODE = (
+    os.getenv("XIAOYOU_AI_PROVIDER_CODE", "xiaoyou").strip() or "xiaoyou"
+)
+AI_LABEL_VERSION = "1"
+
+
+def _ai_content_metadata(content_id, generated=True):
+    """Return stable provenance fields carried by App messages and media."""
+    if not generated:
+        return {"ai_generated": False}
+    return {
+        "ai_generated": True,
+        "ai_label": "AI生成",
+        "ai_provider_name": AI_PROVIDER_NAME,
+        "ai_provider_code": AI_PROVIDER_CODE,
+        "ai_content_id": str(content_id or ""),
+        "ai_label_version": AI_LABEL_VERSION,
+    }
 
 
 def _mood_descriptor(state):
@@ -1178,9 +1199,10 @@ class AppInboxStore:
             else ""
         )
         streaming = stream_status == "streaming"
-        return {
+        event_id = str(row["event_id"])
+        item = {
             "sequence": int(row["sequence"]),
-            "event_id": str(row["event_id"]),
+            "event_id": event_id,
             "action_id": str(row["action_id"]),
             "position": int(row["position"]),
             "kind": str(row["kind"]),
@@ -1201,6 +1223,8 @@ class AppInboxStore:
                 else ""
             ),
         }
+        item.update(_ai_content_metadata(event_id))
+        return item
 
     def history(self, device_id, before=0, limit=100):
         device_id = _safe_device_id(device_id)
@@ -1249,6 +1273,9 @@ class AppInboxStore:
                 "mime_type": str(row["mime_type"] or ""),
                 "duration_ms": int(row["duration_ms"] or 0),
                 "created_at": int(row["accepted_at"]),
+                **_ai_content_metadata(
+                    str(row["message_id"]), generated=False
+                ),
             }
             for row in input_rows
         ]
@@ -1266,6 +1293,7 @@ class AppInboxStore:
                 "created_at": int(row["created_at"]),
                 "terminal_status": str(row["terminal_status"] or "queued"),
                 "requested_parts": int(row["requested_parts"] or 0),
+                **_ai_content_metadata(str(row["event_id"])),
             }
             for row in event_rows
         )
@@ -1429,6 +1457,11 @@ class AppInboxStore:
                         ),
                     }
                 )
+            item.update(
+                _ai_content_metadata(
+                    item["id"], generated=item["role"] == "assistant"
+                )
+            )
             messages.append(item)
         return {
             "messages": messages,
@@ -1613,6 +1646,23 @@ class AppInboxStore:
         if not path.is_file():
             return None
         return path, str(row["mime_type"])
+
+    def media_ai_metadata(self, media_id):
+        """Resolve the assistant event that owns a generated media file."""
+        with self.lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT event_id
+                FROM events
+                WHERE media_id=?
+                ORDER BY sequence ASC
+                LIMIT 1
+                """,
+                (str(media_id or ""),),
+            ).fetchone()
+        if not row:
+            return _ai_content_metadata(media_id, generated=False)
+        return _ai_content_metadata(str(row["event_id"]))
 
 
 class AppRuntimeChannel(ChatChannel):
@@ -2846,8 +2896,27 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "private, max-age=86400")
+        self._send_ai_media_headers(media_id)
         self.end_headers()
         self.wfile.write(payload)
+
+    def _send_ai_media_headers(self, media_id):
+        metadata = self.plugin.store.media_ai_metadata(media_id)
+        if not metadata.get("ai_generated"):
+            self.send_header("X-AI-Generated", "false")
+            return
+        provider_code = str(
+            metadata.get("ai_provider_code") or "xiaoyou"
+        ).encode("ascii", "ignore").decode("ascii") or "xiaoyou"
+        content_id = str(metadata.get("ai_content_id") or media_id)
+        self.send_header("X-AI-Generated", "true")
+        self.send_header("X-AI-Content-Label", "AI-generated")
+        self.send_header("X-AI-Provider-Code", provider_code)
+        self.send_header("X-AI-Content-ID", content_id)
+        self.send_header(
+            "X-AI-Label-Version",
+            str(metadata.get("ai_label_version") or AI_LABEL_VERSION),
+        )
 
     def _stream_media(self, media_id, device_id, item=None):
         item = item or self.plugin.store.media_stream(
@@ -2864,6 +2933,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "close")
+        self._send_ai_media_headers(media_id)
         self.end_headers()
 
         offset = 0

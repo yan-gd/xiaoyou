@@ -20,6 +20,29 @@ void main() {
     expect(message.id, 'event-1');
     expect(message.actionId, 'action-1');
     expect(message.text, '在呀');
+    expect(message.aiGenerated, isTrue);
+    expect(message.aiLabel, 'AI生成');
+    expect(message.aiProviderName, '小悠');
+    expect(message.aiProviderCode, 'xiaoyou');
+    expect(message.aiContentId, 'event-1');
+
+    final restored = ChatMessage.fromJson(message.toJson());
+    expect(restored.aiGenerated, isTrue);
+    expect(restored.aiContentId, 'event-1');
+  });
+
+  test('user content never inherits the assistant AI marker', () {
+    final message = ChatMessage.fromJson({
+      'id': 'input-1',
+      'role': 'user',
+      'kind': 'image',
+      'ai_generated': false,
+      'created_at': 123,
+    });
+
+    expect(message.aiGenerated, isFalse);
+    expect(message.aiLabel, isEmpty);
+    expect(message.aiContentId, isEmpty);
   });
 
   test('history restores every server page in chronological order', () async {

@@ -114,6 +114,7 @@ function PrivacyPolicy() {
 
     <PolicySection number="08" title="人工智能内容提示">
       <p>小悠的文字、语音、图片、心情摘要和记忆提取可能由人工智能生成，存在不准确或误解上下文的可能，不应作为医疗、法律、财务或紧急决策依据。重要共同经历应由你确认后再作为长期内容保留。</p>
+      <p>App 聊天页面底部持续展示“内容由 AI 生成 · 请注意甄别”作为显式标识。服务端同时为助手生成的文字、图片和语音记录 AI 生成属性、服务提供方名称及编码、唯一内容编号和标识版本，并在媒体下载响应中携带对应来源标识；这些字段用于内容来源识别、安全审计和问题追溯，不用于广告画像。</p>
     </PolicySection>
 
     <PolicySection number="09" title="未成年人保护">
@@ -143,6 +144,7 @@ function UserAgreement() {
 
     <PolicySection number="03" title="人工智能生成内容">
       <p>小悠输出由人工智能生成，可能出现事实错误、时间误差、情绪误判或不恰当内容。图片和语音为合成内容，不代表真实人物或真实事件。你应结合实际判断，不将其作为专业意见或紧急服务。</p>
+      <p>标识方式与样式：聊天页面底部持续显示“内容由 AI 生成 · 请注意甄别”；每条助手消息在数据层附带 <code>ai_generated</code>、<code>ai_provider_name</code>、<code>ai_provider_code</code>、<code>ai_content_id</code> 和标识版本，助手媒体的下载响应同步返回来源标识头。你不得恶意删除、篡改或隐匿依法设置的人工智能生成内容标识。</p>
     </PolicySection>
 
     <PolicySection number="04" title="合理使用">

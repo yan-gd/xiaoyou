@@ -739,6 +739,13 @@ def test_app_inbox_is_idempotent_persistent_and_receipt_driven(
     events = store.events_after("phone-1")
     assert [event["text"] for event in events] == ["在呀", "怎么啦"]
     assert all(event["requested_parts"] == 2 for event in events)
+    assert all(event["ai_generated"] is True for event in events)
+    assert all(event["ai_label"] == "AI生成" for event in events)
+    assert all(event["ai_provider_name"] == "小悠" for event in events)
+    assert all(event["ai_provider_code"] == "xiaoyou" for event in events)
+    assert all(
+        event["ai_content_id"] == event["event_id"] for event in events
+    )
 
     partial = store.acknowledge(
         "action-1",
@@ -759,9 +766,17 @@ def test_app_inbox_is_idempotent_persistent_and_receipt_driven(
     reopened = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
     assert reopened.events_after("phone-1")[0]["action_id"] == "action-1"
     history = reopened.history("phone-1")
-    assert any(item["role"] == "user" and item["text"] == "在吗" for item in history)
     assert any(
-        item["role"] == "assistant" and item["text"] == "在呀"
+        item["role"] == "user"
+        and item["text"] == "在吗"
+        and item["ai_generated"] is False
+        for item in history
+    )
+    assert any(
+        item["role"] == "assistant"
+        and item["text"] == "在呀"
+        and item["ai_generated"] is True
+        and item["ai_content_id"] == item["id"]
         for item in history
     )
     assert not any(
@@ -965,6 +980,9 @@ def test_app_voice_messages_keep_audio_transcript_and_receipt_text(
     assert events[0]["text"] == "我也想你呀"
     assert events[0]["duration_ms"] == 1800
     assert events[0]["media_id"]
+    media_label = store.media_ai_metadata(events[0]["media_id"])
+    assert media_label["ai_generated"] is True
+    assert media_label["ai_content_id"] == events[0]["event_id"]
 
     receipt = store.acknowledge(
         "voice-action-1",

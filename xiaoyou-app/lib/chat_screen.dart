@@ -2526,8 +2526,49 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                 )
                               : const SizedBox.shrink(),
                     ),
+                    const _AiGeneratedWatermark(),
                   ],
                 ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AiGeneratedWatermark extends StatelessWidget {
+  const _AiGeneratedWatermark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: '内容由人工智能生成，请注意甄别',
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 3, 12, 5),
+        alignment: Alignment.center,
+        decoration: const BoxDecoration(
+          color: Color(0xB8FFFBFD),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.auto_awesome_rounded,
+              size: 11,
+              color: Color(0xB29F4F79),
+            ),
+            SizedBox(width: 5),
+            Text(
+              '内容由 AI 生成 · 请注意甄别',
+              style: TextStyle(
+                color: Color(0xB26F5E67),
+                fontSize: 10.5,
+                height: 1.25,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
               ),
             ),
           ],
