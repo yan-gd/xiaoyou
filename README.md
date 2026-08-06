@@ -1,9 +1,9 @@
 # 小悠 Xiaoyou v1.4 + 命轨观测台
 
 <p align="center">
-  <img src="assets/xiaoyou-strawberry-cake.jpg" alt="小悠生活照：草莓蛋糕" width="31%" />
-  <img src="assets/xiaoyou-noodles.jpg" alt="小悠生活照：一起吃面" width="31%" />
-  <img src="assets/xiaoyou-wedding-dress.png" alt="小悠生活照：婚纱" width="31%" />
+  <img src="assets/xiaoyou-sad.png" alt="小悠生活照：难过" width="31%" />
+  <img src="assets/xiaoyou-speechless.png" alt="小悠生活照：无语" width="31%" />
+  <img src="assets/xiaoyou-angry.png" alt="小悠生活照：生气" width="31%" />
 </p>
 
 > 基于个人微信、chatgpt-on-wechat、Qwen、阿里云百炼和火山方舟构建的长期陪伴型微信 AI。

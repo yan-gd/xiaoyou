@@ -47,6 +47,47 @@
 
 final result: passed
 
+## Xiaoyou profile redesign — living album
+
+- Selected design reference: `C:\Users\qq157\.codex\generated_images\019fadf4-ea59-7703-a4e9-a0b44d513e74\call_GTEaRY1RmwDErABpJK1U4Kyw.png`
+- Reference size: `853 x 1844`
+- Runtime: Android emulator `emulator-5554`
+- Runtime viewport: `1280 x 2856` at density `480` (`426.7 x 952` logical pixels)
+- Final mood view: `tooling/profile-redesign-final-profile.png`
+- Final photo view: `tooling/profile-photo-contain-final.png`
+- Full-screen gallery: `tooling/profile-redesign-gallery.png`
+- Full-view review: `tooling/profile-redesign-comparison.png`
+- Focused photo-crop review: `tooling/profile-photo-contain-comparison.png`
+
+### Visual fidelity
+
+- Replaced the synthetic dashboard and overlapping-photo collage with the selected editorial album layout.
+- Matches the reference hierarchy: compact identity header, two quiet text tabs, one large current-mood portrait, a restrained 3 x 2 mood library, and a clean photo journal.
+- Uses Xiaoyou's existing six chibi emotion assets without changing the character into a realistic portrait.
+- Keeps the existing ivory, rose, ink, and warm-gray product palette while removing glow-heavy frames, star labels, connector lines, and artificial card decoration.
+- The selected mood uses a thin rose outline and check badge; unselected moods remain visually quiet.
+
+### Interaction and layout
+
+- Mood and photo tabs scroll to their respective sections and expose a clear selected state.
+- Selecting any mood updates the large portrait and mood copy immediately.
+- The latest six photos use one lead image and five supporting journal tiles.
+- Tapping a photo opens a swipeable, pinch-zoom full-screen gallery.
+- The final pass changed portrait thumbnail alignment from center crop to top-center crop so faces remain visible.
+- No overflow, unsafe-area collision, clipped primary content, or broken image state was observed at the tested viewport.
+
+### Iteration history
+
+- First pass: `P2` — the lead journal image used centered cover cropping, hiding the subject's face on portrait photos.
+- Fix: added top-center alignment to journal image tiles.
+- Post-fix evidence: `tooling/profile-redesign-final-profile.png`.
+- User follow-up: `P1` — fixed-height cover thumbnails still cut off most of each portrait image.
+- Fix: replaced cover-only rendering with a complete `BoxFit.contain` foreground and a softly blurred copy of the same photo as edge fill.
+- Post-fix evidence: `tooling/profile-photo-contain-final.png`; all six source photos are visible from edge to edge without subject cropping.
+- Focused before/after evidence: `tooling/profile-photo-contain-comparison.png`.
+
+final result: passed
+
 ## Continuous O2.0 voice room
 
 - Interaction reference: `E:\qq157\xwechat_files\wxid_7n4xe84ciy8k22_d2de\msg\video\2026-07\f6005aaa22c49a07a0e81a6bfcd6a221.mp4`

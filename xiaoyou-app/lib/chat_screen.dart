@@ -2545,13 +2545,8 @@ class _AiGeneratedWatermark extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       label: '内容由人工智能生成，请注意甄别',
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.fromLTRB(12, 3, 12, 5),
-        alignment: Alignment.center,
-        decoration: const BoxDecoration(
-          color: Color(0xB8FFFBFD),
-        ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 2, 12, 4),
         child: const Row(
           mainAxisSize: MainAxisSize.min,
           children: [
