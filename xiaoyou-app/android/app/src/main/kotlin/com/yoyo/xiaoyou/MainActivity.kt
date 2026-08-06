@@ -125,17 +125,6 @@ class MainActivity : FlutterFragmentActivity() {
                 }
                 "configureBackgroundNotifications" ->
                     configureBackgroundNotifications(call, result)
-                "updateBackgroundCursor" -> {
-                    val deviceId = call.argument<String>("deviceId").orEmpty()
-                    val sequence =
-                        call.argument<Number>("lastEventSequence")?.toLong() ?: 0L
-                    XiaoyouNotificationService.updateCursor(
-                        this,
-                        deviceId,
-                        sequence,
-                    )
-                    result.success(true)
-                }
                 "systemPushStatus" ->
                     result.success(
                         XiaoyouNotificationService.systemPushStatus(this),
@@ -149,10 +138,6 @@ class MainActivity : FlutterFragmentActivity() {
                     XiaoyouNotificationService.disableSystemPush(this) { status ->
                         runOnUiThread { result.success(status) }
                     }
-                }
-                "stopBackgroundNotifications" -> {
-                    XiaoyouNotificationService.stop(this)
-                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
@@ -328,16 +313,6 @@ class MainActivity : FlutterFragmentActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        XiaoyouNotificationService.updateAppForeground(this, true)
-    }
-
-    override fun onStop() {
-        XiaoyouNotificationService.updateAppForeground(this, false)
-        super.onStop()
-    }
-
     override fun onDestroy() {
         stopRealtimeAudio()
         realtimeAudioExecutor.shutdownNow()
@@ -405,8 +380,6 @@ class MainActivity : FlutterFragmentActivity() {
             baseUrl,
             token,
             deviceId,
-            call.argument<Number>("lastEventSequence")?.toLong() ?: 0L,
-            call.argument<Boolean>("appForeground") ?: true,
             call.argument<Boolean>("preview") ?: true,
             call.argument<Boolean>("sound") ?: true,
             call.argument<Boolean>("vibration") ?: true,

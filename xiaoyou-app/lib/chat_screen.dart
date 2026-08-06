@@ -155,9 +155,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (Platform.isAndroid) {
         _pollTimer?.cancel();
         _api?.cancelEventWait();
-        if (_preferences.notificationsEnabled) {
-          unawaited(_configureBackgroundNotifications(appInForeground: false));
-        }
       } else if (!_preferences.notificationsEnabled) {
         _pollTimer?.cancel();
       } else {
@@ -511,7 +508,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _scheduleArchiveSave(immediate: true);
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
-      unawaited(_syncBackgroundCursor());
       if (!testMode) {
         unawaited(_primeMediaCache(history.messages, api));
       }
@@ -520,9 +516,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _startPolling();
       await _poll();
       if (_preferences.notificationsEnabled) {
-        await _configureBackgroundNotifications(
-          appInForeground: _appInForeground,
-        );
+        await _syncPushRegistration();
       }
       unawaited(_refreshMoodProfile(api));
       _scrollToEnd(animated: false);
@@ -586,7 +580,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return;
       }
       if (events.isNotEmpty) {
-        final previousSequence = _lastEventSequence;
         final known = _messages.map((message) => message.id).toSet();
         final additions = <ChatMessage>[];
         final actions = <String>{};
@@ -605,9 +598,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (message.actionId.isNotEmpty) {
             actions.add(message.actionId);
           }
-        }
-        if (_lastEventSequence > previousSequence) {
-          unawaited(_syncBackgroundCursor());
         }
         if (additions.isNotEmpty) {
           final shouldFollow = !_showJumpToBottom;
@@ -1509,17 +1499,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     setState(() => _preferences = preferences);
     unawaited(_sessionStore.savePreferences(preferences));
     if (preferences.notificationsEnabled) {
-      unawaited(
-        _configureBackgroundNotifications(
-          appInForeground: _appInForeground,
-        ),
-      );
+      unawaited(_syncPushRegistration());
     }
   }
 
-  Future<bool> _configureBackgroundNotifications({
-    required bool appInForeground,
-  }) async {
+  /// 持久化推送连接配置并把偏好（含声音/振动/内容）上报服务器。
+  /// 消息提醒完全由 vivo 系统通道负责，这里不再启动任何后台服务。
+  Future<bool> _syncPushRegistration() async {
     if (!Platform.isAndroid) {
       return true;
     }
@@ -1534,8 +1520,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         baseUrl: api.baseUri.toString(),
         token: api.token,
         deviceId: api.deviceId,
-        lastEventSequence: _lastEventSequence,
-        appInForeground: appInForeground,
         preview: _preferences.notificationPreview,
         sound: _preferences.notificationSound,
         vibration: _preferences.notificationVibration,
@@ -1544,22 +1528,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return true;
     } catch (_) {
       return false;
-    }
-  }
-
-  Future<void> _syncBackgroundCursor() async {
-    final api = _api;
-    if (!Platform.isAndroid || api == null) {
-      return;
-    }
-    try {
-      await _notificationService.updateBackgroundCursor(
-        deviceId: api.deviceId,
-        lastEventSequence: _lastEventSequence,
-      );
-    } catch (_) {
-      // Lifecycle handoff also carries the cursor. This lightweight sync
-      // prevents duplicate notifications after long foreground sessions.
     }
   }
 
@@ -1577,14 +1545,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           _preferences.copyWith(notificationsEnabled: true),
         );
       } else if (systemEnabled && _preferences.notificationsEnabled) {
-        unawaited(
-          _configureBackgroundNotifications(
-            appInForeground: _appInForeground,
-          ),
-        );
+        unawaited(_syncPushRegistration());
       } else if (!systemEnabled) {
-        unawaited(_notificationService.stopBackgroundDelivery());
         if (_preferences.systemPushEnabled) {
+          unawaited(_notificationService.disableSystemPush());
           _updatePreferences(
             _preferences.copyWith(systemPushEnabled: false),
           );
@@ -1595,6 +1559,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// 消息通知总开关：开 = 系统通知权限 + vivo 系统推送；关 = 全部关闭。
   Future<bool> _setNotificationsEnabled(bool enabled) async {
     if (enabled) {
       var requestFailed = false;
@@ -1628,34 +1593,80 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return false;
       }
       setState(() => _systemNotificationsAllowed = true);
+      if (!_systemPushStatus.consented && !_systemPushStatus.active) {
+        final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: const Text('启用 vivo 系统级推送'),
+            content: const Text(
+              '启用后会使用 vivo 推送 SDK 获取设备推送标识、设备类型与系统版本，'
+              '仅用于把小悠的新消息交给手机系统及时提醒。服务商为维沃移动通信有限公司。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: const Text('暂不启用'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: const Text('同意并启用'),
+              ),
+            ],
+          ),
+        );
+        if (accepted != true) {
+          return false;
+        }
+      }
+      var systemPushActive = false;
+      try {
+        final status = await _notificationService.enableSystemPush();
+        if (mounted) {
+          setState(() => _systemPushStatus = status);
+        }
+        systemPushActive = status.active;
+        if (!status.active) {
+          final message = switch (status.error) {
+            'not_configured' => '当前安装包尚未配置 vivo 推送凭证，只能在 App 内提醒',
+            'unsupported_device' => '这台设备不支持 vivo 系统推送，只能在 App 内提醒',
+            _ => '系统级推送注册失败，只能在 App 内提醒',
+          };
+          _showSnack(message);
+        } else {
+          _showSnack('消息通知已开启，关闭 App 后也能及时提醒');
+        }
+      } catch (_) {
+        if (mounted) {
+          _showSnack('系统级推送暂时无法连接，只能在 App 内提醒');
+        }
+      }
+      if (!mounted) {
+        return false;
+      }
       _updatePreferences(
         _preferences.copyWith(
           notificationsEnabled: true,
+          systemPushEnabled: systemPushActive,
           notificationExplicitlyDisabled: false,
         ),
       );
-      final backgroundReady = await _configureBackgroundNotifications(
-        appInForeground: _appInForeground,
-      );
-      if (!backgroundReady && mounted) {
-        _showSnack('系统权限已开启，但后台提醒服务启动失败，请重新打开 App 后再试');
-      }
-      return backgroundReady;
-    } else {
-      try {
-        await _notificationService.stopBackgroundDelivery();
-        await _notificationService.cancelAll();
-      } catch (_) {
-        // Disabling notifications should still update local preferences.
-      }
+      return true;
+    }
+    try {
+      await _notificationService.disableSystemPush();
+      await _notificationService.cancelAll();
+    } catch (_) {
+      // Disabling notifications should still update local preferences.
     }
     if (!mounted) {
       return false;
     }
+    setState(() => _systemPushStatus = const SystemPushStatus());
     _updatePreferences(
       _preferences.copyWith(
-        notificationsEnabled: enabled,
-        notificationExplicitlyDisabled: !enabled,
+        notificationsEnabled: false,
+        systemPushEnabled: false,
+        notificationExplicitlyDisabled: true,
       ),
     );
     return true;
@@ -1677,120 +1688,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     } catch (_) {
-      // System push status is advisory; polling remains available.
-    }
-  }
-
-  Future<bool> _setSystemPushEnabled(bool enabled) async {
-    if (!Platform.isAndroid) {
-      return false;
-    }
-    if (enabled) {
-      if (!_preferences.notificationsEnabled) {
-        final notificationsReady = await _setNotificationsEnabled(true);
-        if (!notificationsReady) {
-          return false;
-        }
-      }
-      if (!mounted) {
-        return false;
-      }
-      final accepted = await showDialog<bool>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('启用 vivo 系统级推送'),
-          content: const Text(
-            '启用后会使用 vivo 推送 SDK 获取设备推送标识、设备类型与系统版本，'
-            '仅用于把小悠的新消息交给手机系统及时提醒。服务商为维沃移动通信有限公司。',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
-              child: const Text('暂不启用'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
-              child: const Text('同意并启用'),
-            ),
-          ],
-        ),
-      );
-      if (accepted != true) {
-        return false;
-      }
-      try {
-        final status = await _notificationService.enableSystemPush();
-        if (!mounted) {
-          return false;
-        }
-        setState(() => _systemPushStatus = status);
-        if (!status.active) {
-          final message = switch (status.error) {
-            'not_configured' => '当前安装包尚未配置 vivo 推送凭证，已继续使用后台服务兜底',
-            'unsupported_device' => '这台设备不支持 vivo 系统推送，已继续使用后台服务兜底',
-            _ => '系统级推送注册失败，已继续使用后台服务兜底',
-          };
-          _showSnack(message);
-          return false;
-        }
-        _updatePreferences(
-          _preferences.copyWith(systemPushEnabled: true),
-        );
-        _showSnack('vivo 系统级推送已连接，关闭 App 后也能及时提醒');
-        return true;
-      } catch (_) {
-        if (mounted) {
-          _showSnack('系统级推送暂时无法连接，已继续使用后台服务兜底');
-        }
-        return false;
-      }
-    }
-    try {
-      final status = await _notificationService.disableSystemPush();
-      if (mounted) {
-        setState(() => _systemPushStatus = status);
-      }
-    } catch (_) {
-      // Local preference still controls whether registration is retried.
-    }
-    if (!mounted) {
-      return false;
-    }
-    _updatePreferences(
-      _preferences.copyWith(systemPushEnabled: false),
-    );
-    unawaited(
-      _configureBackgroundNotifications(
-        appInForeground: _appInForeground,
-      ),
-    );
-    return true;
-  }
-
-  Future<bool> _sendTestNotification() async {
-    try {
-      final allowed = await _notificationService.notificationsEnabled();
-      if (!mounted) {
-        return false;
-      }
-      setState(() => _systemNotificationsAllowed = allowed);
-      if (!allowed) {
-        _showSnack('系统通知权限未开启，请先在系统设置中允许“小悠”发送通知');
-        return false;
-      }
-      await _notificationService.showMessage(
-        messageId: 'xiaoyou-test-${DateTime.now().millisecondsSinceEpoch}',
-        body: '测试成功啦，之后小悠会在这里提醒你 💗',
-        sound: _preferences.notificationSound,
-        vibration: _preferences.notificationVibration,
-      );
-      _showSnack('测试通知已发送，请查看通知栏');
-      return true;
-    } catch (_) {
-      if (mounted) {
-        _showSnack('测试通知发送失败，请检查“小悠的消息”通知分类是否开启');
-      }
-      return false;
+      // System push status is advisory.
     }
   }
 
@@ -1925,9 +1823,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return;
     }
     try {
-      await _notificationService.stopBackgroundDelivery();
+      await _notificationService.disableSystemPush();
     } catch (_) {
-      // Removing the saved connection must not be blocked by service cleanup.
+      // Removing the saved connection must not be blocked by cleanup.
     }
     await _sessionStore.clear();
     _pollTimer?.cancel();
@@ -1966,8 +1864,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           batteryOptimizationIgnored: _batteryOptimizationIgnored,
           onLockChanged: _setAppLock,
           onNotificationsChanged: _setNotificationsEnabled,
-          onSystemPushChanged: _setSystemPushEnabled,
-          onTestNotification: _sendTestNotification,
           onOpenNotificationSettings: _openSystemNotificationSettings,
           onOpenBatteryOptimizationSettings: _openBatteryOptimizationSettings,
           onPreferencesChanged: _updatePreferences,
@@ -2803,8 +2699,6 @@ class _SettingsSheet extends StatefulWidget {
     required this.batteryOptimizationIgnored,
     required this.onLockChanged,
     required this.onNotificationsChanged,
-    required this.onSystemPushChanged,
-    required this.onTestNotification,
     required this.onOpenNotificationSettings,
     required this.onOpenBatteryOptimizationSettings,
     required this.onPreferencesChanged,
@@ -2822,8 +2716,6 @@ class _SettingsSheet extends StatefulWidget {
   final bool batteryOptimizationIgnored;
   final Future<bool> Function(bool) onLockChanged;
   final Future<bool> Function(bool) onNotificationsChanged;
-  final Future<bool> Function(bool) onSystemPushChanged;
-  final Future<bool> Function() onTestNotification;
   final Future<void> Function() onOpenNotificationSettings;
   final Future<bool> Function() onOpenBatteryOptimizationSettings;
   final ValueChanged<AppPreferences> onPreferencesChanged;
@@ -2839,12 +2731,10 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _lockEnabled = widget.lockEnabled;
   late AppPreferences _preferences = widget.preferences;
   late bool _systemNotificationsAllowed = widget.systemNotificationsAllowed;
-  late SystemPushStatus _systemPushStatus = widget.systemPushStatus;
+  late final SystemPushStatus _systemPushStatus = widget.systemPushStatus;
   late bool _batteryOptimizationIgnored = widget.batteryOptimizationIgnored;
   bool _changingLock = false;
   bool _changingNotifications = false;
-  bool _changingSystemPush = false;
-  bool _testingNotifications = false;
 
   Future<void> _changeLock(bool value) async {
     setState(() => _changingLock = true);
@@ -2885,59 +2775,6 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           }
         });
       }
-    }
-  }
-
-  Future<void> _changeSystemPush(bool value) async {
-    setState(() => _changingSystemPush = true);
-    var changed = false;
-    try {
-      changed = await widget.onSystemPushChanged(value);
-    } catch (_) {
-      changed = false;
-    } finally {
-      if (mounted) {
-        setState(() {
-          _changingSystemPush = false;
-          if (changed) {
-            _preferences = _preferences.copyWith(
-              systemPushEnabled: value,
-            );
-            _systemPushStatus = SystemPushStatus(
-              configured: _systemPushStatus.configured,
-              supported: _systemPushStatus.supported,
-              consented: value,
-              active: value,
-            );
-          }
-        });
-      }
-    }
-  }
-
-  String get _systemPushSubtitle {
-    if (_systemPushStatus.active) {
-      return '系统推送与实时连接自动协作；推送受限时会立即切回本地提醒';
-    }
-    if (!_systemPushStatus.configured) {
-      return '当前安装包未配置 vivo 凭证，由实时后台连接负责提醒';
-    }
-    if (!_systemPushStatus.supported) {
-      return '当前设备不支持 vivo 推送，由实时后台连接负责提醒';
-    }
-    return '开启后会优先使用 vivo，失败时自动切换实时后台连接';
-  }
-
-  Future<void> _testNotification() async {
-    setState(() => _testingNotifications = true);
-    final sent = await widget.onTestNotification();
-    if (mounted) {
-      setState(() {
-        _testingNotifications = false;
-        if (sent) {
-          _systemNotificationsAllowed = true;
-        }
-      });
     }
   }
 
@@ -3076,13 +2913,13 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     leading: const _SettingsIcon(
                       icon: Icons.notifications_active_outlined,
                     ),
-                    title: const Text('后台消息提醒'),
+                    title: const Text('消息通知'),
                     subtitle: Text(
                       !_preferences.notificationsEnabled
-                          ? '仅暂停 App 提醒，不会关闭系统通知权限'
-                          : (_systemNotificationsAllowed
-                              ? '原生后台服务运行中，离开 App 后仍会提醒'
-                              : 'App 内已开启，但系统通知权限尚未生效'),
+                          ? '关闭后不再提醒新消息'
+                          : (_systemPushStatus.active
+                              ? 'vivo 系统推送已连接，关闭 App 后也能及时提醒'
+                              : '系统推送未连接，只能在 App 内提醒'),
                     ),
                     trailing: _changingNotifications
                         ? const SizedBox(
@@ -3095,30 +2932,6 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                             onChanged: _changeNotifications,
                           ),
                   ),
-                  if (Platform.isAndroid)
-                    ListTile(
-                      enabled: _preferences.notificationsEnabled,
-                      leading: _SettingsIcon(
-                        icon: _systemPushStatus.active
-                            ? Icons.bolt_rounded
-                            : Icons.cloud_sync_outlined,
-                      ),
-                      title: const Text('vivo 系统级推送'),
-                      subtitle: Text(_systemPushSubtitle),
-                      trailing: _changingSystemPush
-                          ? const SizedBox(
-                              width: 22,
-                              height: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : Switch.adaptive(
-                              value: _preferences.systemPushEnabled &&
-                                  _systemPushStatus.active,
-                              onChanged: _preferences.notificationsEnabled
-                                  ? _changeSystemPush
-                                  : null,
-                            ),
-                    ),
                   ListTile(
                     leading: _SettingsIcon(
                       icon: _systemNotificationsAllowed
@@ -3148,25 +2961,6 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                       trailing: const Icon(Icons.chevron_right_rounded),
                       onTap: _openBatteryOptimizationSettings,
                     ),
-                  ListTile(
-                    enabled: _preferences.notificationsEnabled,
-                    leading: const _SettingsIcon(
-                      icon: Icons.notifications_none_rounded,
-                    ),
-                    title: const Text('发送测试通知'),
-                    subtitle: const Text('立即验证通知分类、声音与振动'),
-                    trailing: _testingNotifications
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.chevron_right_rounded),
-                    onTap: _preferences.notificationsEnabled &&
-                            !_testingNotifications
-                        ? _testNotification
-                        : null,
-                  ),
                   ListTile(
                     enabled: _preferences.notificationsEnabled,
                     leading: const _SettingsIcon(
