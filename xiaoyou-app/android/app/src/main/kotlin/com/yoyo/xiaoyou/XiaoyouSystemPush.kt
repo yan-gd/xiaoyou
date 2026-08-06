@@ -2,6 +2,8 @@ package com.yoyo.xiaoyou
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.vivo.push.IPushActionListener
 import com.vivo.push.PushClient
@@ -25,6 +27,13 @@ object XiaoyouSystemPush {
 
     @Volatile
     private var registrationInFlight = false
+
+    /** 注册成功后，SDK 的 getRegId 可能因“两秒内重复调用”限制暂时返回空。
+     *  此时不报错，等待 vivo 的 onSystemPushTokenChanged 回调带回 regId。 */
+    private const val REGISTRATION_PENDING_REFRESH_MS = 2_000L
+
+    /** turnOnPush 已提交但 regId 尚未到达的等待窗口。 */
+    private const val REGISTRATION_ACCEPT_WINDOW_MS = 8_000L
 
     fun status(context: Context): Map<String, Any> {
         val preferences = context.getSharedPreferences(
@@ -51,7 +60,7 @@ object XiaoyouSystemPush {
             "active" to (
                 configured &&
                     supported &&
-                    preferences.getBoolean(KEY_ACTIVE, false) &&
+                    consented &&
                     token.isNotBlank()
                 ),
         )
@@ -96,10 +105,7 @@ object XiaoyouSystemPush {
             return
         }
         val existingToken = token(appContext)
-        if (
-            preferences.getBoolean(KEY_ACTIVE, false) &&
-            existingToken.isNotEmpty()
-        ) {
+        if (existingToken.isNotEmpty()) {
             callback(status(appContext))
             return
         }
@@ -130,18 +136,45 @@ object XiaoyouSystemPush {
                         return@IPushActionListener
                     }
                     queryRegistration(client) { registeredToken ->
-                        registrationInFlight = false
-                        if (registeredToken.isEmpty()) {
-                            callback(
-                                statusWithError(
-                                    appContext,
-                                    "missing_registration_id",
-                                ),
-                            )
-                        } else {
+                        if (registeredToken.isNotEmpty()) {
+                            registrationInFlight = false
                             saveRegistration(appContext, registeredToken)
                             callback(status(appContext))
+                            return@queryRegistration
                         }
+                        // vivo SDK 刚注册成功，但 getRegId 受“两秒内重复调用”
+                        // 限制可能返回空。此时不报错：等待 SDK 的
+                        // onSystemPushTokenChanged 回调（会保存 regId 并置 active），
+                        // 首次注册时 regId 由异步回调带回，最多等待
+                        // REGISTRATION_ACCEPT_WINDOW_MS 让回调落地。
+                        val poll = object : Runnable {
+                            private var attempts = 0
+                            override fun run() {
+                                val tokenNow = token(appContext)
+                                if (tokenNow.isNotEmpty()) {
+                                    registrationInFlight = false
+                                    callback(status(appContext))
+                                    return
+                                }
+                                attempts++
+                                if (attempts * REGISTRATION_PENDING_REFRESH_MS >=
+                                    REGISTRATION_ACCEPT_WINDOW_MS
+                                ) {
+                                    registrationInFlight = false
+                                    callback(
+                                        statusWithError(
+                                            appContext,
+                                            "missing_registration_id",
+                                        ),
+                                    )
+                                    return
+                                }
+                                Handler(Looper.getMainLooper())
+                                    .postDelayed(this, REGISTRATION_PENDING_REFRESH_MS)
+                            }
+                        }
+                        Handler(Looper.getMainLooper())
+                            .postDelayed(poll, REGISTRATION_PENDING_REFRESH_MS)
                     }
                 },
             )

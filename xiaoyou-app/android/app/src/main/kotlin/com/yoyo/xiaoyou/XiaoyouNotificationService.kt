@@ -67,6 +67,200 @@ class XiaoyouNotificationService : Service() {
         private val registrationExecutor = Executors.newSingleThreadExecutor()
         private fun cursorKey(id: String) = "cursor_$id"
 
+        private fun messageChannelId(sound: Boolean, vibration: Boolean): String {
+            return "xiaoyou_messages_v4_" +
+                (if (sound) "sound" else "silent") + "_" +
+                (if (vibration) "vibrate" else "still")
+        }
+
+        private fun createMessageChannel(
+            context: Context,
+            channelId: String,
+            sound: Boolean,
+            vibration: Boolean,
+        ) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                return
+            }
+            val manager = context.getSystemService(NotificationManager::class.java)
+            val channel = NotificationChannel(
+                channelId,
+                "小悠的消息",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "小悠发来的聊天消息和主动关心"
+                setShowBadge(true)
+                enableVibration(vibration)
+                vibrationPattern = if (vibration) {
+                    longArrayOf(0L, 180L, 90L, 180L)
+                } else {
+                    longArrayOf(0L)
+                }
+                if (sound) {
+                    val attributes = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .build()
+                    setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+                        attributes,
+                    )
+                } else {
+                    setSound(null, null)
+                }
+            }
+            manager.createNotificationChannel(channel)
+        }
+
+        private fun publishConversationShortcut(context: Context, person: Person) {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                action = Intent.ACTION_VIEW
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            }
+            val shortcut = ShortcutInfoCompat.Builder(
+                context,
+                CONVERSATION_SHORTCUT_ID,
+            )
+                .setShortLabel("小悠")
+                .setLongLabel("和小悠聊天")
+                .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
+                .setIntent(intent)
+                .setPerson(person)
+                .setLongLived(true)
+                .build()
+            ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
+        }
+
+        /** 展示一条小悠消息通知；事件轮询与 vivo 系统推送共用。 */
+        fun showNotification(
+            context: Context,
+            event: JSONObject,
+            eventSequence: Long,
+            showPreview: Boolean,
+            playSound: Boolean,
+            vibrate: Boolean,
+        ) {
+            val channelId = messageChannelId(playSound, vibrate)
+            createMessageChannel(context, channelId, playSound, vibrate)
+            val messageId = event.optString("id", event.optString("event_id", "$eventSequence"))
+            val kind = event.optString("kind", "text")
+            val text = event.optString("text", "").trim()
+            val body = if (!showPreview) {
+                "小悠发来了一条新消息"
+            } else {
+                when (kind) {
+                    "image" -> "小悠发来了一张图片"
+                    "sticker" -> "小悠发来了一个表情包"
+                    "voice" -> if (text.isEmpty()) "小悠发来了一条语音" else "🎙 $text"
+                    else -> text.ifEmpty { "小悠发来了一条新消息" }
+                }
+            }
+            val openApp = PendingIntent.getActivity(
+                context,
+                0,
+                Intent(context, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val xiaoyou = Person.Builder()
+                .setName("小悠")
+                .setKey("xiaoyou")
+                .setImportant(true)
+                .setIcon(IconCompat.createWithResource(context, R.mipmap.ic_launcher))
+                .build()
+            publishConversationShortcut(context, xiaoyou)
+            val notificationId =
+                MESSAGE_NOTIFICATION_BASE + (messageId.hashCode() and 0x0fffffff)
+            val replyIntent = Intent(context, XiaoyouDirectReplyReceiver::class.java).apply {
+                putExtra(EXTRA_NOTIFICATION_ID, notificationId)
+            }
+            val mutableFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                0
+            }
+            val replyPendingIntent = PendingIntent.getBroadcast(
+                context,
+                notificationId,
+                replyIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag,
+            )
+            val replyAction = NotificationCompat.Action.Builder(
+                R.drawable.ic_stat_xiaoyou,
+                "直接回复",
+                replyPendingIntent,
+            )
+                .addRemoteInput(
+                    RemoteInput.Builder(DIRECT_REPLY_KEY)
+                        .setLabel("回复小悠")
+                        .build(),
+                )
+                .setAllowGeneratedReplies(true)
+                .build()
+            val timestamp = event.optLong(
+                "created_at",
+                System.currentTimeMillis() / 1000L,
+            ) * 1000L
+            val notification = NotificationCompat.Builder(context, channelId)
+                .setSmallIcon(R.drawable.ic_stat_xiaoyou)
+                .setContentTitle("小悠")
+                .setContentText(body)
+                .setStyle(
+                    NotificationCompat.MessagingStyle(xiaoyou)
+                        .setConversationTitle("小悠")
+                        .addMessage(body, timestamp, xiaoyou),
+                )
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setAutoCancel(true)
+                .setContentIntent(openApp)
+                .setShortcutId(CONVERSATION_SHORTCUT_ID)
+                .addPerson(xiaoyou)
+                .addAction(replyAction)
+                .setNumber(1)
+                .setGroup("xiaoyou_conversation")
+                .setSound(if (playSound) RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) else null)
+                .setVibrate(if (vibrate) longArrayOf(0L, 180L, 90L, 180L) else longArrayOf(0L))
+                .build()
+            try {
+                NotificationManagerCompat.from(context).notify(
+                    notificationId,
+                    notification,
+                )
+            } catch (error: SecurityException) {
+                Log.w(TAG, "Notification permission was revoked", error)
+            }
+        }
+
+        /** vivo 系统推送到达（App 进程存活）时展示通知。 */
+        fun showVivoPushNotification(
+            context: Context,
+            actionId: String,
+            kind: String,
+            text: String,
+            createdAtMs: Long,
+        ) {
+            val preferences = context.getSharedPreferences(
+                PREFERENCES_NAME,
+                Context.MODE_PRIVATE,
+            )
+            val event = JSONObject().apply {
+                put("id", actionId)
+                put("kind", kind)
+                put("text", text)
+                put("created_at", createdAtMs / 1000L)
+            }
+            showNotification(
+                context,
+                event,
+                eventSequence = 0L,
+                showPreview = preferences.getBoolean(KEY_PREVIEW, true),
+                playSound = preferences.getBoolean(KEY_SOUND, true),
+                vibrate = preferences.getBoolean(KEY_VIBRATION, true),
+            )
+        }
+
         @Volatile
         private var activeService: XiaoyouNotificationService? = null
 
@@ -487,9 +681,9 @@ class XiaoyouNotificationService : Service() {
                 cursorPreferences.getLong(cursorKey(deviceId), 0L),
             )
         }
-        if (foreground) {
-            activeConnection?.disconnect()
-        }
+        // 前台时断开长连接（Flutter 自己拉事件）；退后台时也立即断开，
+        // 让 pollLoop 立刻进入下一轮重新建立连接，而不是等旧连接超时。
+        activeConnection?.disconnect()
         Log.i(
             TAG,
             "Background delivery handoff foreground=$foreground sequence=$sequence",
@@ -655,117 +849,14 @@ class XiaoyouNotificationService : Service() {
     }
 
     private fun showMessageNotification(event: JSONObject, eventSequence: Long) {
-        val channelId = messageChannelId(playSound, vibrate)
-        createMessageChannel(channelId, playSound, vibrate)
-        val messageId = event.optString("id", event.optString("event_id", "$eventSequence"))
-        val kind = event.optString("kind", "text")
-        val text = event.optString("text", "").trim()
-        val body = if (!showPreview) {
-            "小悠发来了一条新消息"
-        } else {
-            when (kind) {
-                "image" -> "小悠发来了一张图片"
-                "sticker" -> "小悠发来了一个表情包"
-                "voice" -> if (text.isEmpty()) "小悠发来了一条语音" else "🎙 $text"
-                else -> text.ifEmpty { "小悠发来了一条新消息" }
-            }
-        }
-        val openApp = PendingIntent.getActivity(
+        showNotification(
             this,
-            0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            event,
+            eventSequence,
+            showPreview = showPreview,
+            playSound = playSound,
+            vibrate = vibrate,
         )
-        val xiaoyou = Person.Builder()
-            .setName("小悠")
-            .setKey("xiaoyou")
-            .setImportant(true)
-            .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
-            .build()
-        publishConversationShortcut(xiaoyou)
-        val notificationId =
-            MESSAGE_NOTIFICATION_BASE + (messageId.hashCode() and 0x0fffffff)
-        val replyIntent = Intent(this, XiaoyouDirectReplyReceiver::class.java).apply {
-            putExtra(EXTRA_NOTIFICATION_ID, notificationId)
-        }
-        val mutableFlag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_MUTABLE
-        } else {
-            0
-        }
-        val replyPendingIntent = PendingIntent.getBroadcast(
-            this,
-            notificationId,
-            replyIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or mutableFlag,
-        )
-        val replyAction = NotificationCompat.Action.Builder(
-            R.drawable.ic_stat_xiaoyou,
-            "直接回复",
-            replyPendingIntent,
-        )
-            .addRemoteInput(
-                RemoteInput.Builder(DIRECT_REPLY_KEY)
-                    .setLabel("回复小悠")
-                    .build(),
-            )
-            .setAllowGeneratedReplies(true)
-            .build()
-        val timestamp = event.optLong(
-            "created_at",
-            System.currentTimeMillis() / 1000L,
-        ) * 1000L
-        val notification = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_stat_xiaoyou)
-            .setContentTitle("小悠")
-            .setContentText(body)
-            .setStyle(
-                NotificationCompat.MessagingStyle(xiaoyou)
-                    .setConversationTitle("小悠")
-                    .addMessage(body, timestamp, xiaoyou),
-            )
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setContentIntent(openApp)
-            .setShortcutId(CONVERSATION_SHORTCUT_ID)
-            .addPerson(xiaoyou)
-            .addAction(replyAction)
-            .setNumber(1)
-            .setGroup("xiaoyou_conversation")
-            .setSound(if (playSound) RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION) else null)
-            .setVibrate(if (vibrate) longArrayOf(0L, 180L, 90L, 180L) else longArrayOf(0L))
-            .build()
-        try {
-            NotificationManagerCompat.from(this).notify(
-                notificationId,
-                notification,
-            )
-        } catch (error: SecurityException) {
-            Log.w(TAG, "Notification permission was revoked", error)
-        }
-    }
-
-    private fun publishConversationShortcut(person: Person) {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            action = Intent.ACTION_VIEW
-            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-        }
-        val shortcut = ShortcutInfoCompat.Builder(
-            this,
-            CONVERSATION_SHORTCUT_ID,
-        )
-            .setShortLabel("小悠")
-            .setLongLabel("和小悠聊天")
-            .setIcon(IconCompat.createWithResource(this, R.mipmap.ic_launcher))
-            .setIntent(intent)
-            .setPerson(person)
-            .setLongLived(true)
-            .build()
-        ShortcutManagerCompat.pushDynamicShortcut(this, shortcut)
     }
 
     private fun createServiceChannel() {
@@ -782,43 +873,6 @@ class XiaoyouNotificationService : Service() {
             setSound(null, null)
             enableVibration(false)
             setShowBadge(false)
-        }
-        manager.createNotificationChannel(channel)
-    }
-
-    private fun createMessageChannel(
-        channelId: String,
-        sound: Boolean,
-        vibration: Boolean,
-    ) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return
-        }
-        val manager = getSystemService(NotificationManager::class.java)
-        val channel = NotificationChannel(
-            channelId,
-            "小悠的消息",
-            NotificationManager.IMPORTANCE_HIGH,
-        ).apply {
-            description = "小悠发来的聊天消息和主动关心"
-            setShowBadge(true)
-            enableVibration(vibration)
-            vibrationPattern = if (vibration) {
-                longArrayOf(0L, 180L, 90L, 180L)
-            } else {
-                longArrayOf(0L)
-            }
-            if (sound) {
-                val attributes = AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                    .build()
-                setSound(
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
-                    attributes,
-                )
-            } else {
-                setSound(null, null)
-            }
         }
         manager.createNotificationChannel(channel)
     }
@@ -841,12 +895,6 @@ class XiaoyouNotificationService : Service() {
             .setOngoing(true)
             .setContentIntent(openApp)
             .build()
-    }
-
-    private fun messageChannelId(sound: Boolean, vibration: Boolean): String {
-        return "xiaoyou_messages_v4_" +
-            (if (sound) "sound" else "silent") + "_" +
-            (if (vibration) "vibrate" else "still")
     }
 
     private fun persistCursor() {

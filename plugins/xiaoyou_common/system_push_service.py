@@ -117,6 +117,15 @@ class VivoPushGateway:
     def _successful(payload):
         return payload.get("result") in (0, "0")
 
+    @staticmethod
+    def _failure_detail(payload):
+        """vivo 失败响应携带文字说明，暴露到日志便于直接定位错误码含义。"""
+        for key in ("desc", "msg", "errorMsg", "message"):
+            value = payload.get(key)
+            if value:
+                return str(value)[:60]
+        return ""
+
     def _authenticate(self, force=False):
         if not self.enabled:
             raise RuntimeError("vivo_push_not_configured")
@@ -149,9 +158,13 @@ class VivoPushGateway:
             )
             token = str(payload.get("authToken") or "").strip()
             if not self._successful(payload) or not token:
+                detail = self._failure_detail(payload)
                 raise RuntimeError(
-                    "vivo_push_auth_failed:%s"
-                    % str(payload.get("result", "unknown"))
+                    "vivo_push_auth_failed:%s%s"
+                    % (
+                        str(payload.get("result", "unknown")),
+                        (" desc=" + detail) if detail else "",
+                    )
                 )
             self._auth_token = token
             # Official auth tokens are valid for one day. Refresh early.
@@ -185,6 +198,7 @@ class VivoPushGateway:
             ("%s:%s" % (str(action_id or ""), reg_id)).encode("utf-8")
         ).hexdigest()
         payload = {
+            "appId": int(self.app_id),
             "regId": reg_id,
             "notifyType": notify_type,
             "title": _truncate_display("小悠", 40),
@@ -192,6 +206,8 @@ class VivoPushGateway:
             "timeToLive": 24 * 60 * 60,
             "skipType": 1,
             "networkType": -1,
+            # 系统类消息走 VPushChannel_1（有声/横幅），运营类走 VPushChannel_0（静默）。
+            "classification": 1,
             "clientCustomMap": {
                 "action_id": str(action_id or "")[:128],
                 "kind": str(kind or "text")[:24],
@@ -212,9 +228,13 @@ class VivoPushGateway:
                     self._auth_token = ""
                     self._auth_expires_at = 0.0
                 continue
+            detail = self._failure_detail(response)
             raise RuntimeError(
-                "vivo_push_send_failed:%s"
-                % str(response.get("result", "unknown"))
+                "vivo_push_send_failed:%s%s"
+                % (
+                    str(response.get("result", "unknown")),
+                    (" desc=" + detail) if detail else "",
+                )
             )
         return False
 
