@@ -23,6 +23,28 @@ class XiaoyouLoginResult {
   final int expiresAt;
 }
 
+class XiaoyouAuthConfig {
+  const XiaoyouAuthConfig({
+    required this.emailRegistration,
+    required this.qqLogin,
+    required this.passwordMinLength,
+  });
+
+  final bool emailRegistration;
+  final bool qqLogin;
+  final int passwordMinLength;
+}
+
+class XiaoyouQqLoginStart {
+  const XiaoyouQqLoginStart({
+    required this.loginId,
+    required this.authorizationUrl,
+  });
+
+  final String loginId;
+  final String authorizationUrl;
+}
+
 class XiaoyouApi {
   XiaoyouApi({
     required String baseUrl,
@@ -111,6 +133,167 @@ class XiaoyouApi {
         deviceId: scopedDeviceId,
         expiresAt: asInt(values['expires_at']),
       );
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  static Future<XiaoyouAuthConfig> authConfig(String baseUrl) async {
+    final values = await _publicRequest(baseUrl, 'GET', '/v1/auth/config');
+    return XiaoyouAuthConfig(
+      emailRegistration: values['email_registration'] == true,
+      qqLogin: values['qq_login'] == true,
+      passwordMinLength: max(8, asInt(values['password_min_length'])),
+    );
+  }
+
+  static Future<Map<String, dynamic>> requestRegistration({
+    required String baseUrl,
+    required String email,
+    required String password,
+  }) =>
+      _publicRequest(
+        baseUrl,
+        'POST',
+        '/v1/auth/register/request',
+        body: {'email': email, 'password': password},
+      );
+
+  static Future<XiaoyouLoginResult> verifyRegistration({
+    required String baseUrl,
+    required String email,
+    required String code,
+    required String deviceId,
+    required bool remember,
+  }) async {
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/register/verify',
+      body: {
+        'email': email,
+        'code': code,
+        'device_id': deviceId,
+        'remember': remember,
+      },
+    );
+    return _loginResult(values);
+  }
+
+  static Future<void> requestPasswordReset({
+    required String baseUrl,
+    required String email,
+  }) async {
+    await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/password/reset/request',
+      body: {'email': email},
+    );
+  }
+
+  static Future<void> confirmPasswordReset({
+    required String baseUrl,
+    required String email,
+    required String code,
+    required String password,
+  }) async {
+    await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/password/reset/confirm',
+      body: {'email': email, 'code': code, 'password': password},
+    );
+  }
+
+  static Future<XiaoyouQqLoginStart> startQqLogin(String baseUrl) async {
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/qq/start',
+      body: const {},
+    );
+    return XiaoyouQqLoginStart(
+      loginId: '${values['login_id'] ?? ''}',
+      authorizationUrl: '${values['authorization_url'] ?? ''}',
+    );
+  }
+
+  static Future<XiaoyouLoginResult?> exchangeQqLogin({
+    required String baseUrl,
+    required String loginId,
+    required String deviceId,
+    required bool remember,
+  }) async {
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/qq/exchange',
+      body: {
+        'login_id': loginId,
+        'device_id': deviceId,
+        'remember': remember,
+      },
+      allowPending: true,
+    );
+    if (values['status'] == 'pending') {
+      return null;
+    }
+    return _loginResult(values);
+  }
+
+  static XiaoyouLoginResult _loginResult(Map<String, dynamic> values) {
+    final token = '${values['access_token'] ?? ''}'.trim();
+    final accountId = '${values['account_id'] ?? ''}'.trim();
+    final scopedDeviceId = '${values['device_id'] ?? ''}'.trim();
+    if (token.isEmpty || accountId.isEmpty || scopedDeviceId.isEmpty) {
+      throw const FormatException('invalid_login_response');
+    }
+    return XiaoyouLoginResult(
+      token: token,
+      accountId: accountId,
+      testMode: values['test_mode'] == true,
+      deviceId: scopedDeviceId,
+      expiresAt: asInt(values['expires_at']),
+    );
+  }
+
+  static Future<Map<String, dynamic>> _publicRequest(
+    String baseUrl,
+    String method,
+    String endpoint, {
+    Map<String, dynamic>? body,
+    bool allowPending = false,
+  }) async {
+    final base = Uri.parse(baseUrl.replaceFirst(RegExp(r'/+$'), ''));
+    final path = '${base.path}$endpoint'.replaceAll(RegExp(r'/{2,}'), '/');
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 12)
+      ..idleTimeout = const Duration(seconds: 20);
+    try {
+      final request = method == 'GET'
+          ? await client.getUrl(base.replace(path: path))
+          : await client.postUrl(base.replace(path: path));
+      request.headers.contentType = ContentType.json;
+      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      if (body != null) {
+        request.write(jsonEncode(body));
+      }
+      final response = await request.close().timeout(
+            const Duration(seconds: 20),
+          );
+      final text = await utf8.decoder.bind(response).join();
+      final decoded = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+      final values = decoded is Map
+          ? decoded.cast<String, dynamic>()
+          : <String, dynamic>{};
+      if (allowPending && response.statusCode == 202) {
+        return values;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('${values['error'] ?? 'auth_http_${response.statusCode}'}');
+      }
+      return values;
     } finally {
       client.close(force: true);
     }
@@ -252,6 +435,21 @@ class XiaoyouApi {
         (payload['entry'] as Map).cast<String, dynamic>(),
       ),
     );
+  }
+
+  Future<int> deleteMessages(Set<String> messageIds) async {
+    if (messageIds.isEmpty) {
+      return 0;
+    }
+    final payload = await _request(
+      'POST',
+      '/v1/messages/delete',
+      body: {
+        'device_id': deviceId,
+        'message_ids': messageIds.toList()..sort(),
+      },
+    );
+    return asInt(payload['deleted']);
   }
 
   Future<RelationshipEntry> createTimeCapsule({

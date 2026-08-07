@@ -136,6 +136,7 @@ class LongTermMemory(Plugin):
         max_results=None,
         retrieval_mode="normal",
         allowed_memory_types=None,
+        session_id="",
     ):
         if not self.enabled:
             return ""
@@ -150,6 +151,7 @@ class LongTermMemory(Plugin):
         )
         memories = self._search_memory(
             query,
+            user_id=self._memory_user_id(session_id),
             retrieval_mode=retrieval_mode,
             result_limit=result_limit,
             allowed_memory_types=allowed_memory_types,
@@ -164,6 +166,7 @@ class LongTermMemory(Plugin):
         self,
         query,
         *,
+        user_id="",
         retrieval_mode="normal",
         result_limit=None,
         allowed_memory_types=None,
@@ -176,7 +179,7 @@ class LongTermMemory(Plugin):
         )
         allowed_types = normalize_allowed(allowed_memory_types)
         memories = self.store.list_memories(
-            user_id=self.user_id,
+            user_id=self._memory_user_id(user_id),
             allowed_types=allowed_types,
             limit=self.max_scan,
         )
@@ -330,7 +333,7 @@ class LongTermMemory(Plugin):
         )
         embedding = vectors[0] if vectors else None
         result = self.store.upsert(
-            user_id=self.user_id,
+            user_id=self._memory_user_id(session_id),
             candidate=governed,
             embedding=embedding,
             embedding_model=self.embedding_signature if embedding else "",
@@ -634,6 +637,7 @@ class LongTermMemory(Plugin):
 
         memories = self._search_memory(
             user_text,
+            user_id=self._memory_user_id(session_id),
             retrieval_mode=plan.retrieval_mode,
             result_limit=plan.long_memory_max_results,
             allowed_memory_types=plan.allowed_memory_types,
@@ -661,6 +665,18 @@ class LongTermMemory(Plugin):
             plan.mode,
             plan.retrieval_mode,
         )
+
+    def _memory_user_id(self, session_id=""):
+        """Use the stable conversation scope as the memory owner.
+
+        The legacy WeChat/owner conversation remains ``LONG_MEMORY_USER_ID``;
+        every registered App account receives its own ``app_user_*`` scope.
+        Test sessions are filtered before reaching storage.
+        """
+        session_id = str(session_id or "").strip()
+        if session_id.startswith("app_user_"):
+            return session_id
+        return self.user_id
 
     def _embed(
         self,

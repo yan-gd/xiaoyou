@@ -15,6 +15,7 @@ import 'media_cache_service.dart';
 import 'media_save_service.dart';
 import 'notification_service.dart';
 import 'legal.dart';
+import 'account_access_sheet.dart';
 import 'relationship_universe_screen.dart';
 import 'session_store.dart';
 import 'voice_recorder.dart';
@@ -85,6 +86,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _appInForeground = true;
   bool _systemNotificationsAllowed = false;
   bool _batteryOptimizationIgnored = true;
+  bool _selectionMode = false;
+  final Set<String> _transcribedIds = <String>{};
+  final Set<String> _selectedIds = <String>{};
+  final Set<String> _deletedMessageIds = <String>{};
+  final Set<String> _pendingDeletes = <String>{};
   SystemPushStatus _systemPushStatus = const SystemPushStatus();
   AppPreferences _preferences = const AppPreferences();
   String _moodAsset = 'assets/moods/平静.png';
@@ -245,8 +251,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!_scrollController.hasClients) {
       return;
     }
-    final distance =
-        _scrollController.position.maxScrollExtent - _scrollController.offset;
+    // reverse 列表：offset 0 即最新消息（底部），离开底部超过 180 显示回底按钮。
+    final distance = _scrollController.offset;
     final show = distance > 180;
     if (show != _showJumpToBottom && mounted) {
       setState(() {
@@ -265,7 +271,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           !_scrollController.hasClients) {
         return;
       }
-      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      _scrollController.jumpTo(0);
     });
   }
 
@@ -328,6 +334,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final draft = await _sessionStore.readDraft();
       final preferences = await _sessionStore.loadPreferences();
       final favoriteMessageIds = await _sessionStore.loadFavoriteMessageIds();
+      final deletedMessageIds = await _sessionStore.loadDeletedMessageIds();
       if (!mounted) {
         return;
       }
@@ -337,6 +344,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _favoriteMessageIds
           ..clear()
           ..addAll(favoriteMessageIds);
+        _deletedMessageIds
+          ..clear()
+          ..addAll(deletedMessageIds);
         _lockEnabled = saved?.appLockEnabled ?? false;
         _locked = saved?.appLockEnabled ?? false;
         _booting = false;
@@ -346,14 +356,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ..text = draft
           ..selection = TextSelection.collapsed(offset: draft.length);
       }
-      await _syncNotificationPermissionFromSystem();
-      await _syncSystemPushStatus();
-      if (saved == null) {
+      unawaited(_syncNotificationPermissionFromSystem());
+      unawaited(_syncSystemPushStatus());
+      final privacyConsent = await hasPrivacyConsent();
+      if (!mounted) return;
+      if (!privacyConsent || saved == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_openConnectionSheet());
+        });
         return;
       }
       if (saved.appLockEnabled) {
         await _unlock();
       } else {
+        // _connect 内部会先加载本地档案再连接，避免并行竞态。
         await _connectSaved(saved);
       }
     } catch (error) {
@@ -466,8 +482,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         accountId: accountId,
         testMode: testMode,
       );
-      await api.health();
-      await api.registerDevice();
+      // health 与 registerDevice 互不依赖，并行减少连接等待。
+      await Future.wait([
+        api.health(),
+        api.registerDevice(),
+      ]);
+      // 始终请求一次历史：本地已有缓存时它遇到首条重叠消息即停，
+      // 只用于拿到服务器最新 last_event_sequence（保证 _poll 不漏消息）；
+      // 本地为空（首次连接/清数据）时才使用其消息列表。
       final history = await api.history(
         stopAfterMessageIds: _messages
             .where((message) => message.id.isNotEmpty)
@@ -488,9 +510,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       if (persist) {
         await _sessionStore.saveConnection(connection, token);
       }
+      // 合并本地缓存与服务器历史（按 id 去重），补上离线期间缺失的消息；
+      // 已删除的消息不参与合并，避免被服务器历史带回。
       final synchronizedMessages = mergeChatMessages([
         ..._messages,
-        ...history.messages,
+        ...history.messages
+            .where((message) => !_deletedMessageIds.contains(message.id)),
       ]);
       setState(() {
         _api = api;
@@ -508,18 +533,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _scheduleArchiveSave(immediate: true);
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
+      // 连接完成后的收尾全部异步执行，不阻塞界面进入在线状态。
+      _scrollToEnd(animated: false);
       if (!testMode) {
         unawaited(_primeMediaCache(history.messages, api));
       }
-      await WidgetsBinding.instance.endOfFrame;
-      await _flushAcknowledgements();
+      unawaited(_flushAcknowledgements());
       _startPolling();
-      await _poll();
+      unawaited(_poll());
       if (_preferences.notificationsEnabled) {
-        await _syncPushRegistration();
+        unawaited(_syncPushRegistration());
       }
       unawaited(_refreshMoodProfile(api));
-      _scrollToEnd(animated: false);
       HapticFeedback.selectionClick();
     } catch (error) {
       if (!activated) {
@@ -590,6 +615,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             asInt(event['sequence']),
           );
           final message = ChatMessage.fromJson(event);
+          if (_deletedMessageIds.contains(message.id)) {
+            continue;
+          }
           if (message.id.isNotEmpty && known.add(message.id)) {
             additions.add(message);
             receivedAssistantReply =
@@ -635,6 +663,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       }
       await _flushAcknowledgements();
+      // 轮询成功时重试未同步的删除。
+      if (_pendingDeletes.isNotEmpty) {
+        final retry = _pendingDeletes.toSet();
+        try {
+          await api.deleteMessages(retry);
+          _pendingDeletes.removeAll(retry);
+        } catch (_) {
+          // 保持待重试，下次轮询再试。
+        }
+      }
       if (mounted && _status != '在线') {
         setState(() => _status = '在线');
       }
@@ -722,8 +760,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _archiveScope = scope;
       _messages
         ..clear()
-        ..addAll(archived);
+        ..addAll(
+          archived.where(
+            (message) => !_deletedMessageIds.contains(message.id),
+          ),
+        );
     });
+    // 本地历史立即显示时也直接定位到最新消息。
+    _scrollToEnd(animated: false);
   }
 
   void _scheduleArchiveSave({bool immediate = false}) {
@@ -1350,7 +1394,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (index < 0 || !_scrollController.hasClients) {
       return;
     }
-    final ratio = _messages.length <= 1 ? 0.0 : index / (_messages.length - 1);
+    // reverse 列表：index 0 是最新（offset 0），旧消息 index 大、offset 大。
+    final ratio =
+        _messages.length <= 1 ? 0.0 : 1.0 - index / (_messages.length - 1);
     final estimate = _scrollController.position.maxScrollExtent * ratio;
     _scrollController.animateTo(
       estimate,
@@ -1422,46 +1468,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _openConnectionSheet() async {
     final saved = _savedConnection;
-    final draft = await showModalBottomSheet<_ConnectionDraft>(
+    final result = await showModalBottomSheet<AccountAccessResult>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => _ConnectionSheet(saved: saved),
+      builder: (context) => AccountAccessSheet(saved: saved),
     );
-    if (draft == null || !mounted) {
-      return;
-    }
-    if (!draft.baseUrl.startsWith('https://') ||
-        draft.username.isEmpty ||
-        draft.password.isEmpty ||
-        draft.deviceId.isEmpty) {
-      _showNotice('登录信息不完整', '请输入 HTTPS 地址、账号、密码和设备名称。');
+    if (result == null || !mounted) {
       return;
     }
     setState(() {
       _connecting = true;
-      _status = '正在验证账号…';
+      _status = '正在连接小悠…';
     });
     try {
-      final login = await XiaoyouApi.login(
-        baseUrl: draft.baseUrl,
-        username: draft.username,
-        password: draft.password,
-        deviceId: draft.deviceId,
-        remember: draft.remember,
-      );
       if (!mounted) {
         return;
       }
       setState(() => _connecting = false);
       await _connect(
-        baseUrl: draft.baseUrl,
-        token: login.token,
-        deviceId: login.deviceId,
-        accountId: login.accountId,
-        testMode: login.testMode,
-        persist: draft.remember,
+        baseUrl: result.baseUrl,
+        token: result.login.token,
+        deviceId: result.login.deviceId,
+        accountId: result.login.accountId,
+        testMode: result.login.testMode,
+        persist: result.remember,
       );
     } catch (error) {
       if (!mounted) {
@@ -1573,6 +1605,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         requestFailed = true;
       }
       if (!allowed) {
+        // 权限请求可能超时/异常，但用户可能已经同意系统卡片。
+        // 重新读取实际权限状态，避免误弹"无法开启"。
+        try {
+          allowed = await _notificationService.notificationsEnabled();
+        } catch (_) {
+          allowed = false;
+        }
+      }
+      if (!allowed) {
         final grantedInSettings = await _showNotificationPermissionNotice(
           initializationFailed: requestFailed,
         );
@@ -1593,31 +1634,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return false;
       }
       setState(() => _systemNotificationsAllowed = true);
-      if (!_systemPushStatus.consented && !_systemPushStatus.active) {
-        final accepted = await showDialog<bool>(
-          context: context,
-          builder: (dialogContext) => AlertDialog(
-            title: const Text('启用 vivo 系统级推送'),
-            content: const Text(
-              '启用后会使用 vivo 推送 SDK 获取设备推送标识、设备类型与系统版本，'
-              '仅用于把小悠的新消息交给手机系统及时提醒。服务商为维沃移动通信有限公司。',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext, false),
-                child: const Text('暂不启用'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(dialogContext, true),
-                child: const Text('同意并启用'),
-              ),
-            ],
-          ),
-        );
-        if (accepted != true) {
-          return false;
-        }
-      }
       var systemPushActive = false;
       try {
         final status = await _notificationService.enableSystemPush();
@@ -1900,6 +1916,94 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _showSnack(added ? '已收藏这条消息' : '已取消收藏');
   }
 
+  void _enterSelectionMode() {
+    setState(() {
+      _selectionMode = true;
+      _selectedIds.clear();
+    });
+  }
+
+  void _toggleSelect(ChatMessage message) {
+    if (message.id.isEmpty) {
+      return;
+    }
+    setState(() {
+      if (!_selectedIds.remove(message.id)) {
+        _selectedIds.add(message.id);
+      }
+      if (_selectedIds.isEmpty) {
+        _selectionMode = false;
+      }
+    });
+  }
+
+  void _exitSelectionMode() {
+    setState(() {
+      _selectionMode = false;
+      _selectedIds.clear();
+    });
+  }
+
+  Future<bool> _confirmDeleteMessages(int count) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(count > 1 ? '删除这 $count 条消息？' : '删除这条消息？'),
+        content: const Text(
+          '删除后无法恢复，小悠也会忘记这段对话。确定要删除吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _deleteMessages(Set<String> ids) async {
+    final normalized = ids.where((id) => id.trim().isNotEmpty).toSet();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final confirmed = await _confirmDeleteMessages(normalized.length);
+    if (!confirmed || !mounted) {
+      return;
+    }
+    setState(() {
+      _messages.removeWhere(
+        (message) => normalized.contains(message.id),
+      );
+      _deletedMessageIds.addAll(normalized);
+      _favoriteMessageIds.removeAll(normalized);
+      _selectedIds.removeAll(normalized);
+      _selectionMode = false;
+    });
+    unawaited(_sessionStore.saveDeletedMessageIds(_deletedMessageIds));
+    unawaited(_sessionStore.saveFavoriteMessageIds(_favoriteMessageIds));
+    _scheduleArchiveSave(immediate: true);
+    _showSnack(
+        normalized.length > 1 ? '已删除 ${normalized.length} 条消息' : '已删除这条消息');
+    final api = _api;
+    if (api == null) {
+      _pendingDeletes.addAll(normalized);
+      return;
+    }
+    try {
+      await api.deleteMessages(normalized);
+    } catch (_) {
+      _pendingDeletes.addAll(normalized);
+      _showSnack('已从本机删除，稍后将自动同步到服务器');
+    }
+  }
+
   Future<void> _openFavorites() async {
     final favorites = _messages
         .where((message) => _favoriteMessageIds.contains(message.id))
@@ -2105,20 +2209,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _newMessageCount = 0;
       });
     }
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    void jumpToBottom() {
       if (!_scrollController.hasClients) {
         return;
       }
-      final offset = _scrollController.position.maxScrollExtent;
+      // reverse 列表的底部即 offset 0（最新消息在 index 0）。
       if (animated) {
         _scrollController.animateTo(
-          offset,
+          0,
           duration: duration,
           curve: curve,
         );
       } else {
-        _scrollController.jumpTo(offset);
+        _scrollController.jumpTo(0);
       }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      jumpToBottom();
+      // 消息行（如图片）异步加载会改变列表高度，稍后再滚一次保证真正到底。
+      Future<void>.delayed(const Duration(milliseconds: 150), () {
+        if (mounted) {
+          jumpToBottom();
+        }
+      });
     });
   }
 
@@ -2185,15 +2299,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     late final Widget screen;
-    if (_booting) {
-      screen = const _StartupScreen();
-    } else if (_locked) {
+    if (_locked) {
       screen = _LockScreen(
         authenticating: _authenticating,
         onUnlock: _unlock,
         onReconnect: _openConnectionSheet,
       );
-    } else if (_savedConnection == null && _api == null) {
+    } else if (_savedConnection == null && _api == null && !_booting) {
       screen = _WelcomeScreen(
         connecting: _connecting,
         onConnect: _openConnectionSheet,
@@ -2243,29 +2355,29 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTap: _dismissTextInput,
-                      child: _ConversationHeader(
-                        status: _status,
-                        connected: connected,
-                        responding: _awaitingReply,
-                        onAvatarTap: _openProfile,
-                        onVoiceRoom: _openVoiceRoom,
-                        onSearch: _openSearch,
-                        onSettings: _openConversationTools,
-                      ),
-                    ),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 240),
-                      child: _status == '在线'
-                          ? const SizedBox.shrink(key: ValueKey('online'))
-                          : _ConnectionBanner(
-                              key: ValueKey(_status),
+                      child: _selectionMode
+                          ? _SelectionHeader(
+                              selectedCount: _selectedIds.length,
+                              totalCount: _messages.length,
+                              onCancel: _exitSelectionMode,
+                              onSelectAll: () => setState(() {
+                                _selectedIds
+                                  ..clear()
+                                  ..addAll(
+                                    _messages
+                                        .map((message) => message.id)
+                                        .where((id) => id.isNotEmpty),
+                                  );
+                              }),
+                            )
+                          : _ConversationHeader(
                               status: _status,
-                              onRetry: () {
-                                final saved = _savedConnection;
-                                if (saved != null) {
-                                  unawaited(_connectSaved(saved));
-                                }
-                              },
+                              connected: connected,
+                              responding: _awaitingReply,
+                              onAvatarTap: _openProfile,
+                              onVoiceRoom: _openVoiceRoom,
+                              onSearch: _openSearch,
+                              onSettings: _openConversationTools,
                             ),
                     ),
                     Expanded(
@@ -2279,24 +2391,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                   ? const _EmptyConversation()
                                   : ListView.builder(
                                       controller: _scrollController,
+                                      // 倒序渲染：index 0 是最新消息，天然从底部开始，
+                                      // 无需从第一条滑到最后一条，进入即见最新且不卡顿。
+                                      reverse: true,
                                       keyboardDismissBehavior:
                                           ScrollViewKeyboardDismissBehavior
                                               .onDrag,
                                       padding: EdgeInsets.fromLTRB(
                                         14,
-                                        12,
-                                        14,
                                         _awaitingReply ? 74 : 20,
+                                        14,
+                                        12,
                                       ),
                                       itemCount: _messages.length,
                                       itemBuilder: (context, index) {
-                                        final message = _messages[index];
-                                        final previous = index > 0
-                                            ? _messages[index - 1]
+                                        final reversedIndex =
+                                            _messages.length - 1 - index;
+                                        final message =
+                                            _messages[reversedIndex];
+                                        final previous = reversedIndex > 0
+                                            ? _messages[reversedIndex - 1]
                                             : null;
                                         final next =
-                                            index + 1 < _messages.length
-                                                ? _messages[index + 1]
+                                            reversedIndex + 1 < _messages.length
+                                                ? _messages[reversedIndex + 1]
                                                 : null;
                                         return _MessageRow(
                                           key: _messageKeys.putIfAbsent(
@@ -2338,22 +2456,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                                       180),
                                           showMessageTime:
                                               _preferences.showMessageTime,
+                                          // reverse 后 index 0 是最新消息，动画作用于最新几条。
                                           animate: _preferences.motionLevel !=
                                                   'off' &&
-                                              index >=
-                                                  max(
-                                                    0,
-                                                    _messages.length -
-                                                        (_preferences
-                                                                    .motionLevel ==
-                                                                'gentle'
-                                                            ? 4
-                                                            : 12),
-                                                  ),
+                                              index <
+                                                  (_preferences.motionLevel ==
+                                                          'gentle'
+                                                      ? 4
+                                                      : 12),
+                                          selectionMode: _selectionMode,
+                                          selected: _selectedIds.contains(
+                                            message.id,
+                                          ),
                                           onRendered: _markEventRendered,
                                           onFailedTap: _retryFailedMessage,
                                           onReply: _replyToMessage,
                                           onToggleFavorite: _toggleFavorite,
+                                          onDelete: (msg) => unawaited(
+                                            _deleteMessages({msg.id}),
+                                          ),
+                                          onMultiSelect: _enterSelectionMode,
+                                          onSelect: _toggleSelect,
+                                          transcribed: _transcribedIds.contains(
+                                            message.id,
+                                          ),
+                                          onToggleTranscription: () =>
+                                              setState(() {
+                                            if (!_transcribedIds
+                                                .remove(message.id)) {
+                                              _transcribedIds.add(message.id);
+                                            }
+                                          }),
                                         );
                                       },
                                     ),
@@ -2377,27 +2510,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         ),
                       ),
                     ),
-                    _Composer(
-                      controller: _composer,
-                      focusNode: _composerFocus,
-                      sending: _sending,
-                      connected: connected,
-                      voiceMode: _voiceMode,
-                      recording: _recording,
-                      recordingCancelling: _recordingCancelling,
-                      recordingDurationMs: _recordingDurationMs,
-                      recordingLevel: _recordingLevel,
-                      onSend: _send,
-                      onVoiceModeChanged: _setVoiceMode,
-                      onRecordStart: _startRecording,
-                      onRecordEnd: (cancel) => _finishRecording(cancel: cancel),
-                      onRecordCancelChanged: _setRecordingCancelling,
-                      onComposerTap: _handleComposerFocus,
-                      emojiPanelOpen: _emojiPanelOpen,
-                      accessoryPanelOpen: _accessoryPanelOpen,
-                      onEmoji: _toggleEmojiPanel,
-                      onAccessory: _toggleAccessoryPanel,
-                    ),
+                    if (_selectionMode)
+                      _SelectionBar(
+                        selectedCount: _selectedIds.length,
+                        onDelete: () => unawaited(
+                          _deleteMessages(_selectedIds.toSet()),
+                        ),
+                      )
+                    else
+                      _Composer(
+                        controller: _composer,
+                        focusNode: _composerFocus,
+                        sending: _sending,
+                        connected: connected,
+                        voiceMode: _voiceMode,
+                        recording: _recording,
+                        recordingCancelling: _recordingCancelling,
+                        recordingDurationMs: _recordingDurationMs,
+                        recordingLevel: _recordingLevel,
+                        onSend: _send,
+                        onVoiceModeChanged: _setVoiceMode,
+                        onRecordStart: _startRecording,
+                        onRecordEnd: (cancel) =>
+                            _finishRecording(cancel: cancel),
+                        onRecordCancelChanged: _setRecordingCancelling,
+                        onComposerTap: _handleComposerFocus,
+                        emojiPanelOpen: _emojiPanelOpen,
+                        accessoryPanelOpen: _accessoryPanelOpen,
+                        onEmoji: _toggleEmojiPanel,
+                        onAccessory: _toggleAccessoryPanel,
+                      ),
                     AnimatedSize(
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeOutCubic,
@@ -2464,225 +2606,6 @@ class _AiGeneratedWatermark extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ConnectionDraft {
-  const _ConnectionDraft({
-    required this.baseUrl,
-    required this.username,
-    required this.password,
-    required this.deviceId,
-    required this.remember,
-  });
-
-  final String baseUrl;
-  final String username;
-  final String password;
-  final String deviceId;
-  final bool remember;
-}
-
-class _ConnectionSheet extends StatefulWidget {
-  const _ConnectionSheet({required this.saved});
-
-  final SavedConnection? saved;
-
-  @override
-  State<_ConnectionSheet> createState() => _ConnectionSheetState();
-}
-
-class _ConnectionSheetState extends State<_ConnectionSheet> {
-  late final TextEditingController _baseController;
-  late final TextEditingController _usernameController;
-  late final TextEditingController _passwordController;
-  late final TextEditingController _deviceController;
-  bool _hidePassword = true;
-  bool _remember = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _baseController = TextEditingController(
-      text: widget.saved?.baseUrl ?? 'https://xiaoyou.yoyoyan.cn/xiaoyou-app',
-    );
-    _usernameController = TextEditingController(
-      text: widget.saved?.accountId ?? 'yoyo',
-    );
-    _passwordController = TextEditingController();
-    _deviceController = TextEditingController(
-      text: widget.saved?.deviceId ?? 'yoyo-phone',
-    );
-  }
-
-  @override
-  void dispose() {
-    _baseController.dispose();
-    _usernameController.dispose();
-    _passwordController.dispose();
-    _deviceController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    Navigator.pop(
-      context,
-      _ConnectionDraft(
-        baseUrl: _baseController.text.trim(),
-        username: _usernameController.text.trim(),
-        password: _passwordController.text,
-        deviceId: _deviceController.text.trim(),
-        remember: _remember,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        bottom: MediaQuery.viewInsetsOf(context).bottom,
-      ),
-      child: Material(
-        color: _canvas,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-        clipBehavior: Clip.antiAlias,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: const Color(0xffddcfd6),
-                  borderRadius: BorderRadius.circular(99),
-                ),
-              ),
-              const SizedBox(height: 22),
-              const _Avatar(size: 76),
-              const SizedBox(height: 14),
-              Text(
-                widget.saved == null ? '第一次见面' : '连接设置',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                    ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                widget.saved == null
-                    ? '只需连接一次，以后打开就能直接找到小悠'
-                    : '重新验证账号后更新这台设备的登录状态',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: _muted, height: 1.4),
-              ),
-              const SizedBox(height: 24),
-              TextField(
-                controller: _baseController,
-                keyboardType: TextInputType.url,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: '服务地址',
-                  prefixIcon: Icon(Icons.language_rounded),
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _usernameController,
-                enableSuggestions: false,
-                autocorrect: false,
-                textInputAction: TextInputAction.next,
-                decoration: const InputDecoration(
-                  labelText: '账号',
-                  prefixIcon: Icon(Icons.person_outline_rounded),
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _passwordController,
-                obscureText: _hidePassword,
-                enableSuggestions: false,
-                autocorrect: false,
-                textInputAction: TextInputAction.next,
-                decoration: InputDecoration(
-                  labelText: '密码',
-                  prefixIcon: const Icon(Icons.lock_outline_rounded),
-                  suffixIcon: IconButton(
-                    onPressed: () => setState(
-                      () => _hidePassword = !_hidePassword,
-                    ),
-                    icon: Icon(
-                      _hidePassword
-                          ? Icons.visibility_off_rounded
-                          : Icons.visibility_rounded,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-              TextField(
-                controller: _deviceController,
-                textInputAction: TextInputAction.done,
-                onSubmitted: (_) => _submit(),
-                decoration: const InputDecoration(
-                  labelText: '设备名称',
-                  prefixIcon: Icon(Icons.phone_iphone_rounded),
-                ),
-              ),
-              SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('记住登录'),
-                subtitle: const Text('账号令牌保存在系统安全存储中'),
-                value: _remember,
-                onChanged: (value) => setState(() => _remember = value),
-              ),
-              const SizedBox(height: 16),
-              const _SecurityNote(),
-              const SizedBox(height: 22),
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: FilledButton.icon(
-                  onPressed: _submit,
-                  icon: const Icon(Icons.favorite_rounded, size: 19),
-                  label: Text(widget.saved == null ? '连接小悠' : '保存并重新连接'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SecurityNote extends StatelessWidget {
-  const _SecurityNote();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(13),
-      decoration: BoxDecoration(
-        color: const Color(0xfff4eaf0),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.shield_outlined, color: _rose, size: 20),
-          SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '密码只用于本次验证；登录令牌使用系统安全存储，不会写进聊天记录。',
-              style: TextStyle(color: _muted, height: 1.4, fontSize: 12),
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -4353,6 +4276,145 @@ class _HeaderIconButton extends StatelessWidget {
   }
 }
 
+class _MessageMenuAction {
+  const _MessageMenuAction({
+    required this.value,
+    required this.icon,
+    required this.label,
+    this.danger = false,
+  });
+
+  final String value;
+  final IconData icon;
+  final String label;
+  final bool danger;
+}
+
+class _MessageActionMenu extends StatelessWidget {
+  const _MessageActionMenu({
+    required this.actions,
+    required this.width,
+    required this.arrowAbove,
+    required this.arrowOffset,
+    required this.onSelected,
+  });
+
+  final List<_MessageMenuAction> actions;
+  final double width;
+  final bool arrowAbove;
+  final double arrowOffset;
+  final ValueChanged<String> onSelected;
+
+  static const double cardHeight = 60;
+  static const double arrowHeight = 7;
+
+  @override
+  Widget build(BuildContext context) {
+    final arrow = Padding(
+      padding: EdgeInsets.only(left: arrowOffset),
+      child: const CustomPaint(
+        size: Size(14, arrowHeight),
+        painter: _MessageMenuArrowPainter(pointsUp: true),
+      ),
+    );
+    final downwardArrow = Padding(
+      padding: EdgeInsets.only(left: arrowOffset),
+      child: const CustomPaint(
+        size: Size(14, arrowHeight),
+        painter: _MessageMenuArrowPainter(pointsUp: false),
+      ),
+    );
+    final card = Material(
+      color: Colors.transparent,
+      child: Container(
+        width: width,
+        height: cardHeight,
+        decoration: BoxDecoration(
+          color: const Color(0xf52b2529),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0x1fffffff)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x4a241a20),
+              blurRadius: 22,
+              offset: Offset(0, 9),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: actions.map((action) {
+              final color = action.danger
+                  ? const Color(0xffffb3b3)
+                  : const Color(0xfffdf7fa);
+              return InkWell(
+                onTap: () => onSelected(action.value),
+                child: SizedBox(
+                  width: 52,
+                  height: cardHeight,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(action.icon, size: 20, color: color),
+                      const SizedBox(height: 3),
+                      Text(
+                        action.label,
+                        maxLines: 1,
+                        style: TextStyle(
+                          color: color,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w500,
+                          height: 1,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }).toList(growable: false),
+          ),
+        ),
+      ),
+    );
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: arrowAbove ? [arrow, card] : [card, downwardArrow],
+    );
+  }
+}
+
+class _MessageMenuArrowPainter extends CustomPainter {
+  const _MessageMenuArrowPainter({required this.pointsUp});
+
+  final bool pointsUp;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path();
+    if (pointsUp) {
+      path
+        ..moveTo(0, size.height)
+        ..lineTo(size.width / 2, 0)
+        ..lineTo(size.width, size.height);
+    } else {
+      path
+        ..moveTo(0, 0)
+        ..lineTo(size.width / 2, size.height)
+        ..lineTo(size.width, 0);
+    }
+    path.close();
+    canvas.drawPath(path, Paint()..color = const Color(0xf52b2529));
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
 class _PresenceDot extends StatefulWidget {
   const _PresenceDot({required this.online});
 
@@ -4405,56 +4467,6 @@ class _PresenceDotState extends State<_PresenceDot>
   }
 }
 
-class _ConnectionBanner extends StatelessWidget {
-  const _ConnectionBanner({
-    super.key,
-    required this.status,
-    required this.onRetry,
-  });
-
-  final String status;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final failed = status == '连接失败';
-    return Material(
-      color: failed ? const Color(0xffffeeee) : const Color(0xfffff4e1),
-      child: InkWell(
-        onTap: failed ? onRetry : null,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (!failed)
-                const SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(strokeWidth: 1.8),
-                )
-              else
-                const Icon(
-                  Icons.refresh_rounded,
-                  size: 17,
-                  color: Colors.redAccent,
-                ),
-              const SizedBox(width: 8),
-              Text(
-                failed ? '连接失败，轻触重试' : status,
-                style: TextStyle(
-                  color: failed ? Colors.redAccent : const Color(0xff8e6e3c),
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _MessageRow extends StatefulWidget {
   const _MessageRow({
     super.key,
@@ -4473,10 +4485,17 @@ class _MessageRow extends StatefulWidget {
     required this.showAvatar,
     required this.showMessageTime,
     required this.animate,
+    required this.selectionMode,
+    required this.selected,
     required this.onRendered,
     required this.onFailedTap,
     required this.onReply,
     required this.onToggleFavorite,
+    required this.onDelete,
+    required this.onMultiSelect,
+    required this.onSelect,
+    required this.transcribed,
+    required this.onToggleTranscription,
   });
 
   final ChatMessage message;
@@ -4494,10 +4513,17 @@ class _MessageRow extends StatefulWidget {
   final bool showAvatar;
   final bool showMessageTime;
   final bool animate;
+  final bool selectionMode;
+  final bool selected;
   final ValueChanged<ChatMessage> onRendered;
   final ValueChanged<ChatMessage> onFailedTap;
   final ValueChanged<ChatMessage> onReply;
   final ValueChanged<ChatMessage> onToggleFavorite;
+  final ValueChanged<ChatMessage> onDelete;
+  final VoidCallback onMultiSelect;
+  final ValueChanged<ChatMessage> onSelect;
+  final bool transcribed;
+  final VoidCallback onToggleTranscription;
 
   @override
   State<_MessageRow> createState() => _MessageRowState();
@@ -4505,6 +4531,9 @@ class _MessageRow extends StatefulWidget {
 
 class _MessageRowState extends State<_MessageRow>
     with SingleTickerProviderStateMixin {
+  static OverlayEntry? _activeMessageMenu;
+  static _MessageRowState? _activeMessageMenuOwner;
+
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 300),
@@ -4513,13 +4542,13 @@ class _MessageRowState extends State<_MessageRow>
   bool _renderReported = false;
   AudioPlayer? _voicePlayer;
   StreamSubscription<PlayerState>? _voiceStateSubscription;
-  StreamSubscription<Duration>? _voiceDurationSubscription;
   StreamSubscription<void>? _voiceCompleteSubscription;
   bool _voiceLoading = false;
   bool _voicePlaying = false;
-  Duration _voiceDuration = Duration.zero;
   Future<File?>? _mediaFileFuture;
   File? _resolvedMediaFile;
+  final GlobalKey _bubbleKey = GlobalKey();
+  bool _messageMenuVisible = false;
 
   @override
   void initState() {
@@ -4573,8 +4602,10 @@ class _MessageRowState extends State<_MessageRow>
 
   @override
   void dispose() {
+    if (identical(_activeMessageMenuOwner, this)) {
+      _closeMessageMenu();
+    }
     _voiceStateSubscription?.cancel();
-    _voiceDurationSubscription?.cancel();
     _voiceCompleteSubscription?.cancel();
     _voicePlayer?.dispose();
     _controller.dispose();
@@ -4593,7 +4624,184 @@ class _MessageRowState extends State<_MessageRow>
     });
   }
 
-  void _copyMessage() {
+  void _closeMessageMenu() {
+    final ownsMenu = identical(_activeMessageMenuOwner, this);
+    if (ownsMenu) {
+      _activeMessageMenu?.remove();
+      _activeMessageMenu = null;
+      _activeMessageMenuOwner = null;
+    }
+    if (mounted && _messageMenuVisible) {
+      setState(() => _messageMenuVisible = false);
+    }
+  }
+
+  Future<void> _openMenu() async {
+    HapticFeedback.mediumImpact();
+    _activeMessageMenu?.remove();
+    if (_activeMessageMenuOwner != null &&
+        _activeMessageMenuOwner!.mounted &&
+        !identical(_activeMessageMenuOwner, this)) {
+      _activeMessageMenuOwner!.setState(
+        () => _activeMessageMenuOwner!._messageMenuVisible = false,
+      );
+    }
+    _activeMessageMenu = null;
+    _activeMessageMenuOwner = null;
+
+    final bubbleContext = _bubbleKey.currentContext;
+    if (!mounted || bubbleContext == null) {
+      return;
+    }
+    final overlay = Overlay.of(context, rootOverlay: true);
+    final overlayBox = overlay.context.findRenderObject() as RenderBox?;
+    RenderBox? bubbleBox = bubbleContext.findRenderObject() as RenderBox?;
+    if (overlayBox == null || bubbleBox == null || !bubbleBox.hasSize) {
+      return;
+    }
+
+    final actions = <_MessageMenuAction>[
+      const _MessageMenuAction(
+        value: 'reply',
+        icon: Icons.reply_rounded,
+        label: '回复',
+      ),
+      if (widget.message.kind == 'voice' &&
+          widget.message.text.trim().isNotEmpty)
+        _MessageMenuAction(
+          value: 'transcribe',
+          icon: Icons.translate_rounded,
+          label: widget.transcribed ? '隐藏文字' : '转文字',
+        ),
+      _MessageMenuAction(
+        value: 'favorite',
+        icon: widget.favorite
+            ? Icons.bookmark_rounded
+            : Icons.bookmark_border_rounded,
+        label: widget.favorite ? '取消收藏' : '收藏',
+      ),
+      if (widget.message.text.trim().isNotEmpty)
+        const _MessageMenuAction(
+          value: 'copy',
+          icon: Icons.copy_rounded,
+          label: '复制',
+        ),
+      const _MessageMenuAction(
+        value: 'delete',
+        icon: Icons.delete_outline_rounded,
+        label: '删除',
+        danger: true,
+      ),
+      const _MessageMenuAction(
+        value: 'multiselect',
+        icon: Icons.checklist_rounded,
+        label: '多选',
+      ),
+    ];
+
+    const gap = 10.0;
+    const totalMenuHeight =
+        _MessageActionMenu.cardHeight + _MessageActionMenu.arrowHeight;
+    final media = MediaQuery.of(context);
+    final safeTop = media.padding.top + 8;
+    final safeBottom = overlayBox.size.height - media.padding.bottom - 8;
+
+    Rect bubbleRect() {
+      bubbleBox = bubbleContext.findRenderObject() as RenderBox?;
+      final box = bubbleBox!;
+      final origin = box.localToGlobal(Offset.zero, ancestor: overlayBox);
+      return origin & box.size;
+    }
+
+    var rect = bubbleRect();
+    var spaceAbove = rect.top - safeTop;
+    var spaceBelow = safeBottom - rect.bottom;
+    if (spaceAbove < totalMenuHeight + gap &&
+        spaceBelow < totalMenuHeight + gap) {
+      await Scrollable.ensureVisible(
+        bubbleContext,
+        alignment: 0.5,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+      );
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted || !bubbleBox!.attached) {
+        return;
+      }
+      rect = bubbleRect();
+      spaceAbove = rect.top - safeTop;
+      spaceBelow = safeBottom - rect.bottom;
+    }
+
+    final placeAbove =
+        spaceAbove >= totalMenuHeight + gap || spaceAbove >= spaceBelow;
+    final naturalWidth = actions.length * 52.0 + 12;
+    final menuWidth = naturalWidth.clamp(220.0, overlayBox.size.width - 24);
+    final menuLeft = (rect.center.dx - menuWidth / 2)
+        .clamp(12.0, overlayBox.size.width - menuWidth - 12);
+    final menuTop =
+        placeAbove ? rect.top - gap - totalMenuHeight : rect.bottom + gap;
+    final arrowCenter =
+        (rect.center.dx - menuLeft).clamp(18.0, menuWidth - 18.0);
+    final arrowOffset = arrowCenter - 7;
+
+    late final OverlayEntry entry;
+    void closeMenu() {
+      if (identical(_activeMessageMenu, entry)) {
+        _closeMessageMenu();
+      }
+    }
+
+    void select(String value) {
+      closeMenu();
+      switch (value) {
+        case 'reply':
+          widget.onReply(widget.message);
+        case 'transcribe':
+          widget.onToggleTranscription();
+        case 'favorite':
+          widget.onToggleFavorite(widget.message);
+        case 'copy':
+          _copyMessageText();
+        case 'delete':
+          widget.onDelete(widget.message);
+        case 'multiselect':
+          widget.onMultiSelect();
+      }
+    }
+
+    entry = OverlayEntry(
+      builder: (_) => Stack(
+        children: [
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: closeMenu,
+              child: const ColoredBox(color: Colors.transparent),
+            ),
+          ),
+          Positioned(
+            left: menuLeft,
+            top: menuTop,
+            child: _MessageActionMenu(
+              actions: actions,
+              width: menuWidth,
+              arrowAbove: !placeAbove,
+              arrowOffset: arrowOffset,
+              onSelected: select,
+            ),
+          ),
+        ],
+      ),
+    );
+    _activeMessageMenu = entry;
+    _activeMessageMenuOwner = this;
+    setState(() => _messageMenuVisible = true);
+    overlay.insert(entry);
+  }
+
+  /// 浮层菜单卡片（微信样式，两行操作）。
+  void _copyMessageText() {
     final text = widget.message.text.trim();
     if (text.isEmpty) {
       return;
@@ -4609,58 +4817,6 @@ class _MessageRowState extends State<_MessageRow>
           duration: Duration(seconds: 1),
         ),
       );
-  }
-
-  void _openMessageActions() {
-    HapticFeedback.mediumImpact();
-    showModalBottomSheet<void>(
-      context: context,
-      useSafeArea: true,
-      backgroundColor: Colors.transparent,
-      builder: (sheetContext) => Container(
-        margin: const EdgeInsets.all(12),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.reply_rounded, color: _rose),
-              title: const Text('回复这条消息'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                widget.onReply(widget.message);
-              },
-            ),
-            ListTile(
-              leading: Icon(
-                widget.favorite
-                    ? Icons.bookmark_rounded
-                    : Icons.bookmark_border_rounded,
-                color: _rose,
-              ),
-              title: Text(widget.favorite ? '取消收藏' : '收藏消息'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                widget.onToggleFavorite(widget.message);
-              },
-            ),
-            if (widget.message.text.trim().isNotEmpty)
-              ListTile(
-                leading: const Icon(Icons.copy_rounded, color: _rose),
-                title: const Text('复制文字'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _copyMessage();
-                },
-              ),
-          ],
-        ),
-      ),
-    );
   }
 
   void _openImage(
@@ -4694,11 +4850,6 @@ class _MessageRowState extends State<_MessageRow>
     _voiceStateSubscription = player.onPlayerStateChanged.listen((state) {
       if (mounted) {
         setState(() => _voicePlaying = state == PlayerState.playing);
-      }
-    });
-    _voiceDurationSubscription = player.onDurationChanged.listen((duration) {
-      if (mounted) {
-        setState(() => _voiceDuration = duration);
       }
     });
     _voiceCompleteSubscription = player.onPlayerComplete.listen((_) {
@@ -4866,28 +5017,40 @@ class _MessageRowState extends State<_MessageRow>
                   ? (widget.compact ? 4 : 7)
                   : (widget.compact ? 0 : 2),
             ),
-            Row(
-              mainAxisAlignment:
-                  fromXiaoyou ? MainAxisAlignment.start : MainAxisAlignment.end,
-              crossAxisAlignment: CrossAxisAlignment.end,
+            Stack(
+              clipBehavior: Clip.none,
               children: [
-                if (fromXiaoyou && widget.avatarsEnabled) ...[
-                  SizedBox(
-                    width: 36,
-                    child: widget.showAvatar
-                        ? const _Avatar(size: 30)
-                        : const SizedBox.shrink(),
-                  ),
-                  const SizedBox(width: 7),
-                ],
-                Flexible(
-                  child: GestureDetector(
-                    onLongPress: _openMessageActions,
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 220),
-                      constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                      padding:
-                          message.kind == 'image' || message.kind == 'sticker'
+                Row(
+                  mainAxisAlignment: fromXiaoyou
+                      ? MainAxisAlignment.start
+                      : MainAxisAlignment.end,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (fromXiaoyou && widget.avatarsEnabled) ...[
+                      SizedBox(
+                        width: 36,
+                        child: widget.showAvatar
+                            ? const _Avatar(size: 30)
+                            : const SizedBox.shrink(),
+                      ),
+                      const SizedBox(width: 7),
+                    ],
+                    Flexible(
+                      child: GestureDetector(
+                        onTap: widget.selectionMode
+                            ? () => widget.onSelect(widget.message)
+                            : null,
+                        onLongPressStart:
+                            widget.selectionMode ? null : (_) => _openMenu(),
+                        onLongPress: widget.selectionMode
+                            ? () => widget.onSelect(widget.message)
+                            : null,
+                        child: AnimatedContainer(
+                          key: _bubbleKey,
+                          duration: const Duration(milliseconds: 220),
+                          constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+                          padding: message.kind == 'image' ||
+                                  message.kind == 'sticker'
                               ? const EdgeInsets.all(4)
                               : EdgeInsets.fromLTRB(
                                   15,
@@ -4895,83 +5058,91 @@ class _MessageRowState extends State<_MessageRow>
                                   15,
                                   widget.compact ? 8 : 10,
                                 ),
-                      decoration: BoxDecoration(
-                        gradient: bubbleGradient,
-                        border: Border.all(
-                          color: widget.highlighted
-                              ? _rose
-                              : glassBubble
-                                  ? Colors.white.withValues(alpha: 0.78)
-                                  : fromXiaoyou
-                                      ? const Color(0xe8ffffff)
-                                      : Colors.white.withValues(alpha: 0.2),
-                          width: widget.highlighted
-                              ? 1.4
-                              : (glassBubble ? 1.1 : 0.8),
-                        ),
-                        borderRadius: BorderRadius.only(
-                          topLeft: Radius.circular(widget.bubbleRadius),
-                          topRight: Radius.circular(widget.bubbleRadius),
-                          bottomLeft: Radius.circular(
-                            fromXiaoyou && widget.showAvatar
-                                ? 7
-                                : widget.bubbleRadius,
+                          decoration: BoxDecoration(
+                            gradient: bubbleGradient,
+                            border: Border.all(
+                              color: widget.selected || _messageMenuVisible
+                                  ? _rose
+                                  : widget.highlighted
+                                      ? _rose
+                                      : glassBubble
+                                          ? Colors.white.withValues(alpha: 0.78)
+                                          : fromXiaoyou
+                                              ? const Color(0xe8ffffff)
+                                              : Colors.white
+                                                  .withValues(alpha: 0.2),
+                              width: widget.selected || _messageMenuVisible
+                                  ? 2
+                                  : widget.highlighted
+                                      ? 1.4
+                                      : (glassBubble ? 1.1 : 0.8),
+                            ),
+                            borderRadius: BorderRadius.only(
+                              topLeft: Radius.circular(widget.bubbleRadius),
+                              topRight: Radius.circular(widget.bubbleRadius),
+                              bottomLeft: Radius.circular(
+                                fromXiaoyou && widget.showAvatar
+                                    ? 7
+                                    : widget.bubbleRadius,
+                              ),
+                              bottomRight: Radius.circular(
+                                !fromXiaoyou ? 7 : widget.bubbleRadius,
+                              ),
+                            ),
+                            boxShadow: flatBubble
+                                ? const []
+                                : glassBubble
+                                    ? const [
+                                        BoxShadow(
+                                          color: Color(0x10572a40),
+                                          blurRadius: 14,
+                                          offset: Offset(0, 5),
+                                        ),
+                                        BoxShadow(
+                                          color: Color(0x5cffffff),
+                                          blurRadius: 2,
+                                          offset: Offset(0, -1),
+                                        ),
+                                      ]
+                                    : const [
+                                        BoxShadow(
+                                          color: Color(0x14572a40),
+                                          blurRadius: 18,
+                                          offset: Offset(0, 6),
+                                        ),
+                                        BoxShadow(
+                                          color: Color(0x0cffffff),
+                                          blurRadius: 2,
+                                          offset: Offset(0, -1),
+                                        ),
+                                      ],
                           ),
-                          bottomRight: Radius.circular(
-                            !fromXiaoyou ? 7 : widget.bubbleRadius,
-                          ),
+                          child: message.kind == 'image' ||
+                                  message.kind == 'sticker'
+                              ? _buildImage(message)
+                              : message.kind == 'voice'
+                                  ? _buildVoice(message)
+                                  : Text(
+                                      message.text,
+                                      style: TextStyle(
+                                        color:
+                                            fromXiaoyou ? _ink : Colors.white,
+                                        fontSize: 15.5,
+                                        height: 1.45,
+                                      ),
+                                    ),
                         ),
-                        boxShadow: flatBubble
-                            ? const []
-                            : glassBubble
-                                ? const [
-                                    BoxShadow(
-                                      color: Color(0x10572a40),
-                                      blurRadius: 14,
-                                      offset: Offset(0, 5),
-                                    ),
-                                    BoxShadow(
-                                      color: Color(0x5cffffff),
-                                      blurRadius: 2,
-                                      offset: Offset(0, -1),
-                                    ),
-                                  ]
-                                : const [
-                                    BoxShadow(
-                                      color: Color(0x14572a40),
-                                      blurRadius: 18,
-                                      offset: Offset(0, 6),
-                                    ),
-                                    BoxShadow(
-                                      color: Color(0x0cffffff),
-                                      blurRadius: 2,
-                                      offset: Offset(0, -1),
-                                    ),
-                                  ],
                       ),
-                      child: message.kind == 'image' ||
-                              message.kind == 'sticker'
-                          ? _buildImage(message)
-                          : message.kind == 'voice'
-                              ? _buildVoice(message)
-                              : Text(
-                                  message.text,
-                                  style: TextStyle(
-                                    color: fromXiaoyou ? _ink : Colors.white,
-                                    fontSize: 15.5,
-                                    height: 1.45,
-                                  ),
-                                ),
                     ),
-                  ),
+                    if (!fromXiaoyou) ...[
+                      const SizedBox(width: 6),
+                      _DeliveryState(
+                        state: message.localState,
+                        onFailedTap: () => widget.onFailedTap(message),
+                      ),
+                    ],
+                  ],
                 ),
-                if (!fromXiaoyou) ...[
-                  const SizedBox(width: 6),
-                  _DeliveryState(
-                    state: message.localState,
-                    onFailedTap: () => widget.onFailedTap(message),
-                  ),
-                ],
               ],
             ),
             if (widget.showMessageTime || widget.favorite)
@@ -5065,14 +5236,17 @@ class _MessageRowState extends State<_MessageRow>
                   )
                 : _mediaLoading(imageWidth);
         return GestureDetector(
-          onTap: canOpen
-              ? () => _openImage(
-                    url,
-                    headers,
-                    hasCached ? cached.path : '',
-                    message.mimeType,
-                  )
-              : null,
+          // 多选模式下不查看图片，由外层处理选中。
+          onTap: widget.selectionMode
+              ? null
+              : canOpen
+                  ? () => _openImage(
+                        url,
+                        headers,
+                        hasCached ? cached.path : '',
+                        message.mimeType,
+                      )
+                  : null,
           child: Hero(
             tag: 'image-${message.id}',
             child: ClipRRect(
@@ -5102,22 +5276,14 @@ class _MessageRowState extends State<_MessageRow>
   Widget _buildVoice(ChatMessage message) {
     _reportRendered();
     final fromXiaoyou = message.fromXiaoyou;
-    final reportedMilliseconds = _voiceDuration.inMilliseconds > 0
-        ? _voiceDuration.inMilliseconds
-        : message.durationMs;
-    final milliseconds = reportedMilliseconds > 0 &&
-            reportedMilliseconds <= const Duration(minutes: 10).inMilliseconds
-        ? reportedMilliseconds
-        : 0;
-    final seconds =
-        milliseconds > 0 ? max(1, (milliseconds / 1000).round()) : 0;
     final canPlay = message.localPath.isNotEmpty ||
         _resolvedMediaFile != null ||
         ((message.mediaId.isNotEmpty || message.remoteUrl.isNotEmpty) &&
             widget.api != null);
-    final bubbleWidth = (150.0 + min(seconds, 30) * 3.2).clamp(150.0, 246.0);
+    final bubbleWidth = 148.0;
     return InkWell(
-      onTap: canPlay ? _toggleVoice : null,
+      // 多选模式下不播放语音，由外层处理选中。
+      onTap: widget.selectionMode ? null : (canPlay ? _toggleVoice : null),
       borderRadius: BorderRadius.circular(16),
       child: SizedBox(
         width: bubbleWidth,
@@ -5173,19 +5339,9 @@ class _MessageRowState extends State<_MessageRow>
                     ),
                   ),
                 ),
-                const SizedBox(width: 9),
-                Text(
-                  seconds > 0 ? '$seconds″' : '—″',
-                  style: TextStyle(
-                    color: (fromXiaoyou ? _ink : Colors.white)
-                        .withValues(alpha: 0.72),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
               ],
             ),
-            if (message.text.trim().isNotEmpty) ...[
+            if (widget.transcribed && message.text.trim().isNotEmpty) ...[
               const SizedBox(height: 7),
               Text(
                 message.text,
@@ -6002,6 +6158,101 @@ class _SearchFilterChip extends StatelessWidget {
   }
 }
 
+class _SelectionHeader extends StatelessWidget {
+  const _SelectionHeader({
+    required this.selectedCount,
+    required this.totalCount,
+    required this.onCancel,
+    required this.onSelectAll,
+  });
+
+  final int selectedCount;
+  final int totalCount;
+  final VoidCallback onCancel;
+  final VoidCallback onSelectAll;
+
+  @override
+  Widget build(BuildContext context) {
+    final allSelected = selectedCount >= totalCount;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 6, 14, 6),
+      decoration: const BoxDecoration(
+        color: Color(0xfffffbfd),
+        border: Border(
+          bottom: BorderSide(color: Color(0xfff0e6eb), width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          IconButton(
+            tooltip: '取消',
+            onPressed: onCancel,
+            icon: const Icon(Icons.close_rounded, color: _ink),
+          ),
+          const SizedBox(width: 4),
+          Expanded(
+            child: Text(
+              allSelected ? '已全选' : '已选 $selectedCount 条',
+              style: const TextStyle(
+                color: _ink,
+                fontSize: 15,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: allSelected ? onCancel : onSelectAll,
+            child: Text(allSelected ? '取消全选' : '全选'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({
+    required this.selectedCount,
+    required this.onDelete,
+  });
+
+  final int selectedCount;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final hasSelection = selectedCount > 0;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: const BoxDecoration(
+        color: Color(0xfffffbfd),
+        border: Border(
+          top: BorderSide(color: Color(0xfff0e6eb), width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              hasSelection ? '已选择 $selectedCount 条消息' : '选择要删除的消息',
+              style: const TextStyle(color: _muted, fontSize: 13),
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: hasSelection ? onDelete : null,
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xffd9534f),
+              disabledBackgroundColor: const Color(0xfff0d9d6),
+            ),
+            icon: const Icon(Icons.delete_outline_rounded, size: 18),
+            label: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.controller,
@@ -6802,59 +7053,6 @@ class _EmptyConversation extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _StartupScreen extends StatefulWidget {
-  const _StartupScreen();
-
-  @override
-  State<_StartupScreen> createState() => _StartupScreenState();
-}
-
-class _StartupScreenState extends State<_StartupScreen>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1300),
-  )..repeat(reverse: true);
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: _RomanticBackground(
-        child: Center(
-          child: AnimatedBuilder(
-            animation: _controller,
-            builder: (context, child) => Transform.scale(
-              scale: 0.98 + _controller.value * 0.03,
-              child: child,
-            ),
-            child: const Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _Avatar(size: 106),
-                SizedBox(height: 22),
-                Text(
-                  '正在找到小悠…',
-                  style: TextStyle(
-                    color: _roseDark,
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );

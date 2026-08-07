@@ -133,6 +133,7 @@ class SessionStore {
   static const _showAvatarsKey = 'xiaoyou.show_avatars';
   static const _showMessageTimeKey = 'xiaoyou.show_message_time';
   static const _favoriteMessageIdsKey = 'xiaoyou.favorite_message_ids';
+  static const _deletedMessageIdsKey = 'xiaoyou.deleted_message_ids';
   static const _tokenKey = 'xiaoyou.connection_token';
 
   final SharedPreferencesAsync _preferences;
@@ -215,6 +216,38 @@ class SessionStore {
       ..sort();
     await _preferences.setString(
       _favoriteMessageIdsKey,
+      jsonEncode(normalized),
+    );
+  }
+
+  Future<Set<String>> loadDeletedMessageIds() async {
+    final raw = await _preferences.getString(_deletedMessageIdsKey);
+    if (raw == null || raw.trim().isEmpty) {
+      return <String>{};
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        return <String>{};
+      }
+      return decoded
+          .whereType<String>()
+          .where((id) => id.trim().isNotEmpty)
+          .toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  Future<void> saveDeletedMessageIds(Iterable<String> ids) async {
+    final normalized = ids
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList()
+      ..sort();
+    await _preferences.setString(
+      _deletedMessageIdsKey,
       jsonEncode(normalized),
     );
   }
@@ -323,6 +356,7 @@ class SessionStore {
     await _preferences.remove(_testModeKey);
     await _preferences.remove(_draftKey);
     await _preferences.remove(_favoriteMessageIdsKey);
+    await _preferences.remove(_deletedMessageIdsKey);
     await _preferences.remove(_notificationsKey);
     await _preferences.remove(_notificationSoundKey);
     await _preferences.remove(_notificationVibrationKey);

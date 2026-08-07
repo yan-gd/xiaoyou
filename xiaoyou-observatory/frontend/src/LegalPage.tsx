@@ -65,6 +65,7 @@ function PrivacyPolicy() {
 
     <PolicySection number="02" title="我们处理的信息">
       <DataTable labels={['信息类别', '具体内容', '使用目的']}>
+        <DataRow><strong>账号与登录</strong><span>邮箱地址、邮箱验证状态、不可逆密码哈希；使用 QQ 登录时的 QQ OpenID、昵称和头像</span><span>创建并识别账号、完成登录和找回密码、隔离不同用户的数据。我们不保存你的邮箱密码、QQ 密码或 QQ 授权凭证</span></DataRow>
         <DataRow><strong>连接与设备</strong><span>你填写的服务地址、设备名称和设备标识、App 版本、系统类型及必要运行日志</span><span>建立安全连接、设备同步、故障诊断与防止重复投递</span></DataRow>
         <DataRow><strong>聊天与媒体</strong><span>主动发送的文字、图片、表情、语音及由小悠生成的回复和媒体</span><span>完成对话、图片理解、语音识别与合成、内容同步和历史记录恢复</span></DataRow>
         <DataRow><strong>记忆与关系状态</strong><span>从对话中形成的短期记忆、长期记忆、提醒、关系状态和心情状态</span><span>保持对话连续性、实现提醒和个性化陪伴；不用于向第三方投放广告</span></DataRow>
@@ -88,6 +89,8 @@ function PrivacyPolicy() {
     <PolicySection number="04" title="第三方服务与 SDK">
       <p>为了实现模型、语音、图片和系统级推送能力，我们仅在对应功能被触发时向服务商传递完成请求所必需的信息：</p>
       <DataTable labels={['服务提供方', '处理内容', '目的与说明']}>
+        <DataRow><strong>腾讯 QQ 互联</strong><span>仅在你选择“QQ 一键登录”时处理 QQ OpenID、昵称和头像；授权页面由腾讯提供</span><span>用于完成 QQ 授权登录并关联小悠内部用户编号。小悠不会获得或保存你的 QQ 密码；你也可以改用邮箱登录</span></DataRow>
+        <DataRow><strong>验证邮件服务</strong><span>邮箱地址、一次性验证码和必要的投递状态</span><span>仅用于注册邮箱验证和忘记密码；验证码 10 分钟有效，验证完成或过期后失效</span></DataRow>
         <DataRow><strong>阿里云模型服务</strong><span>必要的对话文本、用户主动提交的图片或语音、上下文，以及请求日志</span><span>用于对话生成、语音识别、视觉理解、向量检索和工具判断</span></DataRow>
         <DataRow><strong>北京火山引擎科技有限公司</strong><span>需要合成的回复文本、实时语音音频、人物参考图及图片生成描述</span><span>用于语音合成、端到端语音房和生活照生成</span></DataRow>
         <DataRow><strong>维沃移动通信有限公司（vivo 推送 SDK）</strong><span>应用基础信息、应用内设备标识、设备硬件信息和系统基础信息，包括 AppID/AppKey/包名/版本、Push SDK 版本、RegID、设备类型及操作系统类型和版本</span><span>用于消息推送及推送 API 成功率统计。SDK 在你同意本政策后初始化；详见 <a href="https://developers.vivo.com/doc/d/23807c559e844cbeb06049ee69e71833" target="_blank" rel="noreferrer">vivo 推送 SDK 隐私与安全说明</a> 和 <a href="https://developers.vivo.com/doc/d/dc4bd47dfb974a0a92bc70840527b6b9" target="_blank" rel="noreferrer">vivo 推送隐私政策</a></span></DataRow>
@@ -98,6 +101,8 @@ function PrivacyPolicy() {
     <PolicySection number="05" title="存储、同步与保留">
       <p>服务数据主要存储在中国境内的自有部署服务器及你的设备中。服务器保存聊天历史、媒体、记忆、提醒、投递状态和语音房历史，以便跨设备恢复和保持对话连续；本地按日期缓存聊天图片和语音。</p>
       <ul>
+        <li>每个注册账号拥有独立的内部用户编号、会话、设备命名空间、聊天历史及长短期记忆；一个账号的数据不会作为另一个账号的对话上下文。</li>
+        <li>密码仅保存为带随机盐的 bcrypt 哈希；邮箱验证码以不可逆摘要保存，且设有有效期和错误次数限制。</li>
         <li>退出登录不会自动删除服务器历史；卸载 App 会清除系统管理的本地数据，但重新连接后可能从服务器恢复。</li>
         <li>草稿、界面偏好、App 锁开关等以本地保存为主；系统备份行为受 Android 与设备厂商设置控制。</li>
         <li>仅在实现功能与安全审计所需期限内保留信息。你提出删除请求后，我们会核验身份并删除或匿名化法律无需继续保留的数据。</li>
@@ -139,7 +144,7 @@ function UserAgreement() {
     </PolicySection>
 
     <PolicySection number="02" title="使用与授权">
-      <p>你应保管好服务地址和连接令牌，并对通过自己设备发出的操作负责。你保留对主动提交内容的合法权益，同时授权服务在完成聊天、识别、生成、同步、记忆和通知所必需的范围内处理这些内容。该授权不包含公开传播或广告用途。</p>
+      <p>你可以使用已验证的邮箱和密码，或经 QQ 授权登录。你应妥善保管账号、密码与登录设备，并对通过自己账号发出的操作负责。你保留对主动提交内容的合法权益，同时授权服务在完成聊天、识别、生成、同步、记忆和通知所必需的范围内处理这些内容。该授权不包含公开传播或广告用途。</p>
     </PolicySection>
 
     <PolicySection number="03" title="人工智能生成内容">
@@ -204,7 +209,7 @@ export default function LegalPage({ kind }: { kind: LegalDocumentKind }) {
       <div className="legal-title">
         <span>{isPrivacy ? 'PRIVACY & MEMORY' : 'TERMS & COVENANT'}</span>
         <h1>{title}</h1>
-        <p>发布日期：2026 年 8 月 4 日 · 生效日期：2026 年 8 月 4 日</p>
+        <p>更新日期：2026 年 8 月 7 日 · 生效日期：2026 年 8 月 7 日</p>
       </div>
       {isPrivacy ? <PrivacyPolicy /> : <UserAgreement />}
     </article>

@@ -9,7 +9,7 @@ const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
 
-const _privacyConsentVersion = '2026-08-04';
+const _privacyConsentVersion = '2026-08-07-account';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
 const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
 
@@ -29,59 +29,58 @@ Future<void> openLegalUrl(String url) async {
   );
 }
 
-class PrivacyConsentGate extends StatefulWidget {
-  const PrivacyConsentGate({
-    required this.child,
-    super.key,
-  });
-
-  final Widget child;
-
-  @override
-  State<PrivacyConsentGate> createState() => _PrivacyConsentGateState();
+Future<bool> hasPrivacyConsent() async {
+  final preferences = await SharedPreferences.getInstance();
+  return preferences.getString(_privacyConsentPreference) ==
+      _privacyConsentVersion;
 }
 
-class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
-  bool _loading = true;
-  bool _accepted = false;
+Future<void> savePrivacyConsent() async {
+  final preferences = await SharedPreferences.getInstance();
+  await preferences.setString(
+    _privacyConsentPreference,
+    _privacyConsentVersion,
+  );
+}
 
-  @override
-  void initState() {
-    super.initState();
-    _loadConsent();
+Future<bool> showPrivacyConsentCard(BuildContext context) async {
+  final result = await showGeneralDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    barrierLabel: '隐私声明',
+    barrierColor: const Color(0x8a2e2028),
+    transitionDuration: const Duration(milliseconds: 260),
+    pageBuilder: (dialogContext, _, __) => const _PrivacyConsentDialog(),
+    transitionBuilder: (_, animation, __, child) {
+      final curved = CurvedAnimation(
+        parent: animation,
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      );
+      return FadeTransition(
+        opacity: curved,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.94, end: 1).animate(curved),
+          child: child,
+        ),
+      );
+    },
+  );
+  if (result == true) {
+    await savePrivacyConsent();
+    return true;
   }
+  return false;
+}
 
-  Future<void> _loadConsent() async {
-    final preferences = await SharedPreferences.getInstance();
-    final accepted = preferences.getString(_privacyConsentPreference) ==
-        _privacyConsentVersion;
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _accepted = accepted;
-      _loading = false;
-    });
-  }
+class _PrivacyConsentDialog extends StatelessWidget {
+  const _PrivacyConsentDialog();
 
-  Future<void> _accept() async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _privacyConsentPreference,
-      _privacyConsentVersion,
-    );
-    if (mounted) {
-      setState(() => _accepted = true);
-    }
-  }
-
-  Future<void> _openDocument(String url) async {
+  Future<void> _openDocument(BuildContext context, String url) async {
     try {
       await openLegalUrl(url);
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
+      if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('暂时无法打开页面，请检查网络后重试')),
       );
@@ -90,99 +89,254 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-    if (_accepted) {
-      return widget.child;
-    }
-    return Scaffold(
-      backgroundColor: const Color(0xfffff9fc),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 28, 24, 22),
-          child: Column(
-            children: [
-              const Spacer(),
-              Container(
-                width: 82,
-                height: 82,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: const Color(0xffffedf5),
-                  border: Border.all(color: Colors.white, width: 3),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x249f4f79),
-                      blurRadius: 28,
-                      offset: Offset(0, 12),
-                    ),
-                  ],
+    final height = MediaQuery.sizeOf(context).height;
+    return SafeArea(
+      child: Center(
+        child: Material(
+          color: Colors.transparent,
+          child: Container(
+            width: 420,
+            constraints: BoxConstraints(maxHeight: height - 48),
+            margin: const EdgeInsets.symmetric(horizontal: 22),
+            decoration: BoxDecoration(
+              color: const Color(0xfffffbfd),
+              borderRadius: BorderRadius.circular(30),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x442d1824),
+                  blurRadius: 48,
+                  offset: Offset(0, 22),
                 ),
-                child: const Icon(
-                  Icons.favorite_rounded,
-                  size: 34,
-                  color: Color(0xffb95482),
-                ),
-              ),
-              const SizedBox(height: 24),
-              const Text(
-                '欢迎来到小悠',
-                style: TextStyle(
-                  color: Color(0xff30252b),
-                  fontSize: 26,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                '在开始连接前，请先了解我们如何处理聊天、图片、语音、通知和设备同步信息。'
-                '只有在你明确同意后，小悠才会连接服务器并启用相关能力。',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Color(0xff786a71),
-                  fontSize: 14,
-                  height: 1.65,
-                ),
-              ),
-              const SizedBox(height: 18),
-              Wrap(
-                alignment: WrapAlignment.center,
-                spacing: 6,
+              ],
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(30),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextButton(
-                    onPressed: () => _openDocument(xiaoyouPrivacyPolicyUrl),
-                    child: const Text('《隐私政策》'),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(24, 22, 24, 20),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Color(0xffffeaf3), Color(0xfff1eaff)],
+                      ),
+                    ),
+                    child: const Row(
+                      children: [
+                        _ShieldMark(),
+                        SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '隐私声明',
+                                style: TextStyle(
+                                  color: Color(0xff33252d),
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                '请在登录小悠前阅读并作出选择',
+                                style: TextStyle(
+                                  color: Color(0xff826d78),
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  TextButton(
-                    onPressed: () => _openDocument(xiaoyouUserAgreementUrl),
-                    child: const Text('《用户协议》'),
+                  Flexible(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
+                      child: const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '为了提供账号登录、聊天、语音、图片、通知和多设备同步，小悠会在必要范围内处理以下信息：',
+                            style: TextStyle(
+                              color: Color(0xff57464f),
+                              fontSize: 14,
+                              height: 1.65,
+                            ),
+                          ),
+                          SizedBox(height: 15),
+                          _PrivacyItem(
+                            icon: Icons.person_outline_rounded,
+                            title: '账号与安全',
+                            detail:
+                                '邮箱验证信息，或你选择 QQ 登录时授权的账号标识、昵称与头像；密码仅保存不可逆哈希。',
+                          ),
+                          _PrivacyItem(
+                            icon: Icons.forum_outlined,
+                            title: '聊天与媒体',
+                            detail: '你主动发送的文字、语音和图片，以及为保持对话连续性所需的聊天记录与记忆。',
+                          ),
+                          _PrivacyItem(
+                            icon: Icons.notifications_none_rounded,
+                            title: '设备与通知',
+                            detail: '设备登录信息和通知标识，用于安全登录、消息同步及系统通知。',
+                          ),
+                          _PrivacyItem(
+                            icon: Icons.lock_outline_rounded,
+                            title: '账号相互隔离',
+                            detail: '不同账号的聊天、图片和记忆独立保存，不会与其他用户混用。',
+                          ),
+                          SizedBox(height: 6),
+                          Text(
+                            '点击“同意并继续”即表示你已阅读并同意《隐私政策》和《用户协议》。你可以在系统设置中随时再次查看。',
+                            style: TextStyle(
+                              color: Color(0xff806e77),
+                              fontSize: 12.5,
+                              height: 1.55,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            TextButton(
+                              onPressed: () => _openDocument(
+                                context,
+                                xiaoyouPrivacyPolicyUrl,
+                              ),
+                              child: const Text('隐私政策'),
+                            ),
+                            const Text('·',
+                                style: TextStyle(color: Color(0xffa08d97))),
+                            TextButton(
+                              onPressed: () => _openDocument(
+                                context,
+                                xiaoyouUserAgreementUrl,
+                              ),
+                              child: const Text('用户协议'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 52,
+                          child: FilledButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: const Color(0xffa64c79),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(18),
+                              ),
+                            ),
+                            child: const Text('同意并继续'),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text(
+                            '暂不同意',
+                            style: TextStyle(color: Color(0xff8b7882)),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
-              const Spacer(),
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: FilledButton(
-                  onPressed: _accept,
-                  child: const Text('同意并继续'),
-                ),
-              ),
-              const SizedBox(height: 10),
-              SizedBox(
-                width: double.infinity,
-                height: 48,
-                child: TextButton(
-                  onPressed: () => SystemNavigator.pop(),
-                  child: const Text('不同意并退出'),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _ShieldMark extends StatelessWidget {
+  const _ShieldMark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.82),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: const Icon(
+        Icons.verified_user_outlined,
+        color: Color(0xffa64c79),
+        size: 25,
+      ),
+    );
+  }
+}
+
+class _PrivacyItem extends StatelessWidget {
+  const _PrivacyItem({
+    required this.icon,
+    required this.title,
+    required this.detail,
+  });
+
+  final IconData icon;
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: const Color(0xffffedf5),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: const Color(0xffad4f7d), size: 19),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xff3d3037),
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  detail,
+                  style: const TextStyle(
+                    color: Color(0xff806f78),
+                    fontSize: 12.5,
+                    height: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

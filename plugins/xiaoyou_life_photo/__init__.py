@@ -1581,7 +1581,11 @@ YoYo当前相关原话：
     def _session_allowed(self, session_id):
         canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
         value = str(session_id or "").strip()
-        return value == canonical or self._is_ephemeral_session(value)
+        return (
+            value == canonical
+            or value.startswith("app_user_")
+            or self._is_ephemeral_session(value)
+        )
 
     @staticmethod
     def _is_ephemeral_session(session_id):

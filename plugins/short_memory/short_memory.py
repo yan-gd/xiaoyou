@@ -295,7 +295,8 @@ class ShortMemory(Plugin):
         if not require_canonical:
             return True
         canonical = os.getenv("XIAOYOU_CANONICAL_SESSION_ID", "yoyo").strip() or "yoyo"
-        return str(session_id or "").strip() == canonical
+        session_id = str(session_id or "").strip()
+        return session_id == canonical or session_id.startswith("app_user_")
 
     def _mark_context_session(self, context, session_id):
         try:

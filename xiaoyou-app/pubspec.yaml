@@ -1,7 +1,7 @@
 name: xiaoyou_app
 description: Xiaoyou's private mobile companion client.
 publish_to: none
-version: 0.6.3+17
+version: 0.6.4+18
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -30,5 +30,7 @@ flutter:
     - shaders/digital_xiaoyou.frag
   assets:
     - assets/xiaoyou-avatar.png
+    - assets/email-login.png
+    - assets/qq-login.png
     - assets/achievements/
     - assets/moods/

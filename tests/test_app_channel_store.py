@@ -1241,3 +1241,78 @@ def test_profile_mood_supports_shy_crying_and_afraid_states(
     assert (shy["key"], shy["asset"]) == ("shy", "害羞.png")
     assert (crying["key"], crying["asset"]) == ("crying", "大哭.png")
     assert (afraid["key"], afraid["asset"]) == ("afraid", "害怕.png")
+
+
+def test_delete_messages_soft_deletes_and_filters_queries(monkeypatch, tmp_path):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-del", "yoyo", platform="android")
+
+    assert store.accept_input(
+        message_id="user-del-1",
+        session_id="yoyo",
+        device_id="phone-del",
+        text="要删掉的用户消息",
+    )
+    assert store.queue_action(
+        action_id="action-del-1",
+        session_id="yoyo",
+        device_id="phone-del",
+        source="xiaoyou_chat",
+        parts=["要删掉的回复"],
+        input_id="user-del-1",
+    )
+    assert store.accept_input(
+        message_id="user-keep-1",
+        session_id="yoyo",
+        device_id="phone-del",
+        text="保留的消息",
+    )
+
+    event_rows = store.events_after("phone-del", after=0)
+    event_id = next(
+        item["event_id"]
+        for item in event_rows
+        if item["action_id"] == "action-del-1"
+    )
+    ids = ["user-del-1", event_id]
+    assert store.delete_messages("yoyo", ids) >= 2
+
+    # history（device 级）不再返回已删消息
+    history = store.history("phone-del", limit=100)
+    history_ids = {item["id"] for item in history}
+    assert "user-del-1" not in history_ids
+    assert "action-del-1" not in history_ids
+    assert "user-keep-1" in history_ids
+
+    # events_after 不再返回已删事件
+    events = store.events_after("phone-del", after=0)
+    event_ids = {item["id"] for item in events}
+    assert "action-del-1" not in event_ids
+
+    # history_page（session 级）不再返回已删消息
+    page = store.history_page("yoyo", limit=100)
+    page_ids = {item["id"] for item in page["messages"]}
+    assert "user-del-1" not in page_ids
+    assert "action-del-1" not in page_ids
+    assert "user-keep-1" in page_ids
+
+
+def test_deleted_messages_stay_hidden_after_device_reinstall(monkeypatch, tmp_path):
+    module = _load_app_channel(monkeypatch, tmp_path)
+    store = module.AppInboxStore(tmp_path / "app_channel" / "app.db")
+    store.register_device("phone-old", "yoyo", platform="android")
+
+    store.accept_input(
+        message_id="user-gone-1",
+        session_id="yoyo",
+        device_id="phone-old",
+        text="重装后不应回来",
+    )
+    assert store.delete_messages("yoyo", ["user-gone-1"]) >= 1
+
+    # 模拟重装：同一 session 换新 device_id
+    store.register_device("phone-new", "yoyo", platform="android")
+    page = store.history_page("yoyo", limit=100)
+    page_ids = {item["id"] for item in page["messages"]}
+    assert "user-gone-1" not in page_ids

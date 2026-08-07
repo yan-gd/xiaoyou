@@ -7,14 +7,10 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val vivoPushAppId =
-    providers.gradleProperty("XIAOYOU_VIVO_PUSH_APP_ID")
-        .orElse(providers.environmentVariable("XIAOYOU_VIVO_PUSH_APP_ID"))
-        .orElse("0")
-val vivoPushAppKey =
-    providers.gradleProperty("XIAOYOU_VIVO_PUSH_APP_KEY")
-        .orElse(providers.environmentVariable("XIAOYOU_VIVO_PUSH_APP_KEY"))
-        .orElse("disabled")
+// vivo 推送正式凭证直接写死，构建无需再注入环境变量。
+// AppID/AppKey 允许打进 APK；AppSecret 只保存在服务器 .env。
+val vivoPushAppId = "106122194"
+val vivoPushAppKey = "0b0edd0b1dff3d957a2831f5ecb11ac1"
 
 val releaseSigningProperties = Properties()
 val releaseSigningPropertiesFile = rootProject.file("key.properties")
@@ -73,8 +69,8 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["VIVO_PUSH_APP_ID"] = vivoPushAppId.get()
-        manifestPlaceholders["VIVO_PUSH_APP_KEY"] = vivoPushAppKey.get()
+        manifestPlaceholders["VIVO_PUSH_APP_ID"] = vivoPushAppId
+        manifestPlaceholders["VIVO_PUSH_APP_KEY"] = vivoPushAppKey
     }
 
     signingConfigs {

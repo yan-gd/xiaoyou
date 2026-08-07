@@ -381,6 +381,20 @@ class AppInboxStore:
                     ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            if "deleted" not in input_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE inputs
+                    ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            if "deleted" not in event_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE events
+                    ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             media_columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(media)")
@@ -1171,6 +1185,7 @@ class AppInboxStore:
                 JOIN actions a ON a.action_id=e.action_id
                 LEFT JOIN media m ON m.media_id=e.media_id
                 WHERE e.device_id=? AND e.sequence>?
+                  AND e.deleted=0
                   AND (
                       a.terminal_status='queued'
                       OR e.acknowledged_at IS NOT NULL
@@ -1242,7 +1257,7 @@ class AppInboxStore:
                 SELECT message_id, kind, text, media_id, mime_type,
                        duration_ms, accepted_at
                 FROM inputs
-                WHERE device_id=? %s
+                WHERE device_id=? AND deleted=0 %s
                 ORDER BY accepted_at DESC
                 LIMIT ?
                 """ % before_clause,
@@ -1253,7 +1268,7 @@ class AppInboxStore:
                 SELECT e.*, a.source, a.terminal_status, a.requested_parts
                 FROM events e
                 JOIN actions a ON a.action_id=e.action_id
-                WHERE e.device_id=?
+                WHERE e.device_id=? AND e.deleted=0
                   AND (
                       a.terminal_status='queued'
                       OR e.acknowledged_at IS NOT NULL
@@ -1391,7 +1406,7 @@ class AppInboxStore:
                         0 AS source_rank,
                         rowid AS order_index
                     FROM inputs
-                    WHERE session_id=?
+                    WHERE session_id=? AND deleted=0
 
                     UNION ALL
 
@@ -1412,7 +1427,7 @@ class AppInboxStore:
                         e.sequence AS order_index
                     FROM events e
                     JOIN actions a ON a.action_id=e.action_id
-                    WHERE a.session_id=?
+                    WHERE a.session_id=? AND e.deleted=0
                       AND (
                           a.terminal_status='queued'
                           OR e.acknowledged_at IS NOT NULL
@@ -1583,6 +1598,54 @@ class AppInboxStore:
             "requested_parts": int(action["requested_parts"] or 0),
             "completed_at": int(action["completed_at"] or now),
         }
+
+    def delete_messages(self, session_id, message_ids):
+        """软删除消息（session 级），历史/事件查询将不再返回。"""
+        session_id = str(session_id or "").strip()
+        normalized = {
+            str(item or "").strip()
+            for item in (message_ids or ())
+            if str(item or "").strip()
+        }
+        if not session_id or not normalized:
+            return 0
+        ids = list(normalized)[:200]
+        placeholders = ",".join("?" for _ in ids)
+        with self.lock, self._connect() as connection:
+            deleted_inputs = connection.execute(
+                """
+                UPDATE inputs
+                SET deleted=1
+                WHERE session_id=? AND message_id IN (%s)
+                """ % placeholders,
+                [session_id] + ids,
+            ).rowcount
+            action_ids = [
+                str(row["action_id"])
+                for row in connection.execute(
+                    """
+                    SELECT action_id
+                    FROM actions
+                    WHERE session_id=? AND action_id IN (
+                        SELECT action_id FROM events WHERE event_id IN (%s)
+                    )
+                    """ % placeholders,
+                    [session_id] + ids,
+                ).fetchall()
+            ]
+            deleted_events = 0
+            if action_ids:
+                event_placeholders = ",".join("?" for _ in action_ids)
+                deleted_events = connection.execute(
+                    """
+                    UPDATE events
+                    SET deleted=1
+                    WHERE action_id IN (%s)
+                      AND event_id IN (%s)
+                    """ % (event_placeholders, placeholders),
+                    action_ids + ids,
+                ).rowcount
+        return deleted_inputs + deleted_events
 
     def mark_memory_recorded(self, action_id):
         with self.lock, self._connect() as connection:
@@ -2240,6 +2303,32 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/health":
             self._json(200, {"ok": True, "service": "xiaoyou-app"})
             return
+        if parsed.path == "/v1/auth/config":
+            self._json(200, self.plugin.auth.public_config())
+            return
+        if parsed.path == "/v1/auth/qq/callback":
+            query = parse_qs(parsed.query)
+            try:
+                self.plugin.auth.complete_qq_callback(
+                    (query.get("code") or [""])[0],
+                    (query.get("state") or [""])[0],
+                )
+                self._html(
+                    200,
+                    "QQ 登录已完成",
+                    "授权成功。现在可以返回小悠 App，登录会自动完成。",
+                )
+            except Exception as error:
+                logger.warning(
+                    "[AppChannel] QQ callback failed error=%s",
+                    type(error).__name__,
+                )
+                self._html(
+                    400,
+                    "QQ 登录未完成",
+                    "授权已失效或验证失败，请返回 App 后重新尝试。",
+                )
+            return
         query = parse_qs(parsed.query)
         device_id = (query.get("device_id") or [""])[0]
         if parsed.path.startswith("/v1/media/"):
@@ -2432,6 +2521,54 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     self._json(200, result)
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._json(400, {"error": "invalid_login_request"})
+            return
+        if parsed.path == "/v1/auth/register/request":
+            self._auth_action(
+                lambda payload: self.plugin.auth.request_registration(
+                    payload.get("email"), payload.get("password")
+                ),
+                success_status=202,
+            )
+            return
+        if parsed.path == "/v1/auth/register/verify":
+            self._auth_action(
+                lambda payload: self.plugin.auth.verify_registration(
+                    payload.get("email"),
+                    payload.get("code"),
+                    payload.get("device_id"),
+                    remember=payload.get("remember", True),
+                )
+            )
+            return
+        if parsed.path == "/v1/auth/password/reset/request":
+            self._auth_action(
+                lambda payload: self.plugin.auth.request_password_reset(
+                    payload.get("email")
+                ),
+                success_status=202,
+            )
+            return
+        if parsed.path == "/v1/auth/password/reset/confirm":
+            self._auth_action(
+                lambda payload: self.plugin.auth.confirm_password_reset(
+                    payload.get("email"),
+                    payload.get("code"),
+                    payload.get("password"),
+                )
+            )
+            return
+        if parsed.path == "/v1/auth/qq/start":
+            self._auth_action(lambda payload: self.plugin.auth.start_qq_login())
+            return
+        if parsed.path == "/v1/auth/qq/exchange":
+            self._auth_action(
+                lambda payload: self.plugin.auth.exchange_qq_login(
+                    payload.get("login_id"),
+                    payload.get("device_id"),
+                    remember=payload.get("remember", True),
+                ),
+                pending_is_202=True,
+            )
             return
         if not self._authorized(self.headers.get("X-Device-Id", "")):
             return
@@ -2633,6 +2770,24 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                         "message_id": str(payload.get("message_id") or ""),
                     },
                 )
+                return
+            if parsed.path == "/v1/messages/delete":
+                self._device_id(payload.get("device_id"))
+                raw_ids = payload.get("message_ids")
+                if not isinstance(raw_ids, list):
+                    raise ValueError("invalid_message_ids")
+                message_ids = [
+                    str(item or "").strip()
+                    for item in raw_ids
+                    if str(item or "").strip()
+                ][:200]
+                if not message_ids:
+                    raise ValueError("invalid_message_ids")
+                deleted = self.plugin.store.delete_messages(
+                    self._session_id(),
+                    message_ids,
+                )
+                self._json(200, {"deleted": deleted})
                 return
             if parsed.path == "/v1/relationship/journals/draft":
                 from plugins.xiaoyou_common.inner_state_service import (
@@ -2984,6 +3139,50 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         ).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _auth_action(
+        self,
+        action,
+        *,
+        success_status=200,
+        pending_is_202=False,
+    ):
+        try:
+            payload = self._body()
+            result = action(payload)
+            if pending_is_202 and result is None:
+                self._json(202, {"status": "pending"})
+            else:
+                self._json(success_status, result or {"ok": True})
+        except ValueError as error:
+            self._json(400, {"error": str(error)[:80]})
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._json(400, {"error": "invalid_auth_request"})
+        except RuntimeError as error:
+            logger.warning(
+                "[AppChannel] account service unavailable error=%s",
+                str(error)[:80],
+            )
+            self._json(503, {"error": str(error)[:80]})
+        except Exception:
+            logger.exception("[AppChannel] account action failed")
+            self._json(502, {"error": "account_provider_failed"})
+
+    def _html(self, status, title, message):
+        encoded = (
+            "<!doctype html><meta charset='utf-8'><meta name='viewport' "
+            "content='width=device-width,initial-scale=1'><title>{}</title>"
+            "<style>body{{font-family:system-ui;background:#fff7fb;color:#35262e;"
+            "display:grid;place-items:center;min-height:100vh;margin:0}}main{{max-width:"
+            "480px;padding:36px;text-align:center}}h1{{font-size:26px}}p{{line-height:1.7;"
+            "color:#796a72}}</style><main><h1>{}</h1><p>{}</p></main>"
+        ).format(title, title, message).encode("utf-8")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()

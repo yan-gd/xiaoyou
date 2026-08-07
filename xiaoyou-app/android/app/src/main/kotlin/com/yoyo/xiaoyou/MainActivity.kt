@@ -349,12 +349,10 @@ class MainActivity : FlutterFragmentActivity() {
             return
         }
         if (pendingNotificationResult != null) {
-            result.error(
-                "notification_permission_pending",
-                "A notification permission request is already active.",
-                null,
-            )
-            return
+            // 上一次请求未收到系统回调（用户未响应或系统延迟）。
+            // 以当前实际权限状态应答，并清空残留，避免后续请求一直失败。
+            pendingNotificationResult?.success(notificationsEnabled())
+            pendingNotificationResult = null
         }
         pendingNotificationResult = result
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
