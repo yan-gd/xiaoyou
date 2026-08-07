@@ -29,6 +29,14 @@ from datetime import datetime, timedelta
 from common.log import logger
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.runtime_paths import runtime_path
+try:
+    from plugins.xiaoyou_common.runtime_paths import app_user_runtime_path
+except ImportError:  # Compatibility with isolated test stubs.
+    def app_user_runtime_path(session_id, namespace, filename):
+        return runtime_path(
+            os.path.join("app_users", str(session_id or "")),
+            os.path.join(namespace, filename),
+        )
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
 
@@ -1215,6 +1223,161 @@ def _restrict_private_file(path, directory=False):
         pass
 
 
+class ConversationArchiveRouter:
+    """Route registered App users to physically isolated archive databases."""
+
+    def __init__(self):
+        self.owner = ConversationArchiveService()
+        self.lock = threading.RLock()
+        self.services = {}
+        self._migrate_legacy_app_sessions()
+
+    def _service(self, session_id):
+        session_id = str(session_id or "").strip()
+        if not session_id.startswith("app_user_"):
+            return self.owner
+        with self.lock:
+            cached = self.services.get(session_id)
+            if cached is not None:
+                return cached
+            path = app_user_runtime_path(
+                session_id,
+                "conversation",
+                "conversation.db",
+            )
+            service = ConversationArchiveService(path=path)
+            self.services[session_id] = service
+            logger.info(
+                "[ConversationArchive] isolated App archive opened session=%s path=%s",
+                session_id,
+                path,
+            )
+            return service
+
+    def enabled(self):
+        return self.owner.enabled()
+
+    def record_message(self, *, session_id, **kwargs):
+        return self._service(session_id).record_message(
+            session_id=session_id,
+            **kwargs,
+        )
+
+    def backfill_messages(self, session_id, records):
+        return self._service(session_id).backfill_messages(session_id, records)
+
+    def build_active_history(self, session_id, **kwargs):
+        return self._service(session_id).build_active_history(session_id, **kwargs)
+
+    def exclude_recent_session(self, session_id, **kwargs):
+        return self._service(session_id).exclude_recent_session(session_id, **kwargs)
+
+    def build_episodic_context(self, session_id, query, **kwargs):
+        return self._service(session_id).build_episodic_context(
+            session_id, query, **kwargs
+        )
+
+    def block_injected_messages(self, message_ids, reason="provider_content_inspection"):
+        total = self.owner.block_injected_messages(message_ids, reason=reason)
+        with self.lock:
+            services = list(self.services.values())
+        for service in services:
+            total += service.block_injected_messages(message_ids, reason=reason)
+        return total
+
+    def _migrate_legacy_app_sessions(self):
+        """Move app_user_* rows out of the historical shared archive DB."""
+        try:
+            with self.owner.lock:
+                source = self.owner._connect()
+                try:
+                    rows = source.execute(
+                        "SELECT DISTINCT session_id FROM ("
+                        "SELECT session_id FROM episodes UNION SELECT session_id FROM messages"
+                        ") WHERE session_id LIKE 'app_user_%'"
+                    ).fetchall()
+                    sessions = [str(row[0]) for row in rows if str(row[0] or "")]
+                finally:
+                    source.close()
+            moved = 0
+            for session_id in sessions:
+                target_service = self._service(session_id)
+                if self._move_session(session_id, target_service):
+                    moved += 1
+            if moved:
+                logger.warning(
+                    "[ConversationArchive] moved legacy App sessions to isolated databases count=%s",
+                    moved,
+                )
+        except Exception:
+            logger.exception(
+                "[ConversationArchive] legacy App archive isolation migration failed"
+            )
+
+    def _move_session(self, session_id, target_service):
+        # Lock ordering is stable: owner first, then target.
+        with self.owner.lock, target_service.lock:
+            source = self.owner._connect()
+            target = target_service._connect()
+            try:
+                episode_columns = [
+                    str(row[1]) for row in source.execute("PRAGMA table_info(episodes)")
+                ]
+                message_columns = [
+                    str(row[1]) for row in source.execute("PRAGMA table_info(messages)")
+                ]
+                episodes = source.execute(
+                    "SELECT * FROM episodes WHERE session_id=?",
+                    (session_id,),
+                ).fetchall()
+                messages = source.execute(
+                    "SELECT * FROM messages WHERE session_id=?",
+                    (session_id,),
+                ).fetchall()
+                if not episodes and not messages:
+                    return False
+
+                target.execute("BEGIN IMMEDIATE")
+                if episodes:
+                    placeholders = ",".join("?" for _ in episode_columns)
+                    sql = "INSERT OR IGNORE INTO episodes({}) VALUES({})".format(
+                        ",".join(episode_columns), placeholders
+                    )
+                    for row in episodes:
+                        target.execute(sql, [row[column] for column in episode_columns])
+                if messages:
+                    placeholders = ",".join("?" for _ in message_columns)
+                    sql = "INSERT OR IGNORE INTO messages({}) VALUES({})".format(
+                        ",".join(message_columns), placeholders
+                    )
+                    for row in messages:
+                        target.execute(sql, [row[column] for column in message_columns])
+                target.commit()
+
+                source.execute("BEGIN IMMEDIATE")
+                source.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
+                source.execute("DELETE FROM episodes WHERE session_id=?", (session_id,))
+                source.commit()
+                return True
+            except Exception:
+                try:
+                    target.rollback()
+                except Exception:
+                    pass
+                try:
+                    source.rollback()
+                except Exception:
+                    pass
+                logger.exception(
+                    "[ConversationArchive] session migration failed session=%s",
+                    session_id,
+                )
+                return False
+            finally:
+                target.close()
+                source.close()
+
+
 _SERVICE = None
 _SERVICE_LOCK = threading.Lock()
 
@@ -1224,5 +1387,5 @@ def get_conversation_archive_service():
     if _SERVICE is None:
         with _SERVICE_LOCK:
             if _SERVICE is None:
-                _SERVICE = ConversationArchiveService()
+                _SERVICE = ConversationArchiveRouter()
     return _SERVICE

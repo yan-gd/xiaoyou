@@ -133,3 +133,43 @@ def test_compose_pins_mutable_state_below_appdata():
     )
     for item in expected:
         assert item in compose
+
+
+def test_registered_app_user_runtime_path_is_physically_isolated(monkeypatch, tmp_path):
+    monkeypatch.setenv("APPDATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("XIAOYOU_APP_USER_DATA_ROOT", raising=False)
+
+    resolved = RUNTIME_PATHS.app_user_runtime_path(
+        "app_user_abc123",
+        "long_memory",
+        "memories.db",
+    )
+
+    assert resolved == str(
+        (
+            tmp_path
+            / "data"
+            / "app_users"
+            / "usr_abc123"
+            / "long_memory"
+            / "memories.db"
+        ).resolve()
+    )
+    assert "yoyo" not in resolved
+
+
+def test_registered_app_user_runtime_path_never_uses_email_or_owner_session(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("APPDATA_DIR", str(tmp_path / "data"))
+
+    assert RUNTIME_PATHS.app_user_id_from_session("app_user_deadbeef") == "usr_deadbeef"
+    assert RUNTIME_PATHS.app_user_id_from_session("yoyo") == ""
+
+    try:
+        RUNTIME_PATHS.app_user_runtime_path("yoyo", "long_memory", "memories.db")
+    except ValueError as error:
+        assert "registered App session required" in str(error)
+    else:
+        raise AssertionError("owner session must not be routed into App-user storage")

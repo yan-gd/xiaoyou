@@ -9,7 +9,7 @@ const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
 
-const _privacyConsentVersion = '2026-08-07-account';
+const _privacyConsentVersion = '2026-08-07-password-account';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
 const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
 
@@ -172,7 +172,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                             icon: Icons.person_outline_rounded,
                             title: '账号与安全',
                             detail:
-                                '邮箱地址、一次性验证码及登录状态；验证码仅用于确认邮箱归属，服务器只保存不可逆摘要。',
+                                '账号、绑定邮箱、密码不可逆哈希、邮箱验证码及登录状态；邮箱仅用于注册验证与找回密码，服务器不保存明文密码。',
                           ),
                           _PrivacyItem(
                             icon: Icons.forum_outlined,
@@ -187,7 +187,8 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           _PrivacyItem(
                             icon: Icons.lock_outline_rounded,
                             title: '账号相互隔离',
-                            detail: '不同账号的聊天、图片和记忆独立保存，不会与其他用户混用。',
+                            detail:
+                                '普通用户按内部用户编号使用独立数据目录和记忆数据库；不会与运营者本人或其他用户的记忆混用。',
                           ),
                           SizedBox(height: 6),
                           Text(

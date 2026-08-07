@@ -25,12 +25,16 @@ class XiaoyouLoginResult {
 
 class XiaoyouAuthConfig {
   const XiaoyouAuthConfig({
-    required this.emailLogin,
+    required this.registrationEnabled,
+    required this.passwordResetEnabled,
+    required this.passwordMinLength,
     required this.codeTtl,
     required this.resendInterval,
   });
 
-  final bool emailLogin;
+  final bool registrationEnabled;
+  final bool passwordResetEnabled;
+  final int passwordMinLength;
   final int codeTtl;
   final int resendInterval;
 }
@@ -67,28 +71,58 @@ class XiaoyouApi {
       ..maxConnectionsPerHost = 1;
   }
 
+  static Future<XiaoyouLoginResult> login({
+    required String baseUrl,
+    required String username,
+    required String password,
+    required String deviceId,
+    bool remember = true,
+  }) async {
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/login',
+      body: {
+        'username': username,
+        'password': password,
+        'device_id': deviceId,
+        'remember': remember,
+      },
+    );
+    return _loginResult(values);
+  }
+
   static Future<XiaoyouAuthConfig> authConfig(String baseUrl) async {
     final values = await _publicRequest(baseUrl, 'GET', '/v1/auth/config');
     return XiaoyouAuthConfig(
-      emailLogin: values['email_login'] == true,
+      registrationEnabled: values['registration_enabled'] == true,
+      passwordResetEnabled: values['password_reset_enabled'] == true,
+      passwordMinLength: max(8, asInt(values['password_min_length'])),
       codeTtl: asInt(values['code_ttl']),
       resendInterval: asInt(values['resend_interval']),
     );
   }
 
-  static Future<Map<String, dynamic>> requestEmailCode({
+  static Future<Map<String, dynamic>> requestRegistration({
     required String baseUrl,
+    required String username,
     required String email,
+    required String password,
   }) =>
       _publicRequest(
         baseUrl,
         'POST',
-        '/v1/auth/email/request',
-        body: {'email': email},
+        '/v1/auth/register/request',
+        body: {
+          'username': username,
+          'email': email,
+          'password': password,
+        },
       );
 
-  static Future<XiaoyouLoginResult> verifyEmailCode({
+  static Future<XiaoyouLoginResult> verifyRegistration({
     required String baseUrl,
+    required String username,
     required String email,
     required String code,
     required String deviceId,
@@ -97,8 +131,9 @@ class XiaoyouApi {
     final values = await _publicRequest(
       baseUrl,
       'POST',
-      '/v1/auth/email/verify',
+      '/v1/auth/register/verify',
       body: {
+        'username': username,
         'email': email,
         'code': code,
         'device_id': deviceId,
@@ -106,6 +141,35 @@ class XiaoyouApi {
       },
     );
     return _loginResult(values);
+  }
+
+  static Future<Map<String, dynamic>> requestPasswordReset({
+    required String baseUrl,
+    required String identifier,
+  }) =>
+      _publicRequest(
+        baseUrl,
+        'POST',
+        '/v1/auth/password/reset/request',
+        body: {'identifier': identifier},
+      );
+
+  static Future<void> confirmPasswordReset({
+    required String baseUrl,
+    required String identifier,
+    required String code,
+    required String password,
+  }) async {
+    await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/password/reset/confirm',
+      body: {
+        'identifier': identifier,
+        'code': code,
+        'password': password,
+      },
+    );
   }
 
   static XiaoyouLoginResult _loginResult(Map<String, dynamic> values) {

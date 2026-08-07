@@ -1468,12 +1468,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<void> _openConnectionSheet() async {
     final saved = _savedConnection;
-    final result = await showModalBottomSheet<AccountAccessResult>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => AccountAccessSheet(saved: saved),
+    final result = await Navigator.of(context).push<AccountAccessResult>(
+      MaterialPageRoute<AccountAccessResult>(
+        fullscreenDialog: saved == null,
+        builder: (context) => AccountAccessSheet(saved: saved),
+      ),
     );
     if (result == null || !mounted) {
       return;

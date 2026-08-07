@@ -35,6 +35,65 @@ def appdata_root():
     return str(repository_root / "data")
 
 
+
+def app_user_id_from_session(session_id):
+    """Return the opaque registered-user id encoded by an App session id."""
+
+    session_id = str(session_id or "").strip()
+    prefix = "app_user_"
+    if not session_id.startswith(prefix):
+        return ""
+    suffix = session_id[len(prefix):]
+    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+    if not suffix or len(suffix) > 96 or any(char not in allowed for char in suffix):
+        return ""
+    return "usr_" + suffix
+
+
+def app_user_runtime_path(session_id, namespace, filename):
+    """Resolve physically isolated runtime storage for a registered App user.
+
+    The directory is derived only from the opaque internal user id encoded in
+    ``app_user_*``; account names and email addresses never appear on disk.
+    Owner/legacy sessions are intentionally rejected so existing YoYo state
+    continues to use the canonical runtime paths unchanged.
+    """
+
+    user_id = app_user_id_from_session(session_id)
+    if not user_id:
+        raise ValueError("registered App session required")
+    namespace = str(namespace or "").strip().strip("/\\")
+    filename = str(filename or "").strip().lstrip("/\\")
+    if not filename:
+        raise ValueError("runtime filename is required")
+
+    configured_root = os.getenv("XIAOYOU_APP_USER_DATA_ROOT", "").strip()
+    if configured_root:
+        configured_root = os.path.expanduser(configured_root)
+        base = (
+            configured_root
+            if os.path.isabs(configured_root)
+            else os.path.join(appdata_root(), configured_root)
+        )
+    else:
+        base = os.path.join(appdata_root(), "app_users")
+
+    user_root = os.path.abspath(os.path.join(base, user_id))
+    base = os.path.abspath(base)
+    if os.path.commonpath((base, user_root)) != base:
+        raise ValueError("invalid App user runtime path")
+    target = os.path.abspath(
+        os.path.join(user_root, namespace, filename) if namespace else os.path.join(user_root, filename)
+    )
+    directory = os.path.dirname(target)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(user_root, 0o700)
+        os.chmod(directory, 0o700)
+    except OSError:
+        pass
+    return target
+
 def runtime_path(
     namespace,
     filename,
@@ -130,4 +189,4 @@ def _atomic_copy(source, target):
             pass
 
 
-__all__ = ["appdata_root", "runtime_path"]
+__all__ = ["appdata_root", "runtime_path", "app_user_id_from_session", "app_user_runtime_path"]

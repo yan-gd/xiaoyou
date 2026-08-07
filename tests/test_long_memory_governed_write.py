@@ -19,7 +19,8 @@ def test_governance_writes_exact_user_fact_to_local_sqlite():
     source = PLUGIN_PATH.read_text(encoding="utf-8")
     method = _method_source(source, "_write_governed_candidate", "_govern_memory_turn")
 
-    assert "self.store.upsert(" in method
+    assert "store = self._store_for_memory_user(memory_user_id)" in method
+    assert "store.upsert(" in method
     assert '"provider_memory_id": memory_id' in method
     assert '"role": "assistant"' not in method
     assert "requests." not in method
@@ -100,7 +101,17 @@ def test_legacy_vector_backfill_runs_outside_the_chat_path():
         "_run_embedding_backfill",
     )
 
-    assert "self._schedule_embedding_backfill()" in search
+    assert "self._schedule_embedding_backfill(memory_user_id)" in search
     assert "threading.Thread(" in schedule
     assert "daemon=True" in schedule
     assert "self._run_embedding_backfill()" not in search
+
+
+def test_registered_app_users_route_to_separate_memory_databases():
+    source = PLUGIN_PATH.read_text(encoding="utf-8")
+
+    assert "app_user_runtime_path(" in source
+    assert '"long_memory",' in source
+    assert '"memories.db",' in source
+    assert "self._migrate_app_user_memories()" in source
+    assert "DELETE FROM memories WHERE user_id=?" in source

@@ -18,6 +18,14 @@ from common.log import logger
 from plugins.xiaoyou_common.context_service import build_context_snapshot
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.runtime_paths import runtime_path
+try:
+    from plugins.xiaoyou_common.runtime_paths import app_user_runtime_path
+except ImportError:  # Compatibility with isolated test stubs.
+    def app_user_runtime_path(session_id, namespace, filename):
+        return runtime_path(
+            os.path.join("app_users", str(session_id or "")),
+            os.path.join(namespace, filename),
+        )
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 
@@ -62,9 +70,45 @@ class RecentStateService:
             default_factory=lambda: {"schema_version": 1, "sessions": {}},
         )
         self.lock = threading.RLock()
+        self._app_stores = {}
+        self._migrate_app_user_sessions()
         self.queues = {}
         self.workers = set()
         self.generations = {}
+
+    def _migrate_app_user_sessions(self):
+        state = self.store.load()
+        if not isinstance(state, dict) or not isinstance(state.get("sessions"), dict):
+            return
+        sessions = state.get("sessions", {})
+        app_sessions = [
+            session_id
+            for session_id in sessions
+            if str(session_id).startswith("app_user_")
+        ]
+        if not app_sessions:
+            return
+        moved = 0
+        for session_id in app_sessions:
+            target_store = self._store_for_session(session_id)
+            target = target_store.load()
+            if not isinstance(target, dict):
+                target = {"schema_version": 1, "sessions": {}}
+            target.setdefault("schema_version", 1)
+            target_sessions = target.setdefault("sessions", {})
+            existing = target_sessions.get(session_id)
+            incoming = sessions.get(session_id)
+            if not isinstance(existing, dict) or int(incoming.get("updated_at") or 0) >= int(existing.get("updated_at") or 0):
+                target_sessions[session_id] = incoming
+            if target_store.save(target):
+                sessions.pop(session_id, None)
+                moved += 1
+        if moved:
+            self.store.save(state)
+            logger.warning(
+                "[RecentState] moved App sessions to isolated files count=%s",
+                moved,
+            )
 
     def enabled(self):
         return os.getenv("XIAOYOU_RECENT_STATE_ENABLED", "true").strip().lower() in (
@@ -248,7 +292,7 @@ class RecentStateService:
                     session_id,
                 )
                 return self.get(session_id)
-            state = self._load_all()
+            state = self._load_all(session_id)
             sessions = state.setdefault("sessions", {})
             current = self._prune_session(sessions.get(session_id, {}), now)
             merged = self._merge(current, update, now)
@@ -258,7 +302,7 @@ class RecentStateService:
             merged["suspended_at"] = 0
             merged["suspended_reason"] = ""
             sessions[session_id] = merged
-            self.store.save(state)
+            self._store_for_session(session_id).save(state)
 
         logger.info(
             "[RecentState] updated session=%s topic=%s states=%s loops=%s refs=%s facts=%s",
@@ -277,13 +321,13 @@ class RecentStateService:
             return self._empty_session()
         now = int(time.time())
         with self.lock:
-            state = self._load_all()
+            state = self._load_all(session_id)
             sessions = state.setdefault("sessions", {})
             original = sessions.get(session_id, {})
             pruned = self._prune_session(original, now)
             if pruned != original:
                 sessions[session_id] = pruned
-                self.store.save(state)
+                self._store_for_session(session_id).save(state)
             return self._public(pruned)
 
     def build_context(self, session_id):
@@ -335,7 +379,7 @@ class RecentStateService:
                 and int(self.generations.get(session_id, 0)) != int(generation)
             ):
                 return False
-            state = self._load_all()
+            state = self._load_all(session_id)
             sessions = state.setdefault("sessions", {})
             current = self._prune_session(sessions.get(session_id, {}), now)
             current["suspended_at"] = now
@@ -343,7 +387,7 @@ class RecentStateService:
             current["last_user_at"] = int(last_user_ts or now)
             current["last_input_id"] = str(input_id or "")[:80]
             sessions[session_id] = current
-            self.store.save(state)
+            self._store_for_session(session_id).save(state)
         logger.info(
             "[RecentState] stale derived context suspended session=%s",
             session_id,
@@ -355,13 +399,13 @@ class RecentStateService:
         if not session_id:
             return False
         with self.lock:
-            state = self._load_all()
+            state = self._load_all(session_id)
             sessions = state.setdefault("sessions", {})
             existed = sessions.pop(session_id, None) is not None
             self.queues.pop(session_id, None)
             self.generations[session_id] = int(self.generations.get(session_id, 0)) + 1
             if existed:
-                self.store.save(state)
+                self._store_for_session(session_id).save(state)
             return existed
 
     def _build_update_prompt(self, prior, recent, time_context, user_text, assistant_text):
@@ -589,8 +633,34 @@ YoYo本轮原话：
     def _public(self, value):
         return json.loads(json.dumps(value or self._empty_session(), ensure_ascii=False))
 
-    def _load_all(self):
-        value = self.store.load()
+    def _store_for_session(self, session_id=""):
+        session_id = str(session_id or "").strip()
+        if not session_id.startswith("app_user_"):
+            return self.store
+        cached = self._app_stores.get(session_id)
+        if cached is not None:
+            return cached
+        path = app_user_runtime_path(
+            session_id,
+            "recent_state",
+            "state.json",
+        )
+        store = JsonStateStore(
+            path,
+            backup_path=path + ".backup",
+            name="xiaoyou_recent_state:%s" % session_id,
+            default_factory=lambda: {"schema_version": 1, "sessions": {}},
+        )
+        self._app_stores[session_id] = store
+        logger.info(
+            "[RecentState] isolated App state store opened session=%s path=%s",
+            session_id,
+            path,
+        )
+        return store
+
+    def _load_all(self, session_id=""):
+        value = self._store_for_session(session_id).load()
         if not isinstance(value, dict):
             value = {"schema_version": 1, "sessions": {}}
         value.setdefault("schema_version", 1)

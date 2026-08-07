@@ -12,6 +12,14 @@ from plugins.xiaoyou_common.thinking_config import build_thinking_payload
 from plugins.xiaoyou_common.model_gateway import chat_completion
 from plugins.xiaoyou_common.state_store import JsonStateStore
 from plugins.xiaoyou_common.runtime_paths import runtime_path
+try:
+    from plugins.xiaoyou_common.runtime_paths import app_user_runtime_path
+except ImportError:  # Compatibility with isolated test stubs.
+    def app_user_runtime_path(session_id, namespace, filename):
+        return runtime_path(
+            os.path.join("app_users", str(session_id or "")),
+            os.path.join(namespace, filename),
+        )
 from plugins.xiaoyou_common.trace_service import ensure_trace, trace_event
 import plugins
 from plugins import *
@@ -74,6 +82,7 @@ class ShortMemory(Plugin):
     def __init__(self):
         super().__init__()
         self.recent_state = get_recent_state_service()
+        self._app_state_stores = {}
         self.archive_backfill_done = threading.Event()
         try:
             self.conversation_archive = get_conversation_archive_service()
@@ -87,6 +96,7 @@ class ShortMemory(Plugin):
 
         if self._enabled():
             self._migrate_identity_sessions()
+            self._migrate_app_user_sessions()
             if self.conversation_archive is not None:
                 # The retained JSON window is small.  Finish its one-way
                 # migration before accepting a new message so an older
@@ -372,7 +382,7 @@ class ShortMemory(Plugin):
         record_id = uuid.uuid4().hex
 
         with LOCK:
-            data = self._load_all()
+            data = self._load_all(session_id)
             if data is None:
                 logger.error("[ShortMemory] state unavailable, skip append without overwriting")
                 return False
@@ -433,7 +443,7 @@ class ShortMemory(Plugin):
             item = self._trim_session(item)
             data[session_id] = item
 
-            if not self._save_all(data):
+            if not self._save_all(data, session_id):
                 return False
 
             should_summarize = self._should_summarize(item)
@@ -610,7 +620,7 @@ class ShortMemory(Plugin):
         blocked = 0
 
         with LOCK:
-            data = self._load_all()
+            data = self._load_all(session_id)
             if data is None:
                 return 0
 
@@ -633,7 +643,7 @@ class ShortMemory(Plugin):
 
             item["updated_at"] = now
             data[session_id] = item
-            if not self._save_all(data):
+            if not self._save_all(data, session_id):
                 return 0
 
         logger.warning(
@@ -652,7 +662,7 @@ class ShortMemory(Plugin):
 
         now = int(time.time())
         with LOCK:
-            data = self._load_all()
+            data = self._load_all(session_id)
             if data is None:
                 return False
 
@@ -673,7 +683,7 @@ class ShortMemory(Plugin):
             self._mark_provider_injection_blocked(record, reason, now)
             item["updated_at"] = now
             data[session_id] = item
-            if not self._save_all(data):
+            if not self._save_all(data, session_id):
                 return False
 
         logger.warning(
@@ -824,7 +834,7 @@ class ShortMemory(Plugin):
 
         try:
             with LOCK:
-                data = self._load_all()
+                data = self._load_all(session_id)
                 if data is None:
                     return
 
@@ -879,7 +889,7 @@ class ShortMemory(Plugin):
             now = int(time.time())
 
             with LOCK:
-                data = self._load_all()
+                data = self._load_all(session_id)
                 if data is None:
                     return
 
@@ -937,7 +947,7 @@ class ShortMemory(Plugin):
                 item["updated_at"] = now
                 data[session_id] = item
 
-                if not self._save_all(data):
+                if not self._save_all(data, session_id):
                     return
 
                 repeat = self._should_summarize(item)
@@ -1533,7 +1543,7 @@ class ShortMemory(Plugin):
 
     def _get_session(self, session_id):
         with LOCK:
-            data = self._load_all()
+            data = self._load_all(session_id)
             if data is None:
                 return self._empty_session()
             return copy.deepcopy(
@@ -1542,12 +1552,12 @@ class ShortMemory(Plugin):
 
     def _clear_session(self, session_id):
         with LOCK:
-            data = self._load_all()
+            data = self._load_all(session_id)
             if data is None:
                 logger.error("[ShortMemory] state unavailable, refuse to clear or overwrite")
                 return False
             data[session_id] = self._empty_session()
-            if not self._save_all(data):
+            if not self._save_all(data, session_id):
                 return False
             try:
                 self.recent_state.clear(session_id)
@@ -1648,7 +1658,9 @@ class ShortMemory(Plugin):
             removed_ids = [
                 session_id
                 for session_id in data
-                if prune and session_id not in source_ids
+                if prune
+                and session_id not in source_ids
+                and not str(session_id).startswith("app_user_")
             ]
             removed_records = sum(
                 self._session_record_count(data.get(session_id))
@@ -1684,6 +1696,75 @@ class ShortMemory(Plugin):
             len(removed_ids),
             removed_records,
         )
+        return True
+
+    def _migrate_app_user_sessions(self):
+        """Move legacy App-user short memory out of the owner's JSON file.
+
+        Older multi-account builds kept ``app_user_*`` keys beside ``yoyo``.
+        Each registered user now receives a physically separate state file.
+        """
+        with LOCK:
+            data = self._load_all()
+            if not isinstance(data, dict):
+                return False
+            app_sessions = [
+                session_id
+                for session_id in data
+                if str(session_id).startswith("app_user_")
+                and isinstance(data.get(session_id), dict)
+            ]
+            if not app_sessions:
+                return True
+
+            migrated = dict(data)
+            moved = 0
+            for session_id in app_sessions:
+                target = self._load_all(session_id)
+                if target is None:
+                    continue
+                incoming = self._migrate_session(session_id, data[session_id])
+                existing = target.get(session_id)
+                if isinstance(existing, dict):
+                    incoming = self._merge_identity_sessions(
+                        session_id,
+                        [(session_id, existing), (session_id, incoming)],
+                    )
+                target[session_id] = incoming
+                if not self._save_all(target, session_id):
+                    continue
+                if self.conversation_archive is not None:
+                    records = []
+                    for bucket in ("pending_archive", "messages"):
+                        records.extend(
+                            value
+                            for value in incoming.get(bucket, [])
+                            if isinstance(value, dict)
+                        )
+                    if records:
+                        try:
+                            self.conversation_archive.backfill_messages(
+                                session_id, records
+                            )
+                        except Exception:
+                            logger.exception(
+                                "[ShortMemory] isolated archive backfill failed session=%s",
+                                session_id,
+                            )
+                migrated.pop(session_id, None)
+                moved += 1
+
+            if moved and not self._save_all(migrated):
+                logger.error(
+                    "[ShortMemory] App-user isolation migration could not clean owner state"
+                )
+                return False
+
+        if moved:
+            logger.warning(
+                "[ShortMemory] moved App-user sessions to isolated files count=%s",
+                moved,
+            )
         return True
 
     def _merge_identity_sessions(self, canonical, source_sessions):
@@ -1899,12 +1980,40 @@ class ShortMemory(Plugin):
         )
         return "legacy-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
-    def _load_all(self):
-        data = STATE_STORE.load(transform=self._migrate_data)
+    def _state_store_for_session(self, session_id=""):
+        session_id = str(session_id or "").strip()
+        if not session_id.startswith("app_user_"):
+            return STATE_STORE
+        cached = self._app_state_stores.get(session_id)
+        if cached is not None:
+            return cached
+        path = app_user_runtime_path(
+            session_id,
+            "short_memory",
+            "short_memory.json",
+        )
+        store = JsonStateStore(
+            path,
+            backup_path=path + ".backup",
+            name="short_memory:%s" % session_id,
+            default_factory=dict,
+            strict_unavailable=True,
+        )
+        self._app_state_stores[session_id] = store
+        logger.info(
+            "[ShortMemory] isolated App memory store opened session=%s path=%s",
+            session_id,
+            path,
+        )
+        return store
+
+    def _load_all(self, session_id=""):
+        store = self._state_store_for_session(session_id)
+        data = store.load(transform=self._migrate_data)
         if data is None:
             logger.error("[ShortMemory] no valid state available; writes are disabled for this operation")
             return None
         return data
 
-    def _save_all(self, data):
-        return STATE_STORE.save(data)
+    def _save_all(self, data, session_id=""):
+        return self._state_store_for_session(session_id).save(data)

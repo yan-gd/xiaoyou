@@ -23,6 +23,14 @@ from plugins.xiaoyou_common.memory_schema import (
     normalize_memory_type,
 )
 from plugins.xiaoyou_common.runtime_paths import runtime_path
+try:
+    from plugins.xiaoyou_common.runtime_paths import app_user_runtime_path
+except ImportError:  # Compatibility with isolated test stubs.
+    def app_user_runtime_path(session_id, namespace, filename):
+        return runtime_path(
+            os.path.join("app_users", str(session_id or "")),
+            os.path.join(namespace, filename),
+        )
 from plugins.xiaoyou_common.session_fifo import PerSessionFIFO
 from plugins.xiaoyou_common.trace_service import trace_event
 
@@ -83,15 +91,19 @@ class LongTermMemory(Plugin):
             "memories.db",
             env_var="LONG_MEMORY_DB_PATH",
         )
+        self.sqlite_timeout = self._bounded_int(
+            os.getenv("LONG_MEMORY_SQLITE_TIMEOUT"),
+            8,
+            minimum=1,
+            maximum=60,
+        )
         self.store = LongMemoryStore(
             self.database_path,
-            timeout=self._bounded_int(
-                os.getenv("LONG_MEMORY_SQLITE_TIMEOUT"),
-                8,
-                minimum=1,
-                maximum=60,
-            ),
+            timeout=self.sqlite_timeout,
         )
+        self._store_lock = threading.RLock()
+        self._stores = {self.user_id: self.store}
+        self._migrate_app_user_memories()
         self.governance_enabled = self._env_bool(
             "LONG_MEMORY_GOVERNANCE_ENABLED",
             True,
@@ -113,7 +125,7 @@ class LongTermMemory(Plugin):
             thread_name_prefix="long-memory",
         )
         self._backfill_lock = threading.Lock()
-        self._backfill_running = False
+        self._backfill_running = set()
         imported = self.store.import_governance_ledger(
             runtime_path(
                 "xiaoyou_memory",
@@ -178,14 +190,16 @@ class LongTermMemory(Plugin):
             maximum=50,
         )
         allowed_types = normalize_allowed(allowed_memory_types)
-        memories = self.store.list_memories(
-            user_id=self._memory_user_id(user_id),
+        memory_user_id = self._memory_user_id(user_id)
+        store = self._store_for_memory_user(memory_user_id)
+        memories = store.list_memories(
+            user_id=memory_user_id,
             allowed_types=allowed_types,
             limit=self.max_scan,
         )
         if not memories:
             return []
-        self._schedule_embedding_backfill()
+        self._schedule_embedding_backfill(memory_user_id)
 
         query_result = self._embed(
             [str(query or "").strip()],
@@ -237,25 +251,119 @@ class LongTermMemory(Plugin):
         )
         return selected
 
-    def _schedule_embedding_backfill(self):
+    def _migrate_app_user_memories(self):
+        """Move legacy app_user_* rows out of the owner's memory database."""
+        try:
+            with self.store._lock, self.store._connect() as source:
+                rows = source.execute(
+                    "SELECT DISTINCT user_id FROM memories WHERE user_id LIKE 'app_user_%'"
+                ).fetchall()
+                app_users = [str(row["user_id"] or "") for row in rows]
+            moved = 0
+            for memory_user_id in app_users:
+                target = self._store_for_memory_user(memory_user_id)
+                with self.store._lock, target._lock:
+                    source = self.store._connect()
+                    destination = target._connect()
+                    try:
+                        columns = [
+                            str(row["name"])
+                            for row in source.execute("PRAGMA table_info(memories)")
+                        ]
+                        memories = source.execute(
+                            "SELECT * FROM memories WHERE user_id=?",
+                            (memory_user_id,),
+                        ).fetchall()
+                        if not memories:
+                            continue
+                        destination.execute("BEGIN IMMEDIATE")
+                        placeholders = ",".join("?" for _ in columns)
+                        statement = "INSERT OR IGNORE INTO memories({}) VALUES({})".format(
+                            ",".join(columns), placeholders
+                        )
+                        for row in memories:
+                            destination.execute(
+                                statement, [row[column] for column in columns]
+                            )
+                        destination.commit()
+
+                        source.execute("BEGIN IMMEDIATE")
+                        source.execute(
+                            "DELETE FROM memories WHERE user_id=?",
+                            (memory_user_id,),
+                        )
+                        source.commit()
+                        moved += 1
+                    except Exception:
+                        try:
+                            destination.rollback()
+                        except Exception:
+                            pass
+                        try:
+                            source.rollback()
+                        except Exception:
+                            pass
+                        logger.exception(
+                            "[LongTermMemory] App-user isolation migration failed session=%s",
+                            memory_user_id,
+                        )
+                    finally:
+                        destination.close()
+                        source.close()
+            if moved:
+                logger.warning(
+                    "[LongTermMemory] moved App-user memories to isolated databases count=%s",
+                    moved,
+                )
+        except Exception:
+            logger.exception(
+                "[LongTermMemory] unable to inspect legacy shared memory database"
+            )
+
+    def _store_for_memory_user(self, memory_user_id):
+        memory_user_id = self._memory_user_id(memory_user_id)
+        if not str(memory_user_id).startswith("app_user_"):
+            return self.store
+        with self._store_lock:
+            cached = self._stores.get(memory_user_id)
+            if cached is not None:
+                return cached
+            path = app_user_runtime_path(
+                memory_user_id,
+                "long_memory",
+                "memories.db",
+            )
+            store = LongMemoryStore(path, timeout=self.sqlite_timeout)
+            self._stores[memory_user_id] = store
+            logger.info(
+                "[LongTermMemory] isolated App memory store opened session=%s database=%s",
+                memory_user_id,
+                path,
+            )
+            return store
+
+    def _schedule_embedding_backfill(self, memory_user_id=None):
+        memory_user_id = self._memory_user_id(memory_user_id or self.user_id)
         with self._backfill_lock:
-            if self._backfill_running:
+            if memory_user_id in self._backfill_running:
                 return False
-            self._backfill_running = True
+            self._backfill_running.add(memory_user_id)
         worker = threading.Thread(
             target=self._run_embedding_backfill,
-            name="long-memory-backfill",
+            args=(memory_user_id,),
+            name="long-memory-backfill-%s" % str(memory_user_id)[-8:],
             daemon=True,
         )
         worker.start()
         return True
 
-    def _run_embedding_backfill(self):
+    def _run_embedding_backfill(self, memory_user_id):
         indexed = 0
+        store = self._store_for_memory_user(memory_user_id)
         try:
             while True:
-                memories = self.store.list_memories(
-                    user_id=self.user_id,
+                memories = store.list_memories(
+                    user_id=memory_user_id,
                     limit=self.max_scan,
                 )
                 missing = [
@@ -273,17 +381,19 @@ class LongTermMemory(Plugin):
                     vectors = self._embed(
                         [memory.get("content", "") for memory in batch],
                         purpose="semantic_backfill",
+                        session_id=memory_user_id,
                     )
                     if not vectors or len(vectors) != len(batch):
                         logger.warning(
                             "[LongTermMemory] background embedding backfill paused "
-                            "indexed=%s remaining_batch=%s",
+                            "session=%s indexed=%s remaining_batch=%s",
+                            memory_user_id,
                             indexed,
                             len(batch),
                         )
                         return
                     for memory, vector in zip(batch, vectors):
-                        if self.store.update_embedding(
+                        if store.update_embedding(
                             memory.get("memory_id"),
                             vector,
                             self.embedding_signature,
@@ -293,15 +403,17 @@ class LongTermMemory(Plugin):
                     break
         except Exception:
             logger.exception(
-                "[LongTermMemory] background embedding backfill failed"
+                "[LongTermMemory] background embedding backfill failed session=%s",
+                memory_user_id,
             )
         finally:
             with self._backfill_lock:
-                self._backfill_running = False
+                self._backfill_running.discard(memory_user_id)
             if indexed:
                 logger.info(
                     "[LongTermMemory] background embedding backfill completed "
-                    "indexed=%s",
+                    "session=%s indexed=%s",
+                    memory_user_id,
                     indexed,
                 )
 
@@ -332,14 +444,16 @@ class LongTermMemory(Plugin):
             input_id=input_id,
         )
         embedding = vectors[0] if vectors else None
-        result = self.store.upsert(
-            user_id=self._memory_user_id(session_id),
+        memory_user_id = self._memory_user_id(session_id)
+        store = self._store_for_memory_user(memory_user_id)
+        result = store.upsert(
+            user_id=memory_user_id,
             candidate=governed,
             embedding=embedding,
             embedding_model=self.embedding_signature if embedding else "",
         )
         if result.get("ok") and not embedding:
-            self._schedule_embedding_backfill()
+            self._schedule_embedding_backfill(memory_user_id)
         if not result.get("ok"):
             if trace_id:
                 trace_event(
@@ -669,9 +783,10 @@ class LongTermMemory(Plugin):
     def _memory_user_id(self, session_id=""):
         """Use the stable conversation scope as the memory owner.
 
-        The legacy WeChat/owner conversation remains ``LONG_MEMORY_USER_ID``;
-        every registered App account receives its own ``app_user_*`` scope.
-        Test sessions are filtered before reaching storage.
+        The legacy WeChat/owner conversation remains ``LONG_MEMORY_USER_ID`` in
+        the existing owner database. Registered App accounts use ``app_user_*``
+        scopes which are routed to separate per-user SQLite files. Test sessions
+        are filtered before reaching storage.
         """
         session_id = str(session_id or "").strip()
         if session_id.startswith("app_user_"):
