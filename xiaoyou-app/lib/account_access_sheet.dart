@@ -11,8 +11,6 @@ const _muted = Color(0xff806f78);
 const _rose = Color(0xffad4f7d);
 const _defaultBaseUrl = 'https://xiaoyou.yoyoyan.cn/xiaoyou-app';
 
-enum _AccountMode { login, register, reset }
-
 class AccountAccessResult {
   const AccountAccessResult({
     required this.baseUrl,
@@ -39,17 +37,13 @@ class AccountAccessSheet extends StatefulWidget {
 class _AccountAccessSheetState extends State<AccountAccessSheet> {
   late final TextEditingController _base;
   late final TextEditingController _email;
-  late final TextEditingController _password;
-  late final TextEditingController _confirmPassword;
   late final TextEditingController _code;
   late final TextEditingController _device;
-  _AccountMode _mode = _AccountMode.login;
   XiaoyouAuthConfig? _config;
   bool _remember = true;
   bool _agreed = false;
   bool _busy = false;
   bool _codeSent = false;
-  bool _hidePassword = true;
   String _error = '';
 
   @override
@@ -59,8 +53,6 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       text: widget.saved?.baseUrl ?? _defaultBaseUrl,
     );
     _email = TextEditingController(text: widget.saved?.accountId ?? '');
-    _password = TextEditingController();
-    _confirmPassword = TextEditingController();
     _code = TextEditingController();
     _device = TextEditingController(
       text: widget.saved?.deviceId ?? 'xiaoyou-phone',
@@ -72,8 +64,6 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   void dispose() {
     _base.dispose();
     _email.dispose();
-    _password.dispose();
-    _confirmPassword.dispose();
     _code.dispose();
     _device.dispose();
     super.dispose();
@@ -84,7 +74,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
     if (!mounted) return;
     setState(() => _agreed = consent);
     if (consent) {
-      await _loadConfig();
+      unawaited(_loadConfig());
       return;
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -108,18 +98,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       final value = await XiaoyouApi.authConfig(_base.text.trim());
       if (mounted) setState(() => _config = value);
     } catch (_) {
-      // Existing accounts can still use email login during config outages.
+      // The submit action still reports the concrete network/service error.
     }
-  }
-
-  void _switchMode(_AccountMode value) {
-    setState(() {
-      _mode = value;
-      _error = '';
-      _codeSent = false;
-      _code.clear();
-      _confirmPassword.clear();
-    });
   }
 
   Future<bool> _ensureConsent() => _requestConsent();
@@ -130,8 +110,13 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       setState(() => _error = '登录服务暂时不可用，请稍后重试');
       return false;
     }
-    if (_email.text.trim().isEmpty) {
-      setState(() => _error = '请输入邮箱或账号');
+    final email = _email.text.trim();
+    if (email.isEmpty || !email.contains('@')) {
+      setState(() => _error = '请输入有效的邮箱地址');
+      return false;
+    }
+    if (_codeSent && _code.text.trim().length != 6) {
+      setState(() => _error = '请输入 6 位邮箱验证码');
       return false;
     }
     return true;
@@ -144,24 +129,18 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       _error = '';
     });
     try {
-      switch (_mode) {
-        case _AccountMode.login:
-          final login = await XiaoyouApi.login(
-            baseUrl: _base.text.trim(),
-            username: _email.text.trim(),
-            password: _password.text,
-            deviceId: _device.text.trim(),
-            remember: _remember,
-          );
-          _finish(login);
-          return;
-        case _AccountMode.register:
-          await _register();
-          return;
-        case _AccountMode.reset:
-          await _resetPassword();
-          return;
+      if (!_codeSent) {
+        await _sendCode();
+        return;
       }
+      final login = await XiaoyouApi.verifyEmailCode(
+        baseUrl: _base.text.trim(),
+        email: _email.text.trim(),
+        code: _code.text.trim(),
+        deviceId: _device.text.trim(),
+        remember: _remember,
+      );
+      _finish(login);
     } catch (error) {
       if (mounted) setState(() => _error = _friendly(error));
     } finally {
@@ -169,87 +148,46 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
     }
   }
 
-  Future<void> _register() async {
-    if (!_codeSent) {
-      if (_password.text != _confirmPassword.text) {
-        throw const FormatException('password_mismatch');
-      }
-      final response = await XiaoyouApi.requestRegistration(
-        baseUrl: _base.text.trim(),
-        email: _email.text.trim(),
-        password: _password.text,
-      );
-      if (!mounted) return;
-      setState(() {
-        _codeSent = true;
-        final debugCode = '${response['debug_code'] ?? ''}';
-        if (debugCode.isNotEmpty) _code.text = debugCode;
-      });
-      return;
-    }
-    final login = await XiaoyouApi.verifyRegistration(
+  Future<void> _sendCode({bool resend = false}) async {
+    final response = await XiaoyouApi.requestEmailCode(
       baseUrl: _base.text.trim(),
       email: _email.text.trim(),
-      code: _code.text.trim(),
-      deviceId: _device.text.trim(),
-      remember: _remember,
-    );
-    _finish(login);
-  }
-
-  Future<void> _resetPassword() async {
-    if (!_codeSent) {
-      await XiaoyouApi.requestPasswordReset(
-        baseUrl: _base.text.trim(),
-        email: _email.text.trim(),
-      );
-      if (mounted) setState(() => _codeSent = true);
-      return;
-    }
-    if (_password.text != _confirmPassword.text) {
-      throw const FormatException('password_mismatch');
-    }
-    await XiaoyouApi.confirmPasswordReset(
-      baseUrl: _base.text.trim(),
-      email: _email.text.trim(),
-      code: _code.text.trim(),
-      password: _password.text,
     );
     if (!mounted) return;
-    _switchMode(_AccountMode.login);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('密码已更新，请使用新密码登录')),
-    );
+    setState(() {
+      _codeSent = true;
+      _code.clear();
+      final debugCode = '${response['debug_code'] ?? ''}';
+      if (debugCode.isNotEmpty) _code.text = debugCode;
+    });
+    if (resend) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('新的验证码已发送')),
+      );
+    }
   }
 
-  Future<void> _qqLogin() async {
-    if (_busy || !await _ensureConsent()) return;
+  Future<void> _resendCode() async {
+    if (_busy || !_validateCommon()) return;
     setState(() {
       _busy = true;
       _error = '';
     });
     try {
-      final flow = await XiaoyouApi.startQqLogin(_base.text.trim());
-      await openLegalUrl(flow.authorizationUrl);
-      for (var attempt = 0; attempt < 150 && mounted; attempt++) {
-        await Future<void>.delayed(const Duration(seconds: 2));
-        final login = await XiaoyouApi.exchangeQqLogin(
-          baseUrl: _base.text.trim(),
-          loginId: flow.loginId,
-          deviceId: _device.text.trim(),
-          remember: _remember,
-        );
-        if (login != null) {
-          _finish(login);
-          return;
-        }
-      }
-      throw TimeoutException('qq_login_timeout');
+      await _sendCode(resend: true);
     } catch (error) {
       if (mounted) setState(() => _error = _friendly(error));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  void _changeEmail() {
+    setState(() {
+      _codeSent = false;
+      _code.clear();
+      _error = '';
+    });
   }
 
   void _finish(XiaoyouLoginResult login) {
@@ -267,34 +205,13 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
 
   String _friendly(Object error) {
     final value = '$error';
-    if (value.contains('invalid_credentials')) return '邮箱（账号）或密码不正确';
     if (value.contains('invalid_email')) return '请输入有效的邮箱地址';
-    if (value.contains('email_already_registered')) return '这个邮箱已经注册，可直接登录';
-    if (value.contains('invalid_password_length')) {
-      return '密码至少 8 位，且不要超过 72 字节';
-    }
-    if (value.contains('password_mismatch')) {
-      return '两次输入的密码不一致';
-    }
-    if (value.contains('invalid_or_expired_code')) return '验证码错误或已过期';
-    if (value.contains('qq_login_unavailable')) return 'QQ 登录尚未配置完成';
-    if (value.contains('qq_login_timeout')) return 'QQ 授权等待超时，请重试';
+    if (value.contains('invalid_or_expired_code')) return '验证码错误或已过期，请重新获取';
+    if (value.contains('email_code_too_frequent')) return '验证码刚刚已经发送，请稍后再获取';
+    if (value.contains('account_disabled')) return '这个账号当前不可用';
     if (value.contains('email_service_unavailable')) return '验证邮件服务暂不可用';
-    return '暂时无法完成操作，请检查网络后重试';
+    return '暂时无法完成登录，请检查网络后重试';
   }
-
-  String get _title => switch (_mode) {
-        _AccountMode.login => '登录小悠',
-        _AccountMode.register => '创建账号',
-        _AccountMode.reset => '找回密码',
-      };
-
-  String get _subtitle => switch (_mode) {
-        _AccountMode.login => '回来以后，故事继续从上次停下的地方开始',
-        _AccountMode.register =>
-          _codeSent ? '验证码已经发到邮箱，10 分钟内有效' : '用邮箱创建只属于你的独立账号',
-        _AccountMode.reset => _codeSent ? '输入验证码并设置一个新密码' : '我们会向你的注册邮箱发送验证码',
-      };
 
   InputDecoration _decoration({
     required String label,
@@ -327,6 +244,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   @override
   Widget build(BuildContext context) {
     final bottomInset = MediaQuery.viewInsetsOf(context).bottom;
+    final emailReady = _config?.emailLogin != false;
     return Padding(
       padding: EdgeInsets.only(bottom: bottomInset),
       child: Material(
@@ -370,133 +288,92 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                       ),
                     ),
                     const SizedBox(height: 20),
-                    _LoginHeader(title: _title, subtitle: _subtitle),
-                    const SizedBox(height: 22),
-                    if (_mode != _AccountMode.reset)
-                      _ModeSwitcher(
-                        mode: _mode,
-                        onChanged: _switchMode,
-                      ),
-                    const SizedBox(height: 18),
+                    _LoginHeader(
+                      title: '登录小悠',
+                      subtitle: _codeSent
+                          ? '验证码已经发到 ${_email.text.trim()}，10 分钟内有效'
+                          : '输入邮箱，获取验证码后即可登录；首次验证会自动创建账号',
+                    ),
+                    const SizedBox(height: 24),
                     TextField(
                       controller: _email,
+                      enabled: !_codeSent && !_busy,
                       keyboardType: TextInputType.emailAddress,
-                      textInputAction: TextInputAction.next,
-                      autofillHints: const [
-                        AutofillHints.username,
-                        AutofillHints.email,
-                      ],
+                      textInputAction: _codeSent
+                          ? TextInputAction.next
+                          : TextInputAction.done,
+                      autofillHints: const [AutofillHints.email],
                       decoration: _decoration(
-                        label: _mode == _AccountMode.login ? '邮箱或账号' : '邮箱',
+                        label: '邮箱',
                         prefix: const _AssetFieldIcon('assets/email-login.png'),
+                        suffix: _codeSent
+                            ? TextButton(
+                                onPressed: _busy ? null : _changeEmail,
+                                child: const Text('更换'),
+                              )
+                            : null,
                       ),
                     ),
-                    if (!_codeSent || _mode == _AccountMode.login) ...[
-                      const SizedBox(height: 13),
-                      TextField(
-                        controller: _password,
-                        obscureText: _hidePassword,
-                        autofillHints: [
-                          _mode == _AccountMode.login
-                              ? AutofillHints.password
-                              : AutofillHints.newPassword,
-                        ],
-                        decoration: _decoration(
-                          label: _mode == _AccountMode.login
-                              ? '密码'
-                              : '设置密码（至少 8 位）',
-                          prefix: const Icon(
-                            Icons.lock_outline_rounded,
-                            color: _rose,
-                            size: 21,
-                          ),
-                          suffix: IconButton(
-                            onPressed: () => setState(
-                              () => _hidePassword = !_hidePassword,
-                            ),
-                            icon: Icon(
-                              _hidePassword
-                                  ? Icons.visibility_off_outlined
-                                  : Icons.visibility_outlined,
-                              color: _muted,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                    if (_mode != _AccountMode.login &&
-                        (!_codeSent || _mode == _AccountMode.reset)) ...[
-                      const SizedBox(height: 13),
-                      TextField(
-                        controller: _confirmPassword,
-                        obscureText: true,
-                        decoration: _decoration(
-                          label: '再次输入密码',
-                          prefix: const Icon(
-                            Icons.verified_user_outlined,
-                            color: _rose,
-                            size: 21,
-                          ),
-                        ),
-                      ),
-                    ],
                     if (_codeSent) ...[
                       const SizedBox(height: 13),
                       TextField(
                         controller: _code,
                         keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
+                        autofillHints: const [AutofillHints.oneTimeCode],
                         maxLength: 6,
+                        onSubmitted: (_) => unawaited(_submit()),
                         decoration: _decoration(
                           label: '6 位邮箱验证码',
-                          prefix: const _AssetFieldIcon(
-                            'assets/email-login.png',
+                          prefix: const Icon(
+                            Icons.mark_email_read_outlined,
+                            color: _rose,
+                            size: 21,
                           ),
                         ).copyWith(counterText: ''),
                       ),
-                    ],
-                    const SizedBox(height: 8),
-                    if (_mode == _AccountMode.login)
-                      Row(
-                        children: [
-                          _RememberToggle(
-                            value: _remember,
-                            onChanged: (value) =>
-                                setState(() => _remember = value),
-                          ),
-                          const Spacer(),
-                          TextButton(
-                            onPressed: () => _switchMode(_AccountMode.reset),
-                            child: const Text('忘记密码？'),
-                          ),
-                        ],
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: _busy ? null : _resendCode,
+                          child: const Text('重新获取验证码'),
+                        ),
                       ),
+                    ] else
+                      const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        _RememberToggle(
+                          value: _remember,
+                          onChanged: (value) =>
+                              setState(() => _remember = value),
+                        ),
+                        const Spacer(),
+                        const Text(
+                          '无需密码',
+                          style: TextStyle(
+                            color: Color(0xff9d8792),
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ],
+                    ),
                     _ConsentLine(
                       agreed: _agreed,
                       onTap: () => unawaited(_requestConsent()),
                     ),
+                    if (!emailReady) ...[
+                      const SizedBox(height: 10),
+                      _InlineNotice(text: '邮箱验证码服务正在维护，请稍后再试'),
+                    ],
                     if (_error.isNotEmpty) ...[
                       const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 11,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xffffeaf1),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: const Color(0xffffccdc)),
-                        ),
-                        child: Text(
-                          _error,
-                          style: const TextStyle(color: Color(0xff923558)),
-                        ),
-                      ),
+                      _InlineNotice(text: _error),
                     ],
                     const SizedBox(height: 15),
                     AnimatedOpacity(
                       duration: const Duration(milliseconds: 180),
-                      opacity: _agreed ? 1 : 0.5,
+                      opacity: _agreed && emailReady ? 1 : 0.5,
                       child: SizedBox(
                         width: double.infinity,
                         height: 54,
@@ -515,7 +392,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                             ],
                           ),
                           child: FilledButton(
-                            onPressed: _busy || !_agreed ? null : _submit,
+                            onPressed: _busy || !_agreed || !emailReady
+                                ? null
+                                : _submit,
                             style: FilledButton.styleFrom(
                               backgroundColor: Colors.transparent,
                               disabledBackgroundColor: Colors.transparent,
@@ -534,9 +413,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                                     ),
                                   )
                                 : Text(
-                                    _mode == _AccountMode.login
-                                        ? '登录'
-                                        : (_codeSent ? '确认' : '发送验证码'),
+                                    _codeSent ? '验证并登录' : '获取邮箱验证码',
                                     style: const TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.w700,
@@ -546,62 +423,16 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                         ),
                       ),
                     ),
-                    if (_mode == _AccountMode.login) ...[
-                      const SizedBox(height: 18),
-                      const _OrDivider(),
-                      const SizedBox(height: 14),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: OutlinedButton(
-                          onPressed:
-                              _busy || !_agreed || _config?.qqLogin != true
-                                  ? null
-                                  : _qqLogin,
-                          style: OutlinedButton.styleFrom(
-                            backgroundColor:
-                                Colors.white.withValues(alpha: 0.7),
-                            side: const BorderSide(color: Color(0xffe4d9df)),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(18),
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Image.asset(
-                                'assets/qq-login.png',
-                                width: 28,
-                                height: 28,
-                              ),
-                              const SizedBox(width: 10),
-                              Text(
-                                _config == null
-                                    ? '正在准备 QQ 登录…'
-                                    : (_config?.qqLogin == true
-                                        ? 'QQ 一键登录'
-                                        : 'QQ 登录暂不可用'),
-                                style: const TextStyle(
-                                  color: _ink,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
+                    const SizedBox(height: 14),
+                    const Text(
+                      '验证码仅用于确认邮箱归属，不会向其他用户公开你的邮箱',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Color(0xff9b8992),
+                        fontSize: 11.5,
+                        height: 1.45,
                       ),
-                    ],
-                    const SizedBox(height: 8),
-                    if (_mode == _AccountMode.login)
-                      TextButton(
-                        onPressed: () => _switchMode(_AccountMode.register),
-                        child: const Text('还没有账号？立即注册'),
-                      )
-                    else
-                      TextButton(
-                        onPressed: () => _switchMode(_AccountMode.login),
-                        child: const Text('返回账号登录'),
-                      ),
+                    ),
                   ],
                 ),
               ),
@@ -680,85 +511,6 @@ class _LoginHeader extends StatelessWidget {
           style: const TextStyle(color: _muted, fontSize: 13, height: 1.45),
         ),
       ],
-    );
-  }
-}
-
-class _ModeSwitcher extends StatelessWidget {
-  const _ModeSwitcher({required this.mode, required this.onChanged});
-
-  final _AccountMode mode;
-  final ValueChanged<_AccountMode> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 46,
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xfff2e8ed),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        children: [
-          _ModeTab(
-            label: '登录',
-            selected: mode == _AccountMode.login,
-            onTap: () => onChanged(_AccountMode.login),
-          ),
-          _ModeTab(
-            label: '注册',
-            selected: mode == _AccountMode.register,
-            onTap: () => onChanged(_AccountMode.register),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _ModeTab extends StatelessWidget {
-  const _ModeTab({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(13),
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? Colors.white : Colors.transparent,
-            borderRadius: BorderRadius.circular(13),
-            boxShadow: selected
-                ? const [
-                    BoxShadow(
-                      color: Color(0x1698426d),
-                      blurRadius: 12,
-                      offset: Offset(0, 4),
-                    ),
-                  ]
-                : null,
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? _ink : _muted,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -869,20 +621,22 @@ class _ConsentLine extends StatelessWidget {
   }
 }
 
-class _OrDivider extends StatelessWidget {
-  const _OrDivider();
+class _InlineNotice extends StatelessWidget {
+  const _InlineNotice({required this.text});
+
+  final String text;
 
   @override
   Widget build(BuildContext context) {
-    return const Row(
-      children: [
-        Expanded(child: Divider(color: Color(0xffe6d9df))),
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: 12),
-          child: Text('其他方式', style: TextStyle(color: _muted, fontSize: 12)),
-        ),
-        Expanded(child: Divider(color: Color(0xffe6d9df))),
-      ],
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+      decoration: BoxDecoration(
+        color: const Color(0xffffeaf1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xffffccdc)),
+      ),
+      child: Text(text, style: const TextStyle(color: Color(0xff923558))),
     );
   }
 }

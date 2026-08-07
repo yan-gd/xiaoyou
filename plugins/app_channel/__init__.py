@@ -2306,29 +2306,6 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/auth/config":
             self._json(200, self.plugin.auth.public_config())
             return
-        if parsed.path == "/v1/auth/qq/callback":
-            query = parse_qs(parsed.query)
-            try:
-                self.plugin.auth.complete_qq_callback(
-                    (query.get("code") or [""])[0],
-                    (query.get("state") or [""])[0],
-                )
-                self._html(
-                    200,
-                    "QQ 登录已完成",
-                    "授权成功。现在可以返回小悠 App，登录会自动完成。",
-                )
-            except Exception as error:
-                logger.warning(
-                    "[AppChannel] QQ callback failed error=%s",
-                    type(error).__name__,
-                )
-                self._html(
-                    400,
-                    "QQ 登录未完成",
-                    "授权已失效或验证失败，请返回 App 后重新尝试。",
-                )
-            return
         query = parse_qs(parsed.query)
         device_id = (query.get("device_id") or [""])[0]
         if parsed.path.startswith("/v1/media/"):
@@ -2522,52 +2499,22 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._json(400, {"error": "invalid_login_request"})
             return
-        if parsed.path == "/v1/auth/register/request":
+        if parsed.path == "/v1/auth/email/request":
             self._auth_action(
-                lambda payload: self.plugin.auth.request_registration(
-                    payload.get("email"), payload.get("password")
-                ),
-                success_status=202,
-            )
-            return
-        if parsed.path == "/v1/auth/register/verify":
-            self._auth_action(
-                lambda payload: self.plugin.auth.verify_registration(
-                    payload.get("email"),
-                    payload.get("code"),
-                    payload.get("device_id"),
-                    remember=payload.get("remember", True),
-                )
-            )
-            return
-        if parsed.path == "/v1/auth/password/reset/request":
-            self._auth_action(
-                lambda payload: self.plugin.auth.request_password_reset(
+                lambda payload: self.plugin.auth.request_email_login(
                     payload.get("email")
                 ),
                 success_status=202,
             )
             return
-        if parsed.path == "/v1/auth/password/reset/confirm":
+        if parsed.path == "/v1/auth/email/verify":
             self._auth_action(
-                lambda payload: self.plugin.auth.confirm_password_reset(
+                lambda payload: self.plugin.auth.verify_email_login(
                     payload.get("email"),
                     payload.get("code"),
-                    payload.get("password"),
-                )
-            )
-            return
-        if parsed.path == "/v1/auth/qq/start":
-            self._auth_action(lambda payload: self.plugin.auth.start_qq_login())
-            return
-        if parsed.path == "/v1/auth/qq/exchange":
-            self._auth_action(
-                lambda payload: self.plugin.auth.exchange_qq_login(
-                    payload.get("login_id"),
                     payload.get("device_id"),
                     remember=payload.get("remember", True),
-                ),
-                pending_is_202=True,
+                )
             )
             return
         if not self._authorized(self.headers.get("X-Device-Id", "")):
@@ -3144,20 +3091,11 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _auth_action(
-        self,
-        action,
-        *,
-        success_status=200,
-        pending_is_202=False,
-    ):
+    def _auth_action(self, action, *, success_status=200):
         try:
             payload = self._body()
             result = action(payload)
-            if pending_is_202 and result is None:
-                self._json(202, {"status": "pending"})
-            else:
-                self._json(success_status, result or {"ok": True})
+            self._json(success_status, result or {"ok": True})
         except ValueError as error:
             self._json(400, {"error": str(error)[:80]})
         except (UnicodeDecodeError, json.JSONDecodeError):

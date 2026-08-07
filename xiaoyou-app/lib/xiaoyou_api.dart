@@ -25,24 +25,14 @@ class XiaoyouLoginResult {
 
 class XiaoyouAuthConfig {
   const XiaoyouAuthConfig({
-    required this.emailRegistration,
-    required this.qqLogin,
-    required this.passwordMinLength,
+    required this.emailLogin,
+    required this.codeTtl,
+    required this.resendInterval,
   });
 
-  final bool emailRegistration;
-  final bool qqLogin;
-  final int passwordMinLength;
-}
-
-class XiaoyouQqLoginStart {
-  const XiaoyouQqLoginStart({
-    required this.loginId,
-    required this.authorizationUrl,
-  });
-
-  final String loginId;
-  final String authorizationUrl;
+  final bool emailLogin;
+  final int codeTtl;
+  final int resendInterval;
 }
 
 class XiaoyouApi {
@@ -77,89 +67,27 @@ class XiaoyouApi {
       ..maxConnectionsPerHost = 1;
   }
 
-  static Future<XiaoyouLoginResult> login({
-    required String baseUrl,
-    required String username,
-    required String password,
-    required String deviceId,
-    bool remember = true,
-  }) async {
-    final base = Uri.parse(baseUrl.replaceFirst(RegExp(r'/+$'), ''));
-    final path = '${base.path}/v1/auth/login'.replaceAll(
-      RegExp(r'/{2,}'),
-      '/',
-    );
-    final uri = base.replace(path: path);
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 12)
-      ..idleTimeout = const Duration(seconds: 15);
-    try {
-      final request = await client.postUrl(uri);
-      request.headers.contentType = ContentType.json;
-      request.headers.set(HttpHeaders.acceptHeader, 'application/json');
-      request.write(
-        jsonEncode({
-          'username': username,
-          'password': password,
-          'device_id': deviceId,
-          'remember': remember,
-        }),
-      );
-      final response = await request.close().timeout(
-            const Duration(seconds: 15),
-          );
-      final payload = jsonDecode(
-        await utf8.decoder.bind(response).join(),
-      );
-      if (response.statusCode < 200 ||
-          response.statusCode >= 300 ||
-          payload is! Map) {
-        if (response.statusCode == 401) {
-          throw const HttpException('invalid_credentials');
-        }
-        throw HttpException('login_http_${response.statusCode}');
-      }
-      final values = payload.cast<String, dynamic>();
-      final token = '${values['access_token'] ?? ''}'.trim();
-      final accountId = '${values['account_id'] ?? ''}'.trim();
-      final scopedDeviceId = '${values['device_id'] ?? ''}'.trim();
-      if (token.isEmpty || accountId.isEmpty || scopedDeviceId.isEmpty) {
-        throw const FormatException('invalid_login_response');
-      }
-      return XiaoyouLoginResult(
-        token: token,
-        accountId: accountId,
-        testMode: values['test_mode'] == true,
-        deviceId: scopedDeviceId,
-        expiresAt: asInt(values['expires_at']),
-      );
-    } finally {
-      client.close(force: true);
-    }
-  }
-
   static Future<XiaoyouAuthConfig> authConfig(String baseUrl) async {
     final values = await _publicRequest(baseUrl, 'GET', '/v1/auth/config');
     return XiaoyouAuthConfig(
-      emailRegistration: values['email_registration'] == true,
-      qqLogin: values['qq_login'] == true,
-      passwordMinLength: max(8, asInt(values['password_min_length'])),
+      emailLogin: values['email_login'] == true,
+      codeTtl: asInt(values['code_ttl']),
+      resendInterval: asInt(values['resend_interval']),
     );
   }
 
-  static Future<Map<String, dynamic>> requestRegistration({
+  static Future<Map<String, dynamic>> requestEmailCode({
     required String baseUrl,
     required String email,
-    required String password,
   }) =>
       _publicRequest(
         baseUrl,
         'POST',
-        '/v1/auth/register/request',
-        body: {'email': email, 'password': password},
+        '/v1/auth/email/request',
+        body: {'email': email},
       );
 
-  static Future<XiaoyouLoginResult> verifyRegistration({
+  static Future<XiaoyouLoginResult> verifyEmailCode({
     required String baseUrl,
     required String email,
     required String code,
@@ -169,7 +97,7 @@ class XiaoyouApi {
     final values = await _publicRequest(
       baseUrl,
       'POST',
-      '/v1/auth/register/verify',
+      '/v1/auth/email/verify',
       body: {
         'email': email,
         'code': code,
@@ -177,68 +105,6 @@ class XiaoyouApi {
         'remember': remember,
       },
     );
-    return _loginResult(values);
-  }
-
-  static Future<void> requestPasswordReset({
-    required String baseUrl,
-    required String email,
-  }) async {
-    await _publicRequest(
-      baseUrl,
-      'POST',
-      '/v1/auth/password/reset/request',
-      body: {'email': email},
-    );
-  }
-
-  static Future<void> confirmPasswordReset({
-    required String baseUrl,
-    required String email,
-    required String code,
-    required String password,
-  }) async {
-    await _publicRequest(
-      baseUrl,
-      'POST',
-      '/v1/auth/password/reset/confirm',
-      body: {'email': email, 'code': code, 'password': password},
-    );
-  }
-
-  static Future<XiaoyouQqLoginStart> startQqLogin(String baseUrl) async {
-    final values = await _publicRequest(
-      baseUrl,
-      'POST',
-      '/v1/auth/qq/start',
-      body: const {},
-    );
-    return XiaoyouQqLoginStart(
-      loginId: '${values['login_id'] ?? ''}',
-      authorizationUrl: '${values['authorization_url'] ?? ''}',
-    );
-  }
-
-  static Future<XiaoyouLoginResult?> exchangeQqLogin({
-    required String baseUrl,
-    required String loginId,
-    required String deviceId,
-    required bool remember,
-  }) async {
-    final values = await _publicRequest(
-      baseUrl,
-      'POST',
-      '/v1/auth/qq/exchange',
-      body: {
-        'login_id': loginId,
-        'device_id': deviceId,
-        'remember': remember,
-      },
-      allowPending: true,
-    );
-    if (values['status'] == 'pending') {
-      return null;
-    }
     return _loginResult(values);
   }
 
@@ -263,7 +129,6 @@ class XiaoyouApi {
     String method,
     String endpoint, {
     Map<String, dynamic>? body,
-    bool allowPending = false,
   }) async {
     final base = Uri.parse(baseUrl.replaceFirst(RegExp(r'/+$'), ''));
     final path = '${base.path}$endpoint'.replaceAll(RegExp(r'/{2,}'), '/');
@@ -287,11 +152,10 @@ class XiaoyouApi {
       final values = decoded is Map
           ? decoded.cast<String, dynamic>()
           : <String, dynamic>{};
-      if (allowPending && response.statusCode == 202) {
-        return values;
-      }
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw HttpException('${values['error'] ?? 'auth_http_${response.statusCode}'}');
+        throw HttpException(
+          '${values['error'] ?? 'auth_http_${response.statusCode}'}',
+        );
       }
       return values;
     } finally {

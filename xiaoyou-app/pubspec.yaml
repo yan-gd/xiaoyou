@@ -31,6 +31,5 @@ flutter:
   assets:
     - assets/xiaoyou-avatar.png
     - assets/email-login.png
-    - assets/qq-login.png
     - assets/achievements/
     - assets/moods/

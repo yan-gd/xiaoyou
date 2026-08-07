@@ -94,18 +94,22 @@ def test_wrong_password_is_rejected(tmp_path):
         assert auth.login("test", "wrong", "phone") is None
 
 
-@pytest.mark.skipif(MODULE.bcrypt is None, reason="bcrypt dependency not installed")
-def test_registered_users_get_stable_isolated_sessions_and_devices(tmp_path):
+def _debug_email_environment(tmp_path):
     environment = _environment(tmp_path)
     environment["XIAOYOU_APP_EMAIL_DEBUG_CODE"] = "true"
+    return environment
+
+
+def test_email_otp_creates_stable_isolated_accounts(tmp_path):
+    environment = _debug_email_environment(tmp_path)
     with patch.dict(os.environ, environment, clear=True):
         auth = AppAuthService("yoyo")
-        first_request = auth.request_registration("first@example.com", "first-password")
-        first = auth.verify_registration(
+        first_request = auth.request_email_login("first@example.com")
+        first = auth.verify_email_login(
             "first@example.com", first_request["debug_code"], "same-phone"
         )
-        second_request = auth.request_registration("second@example.com", "second-password")
-        second = auth.verify_registration(
+        second_request = auth.request_email_login("second@example.com")
+        second = auth.verify_email_login(
             "second@example.com", second_request["debug_code"], "same-phone"
         )
         first_context = auth.authenticate(first["access_token"])
@@ -118,20 +122,59 @@ def test_registered_users_get_stable_isolated_sessions_and_devices(tmp_path):
     assert first_context.user_id != second_context.user_id
 
 
-@pytest.mark.skipif(MODULE.bcrypt is None, reason="bcrypt dependency not installed")
-def test_email_password_reset_replaces_hash(tmp_path):
-    environment = _environment(tmp_path)
-    environment["XIAOYOU_APP_EMAIL_DEBUG_CODE"] = "true"
+def test_email_otp_reuses_existing_account_and_session(tmp_path):
+    environment = _debug_email_environment(tmp_path)
     with patch.dict(os.environ, environment, clear=True):
         auth = AppAuthService("yoyo")
-        registration = auth.request_registration("reset@example.com", "before-password")
-        auth.verify_registration(
-            "reset@example.com", registration["debug_code"], "phone"
+        first_request = auth.request_email_login("same@example.com")
+        first = auth.verify_email_login(
+            "same@example.com", first_request["debug_code"], "phone-a"
         )
-        reset = auth.request_password_reset("reset@example.com")
-        auth.confirm_password_reset(
-            "reset@example.com", reset["debug_code"], "after-password"
+        # Bypass resend cooldown in this deterministic unit test.
+        with auth._connection() as db:
+            db.execute(
+                "UPDATE auth_challenges SET created_at=0 WHERE purpose='email_login' AND identifier=?",
+                ("same@example.com",),
+            )
+            db.commit()
+        second_request = auth.request_email_login("same@example.com")
+        second = auth.verify_email_login(
+            "same@example.com", second_request["debug_code"], "phone-b"
         )
+        first_context = auth.authenticate(first["access_token"])
+        second_context = auth.authenticate(second["access_token"])
 
-        assert auth.login("reset@example.com", "before-password", "phone") is None
-        assert auth.login("reset@example.com", "after-password", "phone") is not None
+    assert first_context.user_id == second_context.user_id
+    assert first_context.session_id == second_context.session_id
+    assert first_context.device_id != second_context.device_id
+    assert first["account_id"] == "same@example.com"
+    assert second["account_id"] == "same@example.com"
+
+
+def test_email_otp_rejects_wrong_code(tmp_path):
+    environment = _debug_email_environment(tmp_path)
+    with patch.dict(os.environ, environment, clear=True):
+        auth = AppAuthService("yoyo")
+        auth.request_email_login("wrong@example.com")
+        with pytest.raises(ValueError, match="invalid_or_expired_code"):
+            auth.verify_email_login("wrong@example.com", "000000", "phone")
+
+
+def test_email_otp_has_resend_cooldown(tmp_path):
+    environment = _debug_email_environment(tmp_path)
+    with patch.dict(os.environ, environment, clear=True):
+        auth = AppAuthService("yoyo")
+        auth.request_email_login("cooldown@example.com")
+        with pytest.raises(ValueError, match="email_code_too_frequent"):
+            auth.request_email_login("cooldown@example.com")
+
+
+def test_public_config_only_exposes_email_login(tmp_path):
+    environment = _debug_email_environment(tmp_path)
+    with patch.dict(os.environ, environment, clear=True):
+        config = AppAuthService("yoyo").public_config()
+
+    assert config["email_login"] is True
+    assert config["code_ttl"] == 600
+    assert config["resend_interval"] == 60
+    assert set(config) == {"email_login", "code_ttl", "resend_interval"}

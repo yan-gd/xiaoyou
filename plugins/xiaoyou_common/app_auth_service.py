@@ -11,27 +11,16 @@ import smtplib
 import sqlite3
 import ssl
 import time
-import urllib.parse
-import urllib.request
-import sys
 from contextlib import closing
 from dataclasses import dataclass
 from email.message import EmailMessage
-
-if os.path.isdir("/app/python_packages") and "/app/python_packages" not in sys.path:
-    sys.path.insert(0, "/app/python_packages")
-
-try:
-    import bcrypt
-except ImportError:  # pragma: no cover - deployment validation reports this.
-    bcrypt = None
 
 
 PASSWORD_ITERATIONS = 310_000  # legacy deployment-account compatibility only
 OWNER_TOKEN_TTL = 30 * 24 * 60 * 60
 SESSION_TOKEN_TTL = 12 * 60 * 60
 CHALLENGE_TTL = 10 * 60
-QQ_LOGIN_TTL = 10 * 60
+EMAIL_RESEND_COOLDOWN = 60
 
 
 def _b64encode(value):
@@ -57,29 +46,9 @@ def hash_password(password, *, salt=None, iterations=PASSWORD_ITERATIONS):
     )
 
 
-def hash_account_password(password):
-    """Hash registered-user passwords with bcrypt; plaintext is never stored."""
-    password = str(password or "")
-    if len(password) < 8 or len(password.encode("utf-8")) > 72:
-        raise ValueError("invalid_password_length")
-    if bcrypt is None:
-        raise RuntimeError("bcrypt_unavailable")
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode(
-        "ascii"
-    )
-
-
 def verify_password(password, encoded):
+    """Verify legacy owner/test deployment passwords."""
     encoded = str(encoded or "")
-    if encoded.startswith("$2"):
-        if bcrypt is None:
-            return False
-        try:
-            return bool(
-                bcrypt.checkpw(str(password or "").encode("utf-8"), encoded.encode("ascii"))
-            )
-        except (ValueError, TypeError):
-            return False
     try:
         algorithm, iterations, salt, expected = encoded.split("$", 3)
         if algorithm != "pbkdf2_sha256":
@@ -107,7 +76,7 @@ class AppAuthContext:
 
 
 class AppAuthService:
-    """Email/QQ accounts plus compatible owner/test deployment accounts."""
+    """Passwordless email accounts plus compatible owner/test deployment accounts."""
 
     def __init__(self, canonical_session_id):
         self.canonical_session_id = str(canonical_session_id or "yoyo")
@@ -120,9 +89,6 @@ class AppAuthService:
         self.database_path = os.getenv(
             "XIAOYOU_APP_ACCOUNT_DB_PATH", "/app/data/app_channel/accounts.db"
         ).strip()
-        self.qq_app_id = os.getenv("XIAOYOU_QQ_APP_ID", "").strip()
-        self.qq_app_secret = os.getenv("XIAOYOU_QQ_APP_SECRET", "").strip()
-        self.qq_redirect_uri = os.getenv("XIAOYOU_QQ_REDIRECT_URI", "").strip()
         self.smtp_host = os.getenv("XIAOYOU_APP_SMTP_HOST", "").strip()
         self.smtp_port = _integer(os.getenv("XIAOYOU_APP_SMTP_PORT"), 465)
         self.smtp_username = os.getenv("XIAOYOU_APP_SMTP_USERNAME", "").strip()
@@ -138,17 +104,13 @@ class AppAuthService:
 
     @property
     def email_enabled(self):
-        return bool(bcrypt is not None and self.smtp_host and self.smtp_from)
-
-    @property
-    def qq_enabled(self):
-        return bool(self.qq_app_id and self.qq_app_secret and self.qq_redirect_uri)
+        return bool(self.smtp_host and self.smtp_from)
 
     def public_config(self):
         return {
-            "email_registration": self.email_enabled or self.debug_email_code,
-            "qq_login": self.qq_enabled,
-            "password_min_length": 8,
+            "email_login": self.email_enabled or self.debug_email_code,
+            "code_ttl": CHALLENGE_TTL,
+            "resend_interval": EMAIL_RESEND_COOLDOWN,
         }
 
     def login(self, username, password, device_id, remember=True):
@@ -178,157 +140,57 @@ class AppAuthService:
                 remember=remember,
             )
 
-        email = _normalize_email(username)
-        if not email:
-            return None
-        auth = self._auth_record("email", email)
-        if not auth or not int(auth["verified"] or 0):
-            return None
-        if not verify_password(password, auth["password_hash"]):
-            return None
-        self._touch_user(auth["user_id"])
-        return self._issue_user(auth, device_id=device_id, remember=remember)
+        return None
 
-    def request_registration(self, email, password):
+    def request_email_login(self, email):
         email = _normalize_email(email)
         if not email:
             raise ValueError("invalid_email")
-        password_hash = hash_account_password(password)
-        if self._auth_record("email", email):
-            raise ValueError("email_already_registered")
-        code = self._create_challenge("register", email, {"password_hash": password_hash})
-        self._send_code(email, code, "注册小悠账号")
+        if self._challenge_is_fresh("email_login", email, EMAIL_RESEND_COOLDOWN):
+            raise ValueError("email_code_too_frequent")
+        code = self._create_challenge("email_login", email, {})
+        self._send_code(email, code, "小悠登录验证码")
         return self._challenge_response(code)
 
-    def verify_registration(self, email, code, device_id, remember=True):
+    def verify_email_login(self, email, code, device_id, remember=True):
         email = _normalize_email(email)
-        payload = self._consume_challenge("register", email, code)
-        if not payload:
+        if not email:
+            raise ValueError("invalid_email")
+        challenge = self._consume_challenge("email_login", email, code)
+        if challenge is None:
             raise ValueError("invalid_or_expired_code")
-        now = int(time.time())
-        user_id = "usr_" + secrets.token_hex(16)
-        session_id = "app_user_" + user_id[4:]
-        with self._connection() as db:
-            try:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute(
-                    "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (user_id, session_id, email.split("@", 1)[0][:40], "", 0, now, now, now, "active"),
-                )
-                db.execute(
-                    "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                    ("auth_" + secrets.token_hex(12), user_id, "email", email, payload["password_hash"], 1, now, now),
-                )
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
+
         auth = self._auth_record("email", email)
-        return self._issue_user(auth, device_id=_safe_identifier(device_id, "xiaoyou-phone"), remember=remember)
-
-    def request_password_reset(self, email):
-        email = _normalize_email(email)
-        auth = self._auth_record("email", email) if email else None
-        if auth:
-            code = self._create_challenge("reset", email, {})
-            self._send_code(email, code, "重置小悠账号密码")
-            return self._challenge_response(code)
-        return {"accepted": True, "expires_in": CHALLENGE_TTL}
-
-    def confirm_password_reset(self, email, code, password):
-        email = _normalize_email(email)
-        if not self._consume_challenge("reset", email, code):
-            raise ValueError("invalid_or_expired_code")
-        encoded = hash_account_password(password)
-        with self._connection() as db:
-            changed = db.execute(
-                "UPDATE user_auth SET password_hash=?,updated_at=? WHERE auth_type='email' AND identifier=?",
-                (encoded, int(time.time()), email),
-            ).rowcount
-            db.commit()
-        if not changed:
-            raise ValueError("account_not_found")
-        return {"ok": True}
-
-    def start_qq_login(self):
-        if not self.qq_enabled:
-            raise ValueError("qq_login_unavailable")
-        login_id = secrets.token_urlsafe(24)
-        state = secrets.token_urlsafe(24)
         now = int(time.time())
-        with self._connection() as db:
-            db.execute(
-                "INSERT INTO qq_login_requests(login_id,state,status,user_id,created_at,expires_at) VALUES(?,?,?,?,?,?)",
-                (login_id, state, "pending", "", now, now + QQ_LOGIN_TTL),
-            )
-            db.commit()
-        query = urllib.parse.urlencode(
-            {
-                "response_type": "code",
-                "client_id": self.qq_app_id,
-                "redirect_uri": self.qq_redirect_uri,
-                "state": state,
-                "scope": "get_user_info",
-                "display": "mobile",
-            }
-        )
-        return {
-            "login_id": login_id,
-            "authorization_url": "https://graph.qq.com/oauth2.0/authorize?" + query,
-            "expires_in": QQ_LOGIN_TTL,
-        }
-
-    def complete_qq_callback(self, code, state):
-        with self._connection() as db:
-            row = db.execute(
-                "SELECT login_id,expires_at,status FROM qq_login_requests WHERE state=?",
-                (str(state or ""),),
-            ).fetchone()
-        if not row or row["status"] != "pending" or int(row["expires_at"]) <= int(time.time()):
-            raise ValueError("invalid_qq_state")
-        profile = self._fetch_qq_profile(code)
-        auth = self._auth_record("qq", profile["openid"])
-        now = int(time.time())
-        if not auth:
+        if auth is None:
             user_id = "usr_" + secrets.token_hex(16)
             session_id = "app_user_" + user_id[4:]
             with self._connection() as db:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute(
-                    "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status) VALUES(?,?,?,?,?,?,?,?,?)",
-                    (user_id, session_id, profile["nickname"], profile["avatar"], 0, now, now, now, "active"),
-                )
-                db.execute(
-                    "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
-                    ("auth_" + secrets.token_hex(12), user_id, "qq", profile["openid"], "", 1, now, now),
-                )
-                db.commit()
-            auth = self._auth_record("qq", profile["openid"])
-        with self._connection() as db:
-            db.execute(
-                "UPDATE qq_login_requests SET status='ready',user_id=? WHERE login_id=?",
-                (auth["user_id"], row["login_id"]),
-            )
-            db.commit()
-        return row["login_id"]
+                try:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute(
+                        "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (user_id, session_id, email.split("@", 1)[0][:40], "", 0, now, now, now, "active"),
+                    )
+                    db.execute(
+                        "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        ("auth_" + secrets.token_hex(12), user_id, "email", email, "", 1, now, now),
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
+            auth = self._auth_record("email", email)
+        elif auth["status"] != "active":
+            raise ValueError("account_disabled")
+        else:
+            self._touch_user(auth["user_id"])
 
-    def exchange_qq_login(self, login_id, device_id, remember=True):
-        with self._connection() as db:
-            row = db.execute(
-                "SELECT status,user_id,expires_at FROM qq_login_requests WHERE login_id=?",
-                (str(login_id or ""),),
-            ).fetchone()
-        if not row or int(row["expires_at"] or 0) <= int(time.time()):
-            raise ValueError("qq_login_expired")
-        if row["status"] != "ready":
-            return None
-        auth = self._user_auth(row["user_id"])
-        if not auth:
-            raise ValueError("qq_account_missing")
-        with self._connection() as db:
-            db.execute("DELETE FROM qq_login_requests WHERE login_id=?", (login_id,))
-            db.commit()
-        return self._issue_user(auth, _safe_identifier(device_id, "xiaoyou-phone"), remember)
+        return self._issue_user(
+            auth,
+            device_id=_safe_identifier(device_id, "xiaoyou-phone"),
+            remember=remember,
+        )
 
     def authenticate(self, token, requested_device_id=""):
         token = str(token or "").strip()
@@ -417,6 +279,15 @@ class AppAuthService:
             "expires_at": expires_at,
         }
 
+    def _challenge_is_fresh(self, purpose, identifier, seconds):
+        cutoff = int(time.time()) - max(0, int(seconds))
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT created_at FROM auth_challenges WHERE purpose=? AND identifier=?",
+                (purpose, identifier),
+            ).fetchone()
+        return bool(row and int(row["created_at"] or 0) > cutoff)
+
     def _create_challenge(self, purpose, identifier, payload):
         now = int(time.time())
         code = "{:06d}".format(secrets.randbelow(1_000_000))
@@ -486,51 +357,11 @@ class AppAuthService:
             result["debug_code"] = code
         return result
 
-    def _fetch_qq_profile(self, code):
-        token_payload = _http_json(
-            "https://graph.qq.com/oauth2.0/token?" + urllib.parse.urlencode(
-                {
-                    "grant_type": "authorization_code",
-                    "client_id": self.qq_app_id,
-                    "client_secret": self.qq_app_secret,
-                    "code": str(code or ""),
-                    "redirect_uri": self.qq_redirect_uri,
-                    "fmt": "json",
-                }
-            )
-        )
-        access_token = str(token_payload.get("access_token") or "")
-        if not access_token:
-            raise ValueError("qq_token_exchange_failed")
-        identity = _http_json(
-            "https://graph.qq.com/oauth2.0/me?" + urllib.parse.urlencode({"access_token": access_token, "fmt": "json"})
-        )
-        openid = str(identity.get("openid") or "")
-        if not openid:
-            raise ValueError("qq_identity_failed")
-        profile = _http_json(
-            "https://graph.qq.com/user/get_user_info?" + urllib.parse.urlencode(
-                {"access_token": access_token, "oauth_consumer_key": self.qq_app_id, "openid": openid, "fmt": "json"}
-            )
-        )
-        return {
-            "openid": openid,
-            "nickname": str(profile.get("nickname") or "QQ用户")[:80],
-            "avatar": str(profile.get("figureurl_qq_2") or profile.get("figureurl_qq_1") or "")[:500],
-        }
-
     def _auth_record(self, auth_type, identifier):
         with self._connection() as db:
             return db.execute(
                 "SELECT a.*,u.session_id,u.nickname,u.avatar,u.status FROM user_auth a JOIN users u ON u.id=a.user_id WHERE a.auth_type=? AND a.identifier=?",
                 (auth_type, identifier),
-            ).fetchone()
-
-    def _user_auth(self, user_id):
-        with self._connection() as db:
-            return db.execute(
-                "SELECT a.*,u.session_id,u.nickname,u.avatar,u.status FROM user_auth a JOIN users u ON u.id=a.user_id WHERE a.user_id=? ORDER BY a.created_at LIMIT 1",
-                (user_id,),
             ).fetchone()
 
     def _user(self, user_id):
@@ -573,10 +404,6 @@ class AppAuthService:
                     code_digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(purpose,identifier)
                 );
-                CREATE TABLE IF NOT EXISTS qq_login_requests(
-                    login_id TEXT PRIMARY KEY, state TEXT NOT NULL UNIQUE, status TEXT NOT NULL,
-                    user_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
-                );
                 """
             )
             db.commit()
@@ -596,15 +423,6 @@ class AppAuthService:
             return value if isinstance(value, dict) else None
         except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
             return None
-
-
-def _http_json(url):
-    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Xiaoyou/1.0"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        value = json.loads(response.read().decode("utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("invalid_remote_response")
-    return value
 
 
 def _normalize_email(value):

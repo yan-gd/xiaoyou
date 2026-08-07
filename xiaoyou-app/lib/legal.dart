@@ -172,7 +172,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                             icon: Icons.person_outline_rounded,
                             title: '账号与安全',
                             detail:
-                                '邮箱验证信息，或你选择 QQ 登录时授权的账号标识、昵称与头像；密码仅保存不可逆哈希。',
+                                '邮箱地址、一次性验证码及登录状态；验证码仅用于确认邮箱归属，服务器只保存不可逆摘要。',
                           ),
                           _PrivacyItem(
                             icon: Icons.forum_outlined,
