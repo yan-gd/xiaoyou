@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 
 import 'legal.dart';
 import 'session_store.dart';
+import 'theme_controller.dart';
 import 'xiaoyou_api.dart';
 
 const _muted = Color(0xffded9ff);
@@ -481,26 +482,60 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                             children: [
                               SizedBox(
                                 height: 42,
-                                child: Align(
-                                  alignment: Alignment.centerLeft,
-                                  child: (_mode != _AccountMode.login ||
-                                          canLeave)
-                                      ? IconButton(
-                                          tooltip: '返回',
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: (_mode != _AccountMode.login ||
+                                                canLeave)
+                                            ? IconButton(
+                                                tooltip: '返回',
+                                                color: Colors.white,
+                                                onPressed: () {
+                                                  if (_mode !=
+                                                      _AccountMode.login) {
+                                                    _switchMode(
+                                                      _AccountMode.login,
+                                                    );
+                                                  } else {
+                                                    Navigator.of(context)
+                                                        .maybePop();
+                                                  }
+                                                },
+                                                icon: const Icon(
+                                                  Icons
+                                                      .arrow_back_ios_new_rounded,
+                                                  size: 20,
+                                                ),
+                                              )
+                                            : const SizedBox.shrink(),
+                                      ),
+                                    ),
+                                    ValueListenableBuilder<bool>(
+                                      valueListenable: xiaoyouDarkMode,
+                                      builder: (context, darkMode, _) {
+                                        return IconButton(
+                                          tooltip:
+                                              darkMode ? '切换到日间模式' : '切换到夜间模式',
                                           color: Colors.white,
-                                          onPressed: () {
-                                            if (_mode != _AccountMode.login) {
-                                              _switchMode(_AccountMode.login);
-                                            } else {
-                                              Navigator.of(context).maybePop();
-                                            }
-                                          },
-                                          icon: const Icon(
-                                            Icons.arrow_back_ios_new_rounded,
-                                            size: 20,
+                                          onPressed: _busy
+                                              ? null
+                                              : () => unawaited(
+                                                    setXiaoyouDarkMode(
+                                                      !darkMode,
+                                                    ),
+                                                  ),
+                                          icon: Icon(
+                                            darkMode
+                                                ? Icons.light_mode_rounded
+                                                : Icons.dark_mode_rounded,
+                                            size: 21,
                                           ),
-                                        )
-                                      : const SizedBox.shrink(),
+                                        );
+                                      },
+                                    ),
+                                  ],
                                 ),
                               ),
                               _LoginHeader(
@@ -518,21 +553,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                                       _mode == _AccountMode.register ? 18 : 26,
                                 ),
                               ],
-                              AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 260),
-                                switchInCurve: Curves.easeOutCubic,
-                                switchOutCurve: Curves.easeInCubic,
-                                transitionBuilder: (child, animation) =>
-                                    FadeTransition(
-                                  opacity: animation,
-                                  child: child,
-                                ),
-                                child: Column(
-                                  key: ValueKey(_mode),
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment.stretch,
-                                  children: _buildFields(),
-                                ),
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: _buildFields(),
                               ),
                               if (_error.isNotEmpty) ...[
                                 const SizedBox(height: 12),
@@ -880,102 +903,35 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   }
 }
 
-class _LoginBackdrop extends StatefulWidget {
+class _LoginBackdrop extends StatelessWidget {
   const _LoginBackdrop();
 
   @override
-  State<_LoginBackdrop> createState() => _LoginBackdropState();
-}
-
-class _LoginBackdropState extends State<_LoginBackdrop>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _motion;
-
-  @override
-  void initState() {
-    super.initState();
-    _motion = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 9),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _motion.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _motion,
-      builder: (context, _) {
-        final phase = _motion.value * math.pi * 2;
+    return ValueListenableBuilder<bool>(
+      valueListenable: xiaoyouDarkMode,
+      builder: (context, darkMode, _) {
         return DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [
-                Color(0xff5045ef),
-                Color(0xff7964f4),
-                Color(0xffa58af4),
-              ],
-              stops: [0, 0.56, 1],
+              colors: darkMode
+                  ? const [
+                      Color(0xff17142f),
+                      Color(0xff2a2453),
+                      Color(0xff493d78),
+                    ]
+                  : const [
+                      Color(0xff5045ef),
+                      Color(0xff7964f4),
+                      Color(0xffa58af4),
+                    ],
+              stops: const [0, 0.56, 1],
             ),
-          ),
-          child: Stack(
-            children: [
-              Positioned(
-                left: -90 + math.sin(phase) * 22,
-                top: 70 + math.cos(phase) * 18,
-                child: const _GlowOrb(
-                  size: 310,
-                  color: Color(0x3a4c4cff),
-                ),
-              ),
-              Positioned(
-                right: -105 + math.cos(phase) * 26,
-                top: 245 + math.sin(phase) * 24,
-                child: const _GlowOrb(
-                  size: 330,
-                  color: Color(0x46e7cfff),
-                ),
-              ),
-              Positioned(
-                left: 42,
-                bottom: 40 + math.sin(phase) * 16,
-                child: const _GlowOrb(
-                  size: 190,
-                  color: Color(0x24bcecff),
-                ),
-              ),
-            ],
           ),
         );
       },
-    );
-  }
-}
-
-class _GlowOrb extends StatelessWidget {
-  const _GlowOrb({required this.size, required this.color});
-
-  final double size;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: size,
-      height: size,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        gradient: RadialGradient(
-          colors: [color, color.withValues(alpha: 0)],
-        ),
-      ),
     );
   }
 }

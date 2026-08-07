@@ -18,6 +18,7 @@ import 'legal.dart';
 import 'account_access_sheet.dart';
 import 'relationship_universe_screen.dart';
 import 'session_store.dart';
+import 'theme_controller.dart';
 import 'voice_recorder.dart';
 import 'voice_room_screen.dart';
 import 'xiaoyou_api.dart';
@@ -1489,15 +1490,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (result == null || !mounted) {
       return;
     }
-    setState(() {
-      _connecting = true;
-      _status = '正在连接小悠…';
-    });
     try {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _connecting = false);
       await _connect(
         baseUrl: result.baseUrl,
         token: result.login.token,
@@ -2347,10 +2340,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         onUnlock: _unlock,
         onReconnect: _openConnectionSheet,
       );
-    } else if (_savedConnection == null && _api == null && !_booting) {
-      screen = _WelcomeScreen(
-        connecting: _connecting,
-        onConnect: _openConnectionSheet,
+    } else if (_savedConnection == null &&
+        _api == null &&
+        !_booting &&
+        !_connecting) {
+      screen = Scaffold(
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       );
     } else {
       screen = _buildConversation();
@@ -2753,10 +2748,14 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   @override
   Widget build(BuildContext context) {
     final connection = widget.connection;
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final settingsCanvas = darkMode ? const Color(0xff15131f) : _canvas;
+    final settingsTitle = darkMode ? const Color(0xfff4f0fb) : _ink;
+    final settingsMuted = darkMode ? const Color(0xffaaa1bb) : _muted;
     return Scaffold(
-      backgroundColor: _canvas,
+      backgroundColor: settingsCanvas,
       appBar: AppBar(
-        backgroundColor: _canvas,
+        backgroundColor: settingsCanvas,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         scrolledUnderElevation: 0,
@@ -2765,14 +2764,24 @@ class _SettingsSheetState extends State<_SettingsSheet> {
           onPressed: () => Navigator.of(context).pop(),
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
         ),
-        title: const Text(
+        title: Text(
           '系统设置',
           style: TextStyle(
-            color: _ink,
+            color: settingsTitle,
             fontWeight: FontWeight.w700,
             fontSize: 19,
           ),
         ),
+        actions: [
+          IconButton(
+            tooltip: darkMode ? '切换到日间模式' : '切换到夜间模式',
+            onPressed: () => unawaited(setXiaoyouDarkMode(!darkMode)),
+            icon: Icon(
+              darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
       ),
       body: SafeArea(
         top: false,
@@ -2791,8 +2800,32 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 ),
               ),
               const SizedBox(height: 4),
-              Text(widget.status, style: const TextStyle(color: _muted)),
-              const SizedBox(height: 24),
+              Text(
+                widget.status,
+                style: TextStyle(color: settingsMuted),
+              ),
+              const SizedBox(height: 20),
+              _SettingsCard(
+                children: [
+                  ListTile(
+                    leading: _SettingsIcon(
+                      icon: darkMode
+                          ? Icons.nightlight_round
+                          : Icons.wb_sunny_rounded,
+                    ),
+                    title: const Text('夜间模式'),
+                    subtitle: Text(
+                      darkMode ? '已开启深色界面，点击太阳可切回日间模式' : '减少夜间亮度刺激，点击月亮即可开启',
+                    ),
+                    trailing: Switch.adaptive(
+                      value: darkMode,
+                      onChanged: (value) =>
+                          unawaited(setXiaoyouDarkMode(value)),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
               _SettingsCard(
                 children: [
                   ListTile(
@@ -2830,7 +2863,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     leading: const _SettingsIcon(
                       icon: Icons.privacy_tip_outlined,
                     ),
-                    title: const Text('隐私政策'),
+                    title: const Text('《隐私政策》'),
                     subtitle: const Text('了解信息收集、使用、存储与第三方服务'),
                     trailing: const Icon(Icons.open_in_new_rounded, size: 19),
                     onTap: () async {
@@ -2840,7 +2873,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('暂时无法打开隐私政策，请检查网络后重试'),
+                              content: Text('暂时无法打开《隐私政策》，请检查网络后重试'),
                             ),
                           );
                         }
@@ -2852,7 +2885,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     leading: const _SettingsIcon(
                       icon: Icons.description_outlined,
                     ),
-                    title: const Text('用户协议'),
+                    title: const Text('《用户协议》'),
                     subtitle: const Text('查看服务规则与 AI 内容使用说明'),
                     trailing: const Icon(Icons.open_in_new_rounded, size: 19),
                     onTap: () async {
@@ -2862,7 +2895,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                         if (context.mounted) {
                           ScaffoldMessenger.of(context).showSnackBar(
                             const SnackBar(
-                              content: Text('暂时无法打开用户协议，请检查网络后重试'),
+                              content: Text('暂时无法打开《用户协议》，请检查网络后重试'),
                             ),
                           );
                         }
@@ -3301,20 +3334,25 @@ class _SettingsCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xfcffffff), Color(0xfffbf3f8)],
+          colors: darkMode
+              ? const [Color(0xff252135), Color(0xff1d1a2a)]
+              : const [Color(0xfcffffff), Color(0xfffbf3f8)],
         ),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xdfffffff)),
-        boxShadow: const [
+        border: Border.all(
+          color: darkMode ? const Color(0xff373148) : const Color(0xdfffffff),
+        ),
+        boxShadow: [
           BoxShadow(
-            color: Color(0x12572a40),
+            color: darkMode ? const Color(0x50000000) : const Color(0x12572a40),
             blurRadius: 16,
-            offset: Offset(0, 6),
+            offset: const Offset(0, 6),
           ),
         ],
       ),
@@ -3336,22 +3374,35 @@ class _SettingsIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Container(
       width: 38,
       height: 38,
       decoration: BoxDecoration(
         gradient: danger
-            ? const LinearGradient(
-                colors: [Color(0xffffeeee), Color(0xffffe4ea)],
-              )
-            : const LinearGradient(
-                colors: [Color(0xffffedf5), Color(0xfff1e8f7)],
-              ),
+            ? (darkMode
+                ? const LinearGradient(
+                    colors: [Color(0xff452530), Color(0xff39212c)],
+                  )
+                : const LinearGradient(
+                    colors: [Color(0xffffeeee), Color(0xffffe4ea)],
+                  ))
+            : (darkMode
+                ? const LinearGradient(
+                    colors: [Color(0xff332d4a), Color(0xff29243d)],
+                  )
+                : const LinearGradient(
+                    colors: [Color(0xffffedf5), Color(0xfff1e8f7)],
+                  )),
         borderRadius: BorderRadius.circular(12),
       ),
       child: Icon(
         icon,
-        color: danger ? Colors.redAccent : _rose,
+        color: danger
+            ? Colors.redAccent
+            : darkMode
+                ? const Color(0xffc9bcff)
+                : _rose,
         size: 21,
       ),
     );
@@ -7095,78 +7146,6 @@ class _EmptyConversation extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _WelcomeScreen extends StatelessWidget {
-  const _WelcomeScreen({
-    required this.connecting,
-    required this.onConnect,
-  });
-
-  final bool connecting;
-  final VoidCallback onConnect;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: _RomanticBackground(
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(28, 36, 28, 30),
-            child: Column(
-              children: [
-                const Spacer(flex: 2),
-                const Hero(
-                  tag: 'xiaoyou-avatar',
-                  child: _Avatar(size: 150),
-                ),
-                const SizedBox(height: 28),
-                const Text(
-                  '小悠',
-                  style: TextStyle(
-                    color: _roseDark,
-                    fontSize: 34,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  '不只是另一个聊天入口\n是你们一直在继续的日常',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: _muted, height: 1.6, fontSize: 15),
-                ),
-                const Spacer(flex: 3),
-                SizedBox(
-                  width: double.infinity,
-                  height: 54,
-                  child: FilledButton.icon(
-                    onPressed: connecting ? null : onConnect,
-                    icon: connecting
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
-                          )
-                        : const Icon(Icons.favorite_rounded),
-                    label: Text(connecting ? '正在连接…' : '连接小悠'),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  '首次连接后会在本机安全保存',
-                  style: TextStyle(color: Color(0xffa798a0), fontSize: 12),
-                ),
-              ],
-            ),
-          ),
         ),
       ),
     );
