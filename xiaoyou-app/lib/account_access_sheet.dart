@@ -8,9 +8,7 @@ import 'legal.dart';
 import 'session_store.dart';
 import 'xiaoyou_api.dart';
 
-const _ink = Colors.white;
 const _muted = Color(0xffded9ff);
-const _rose = Color(0xff6c5cff);
 const _roseDeep = Color(0xff5140e8);
 const _surface = Color(0xff5e50e9);
 const _defaultBaseUrl = 'https://xiaoyou.yoyoyan.cn/xiaoyou-app';
@@ -474,7 +472,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                       constraints: BoxConstraints(
                         minHeight: math.max(0.0, viewport.maxHeight - 30),
                       ),
-                      child: Center(
+                      child: Align(
+                        alignment: Alignment.topCenter,
                         child: ConstrainedBox(
                           constraints: const BoxConstraints(maxWidth: 430),
                           child: Column(
@@ -514,7 +513,10 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                               ),
                               if (_mode != _AccountMode.reset) ...[
                                 _modeSwitcher(),
-                                const SizedBox(height: 26),
+                                SizedBox(
+                                  height:
+                                      _mode == _AccountMode.register ? 18 : 26,
+                                ),
                               ],
                               AnimatedSwitcher(
                                 duration: const Duration(milliseconds: 260),
@@ -523,13 +525,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                                 transitionBuilder: (child, animation) =>
                                     FadeTransition(
                                   opacity: animation,
-                                  child: SlideTransition(
-                                    position: Tween<Offset>(
-                                      begin: const Offset(0.04, 0),
-                                      end: Offset.zero,
-                                    ).animate(animation),
-                                    child: child,
-                                  ),
+                                  child: child,
                                 ),
                                 child: Column(
                                   key: ValueKey(_mode),

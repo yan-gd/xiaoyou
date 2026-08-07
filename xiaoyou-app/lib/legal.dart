@@ -48,7 +48,7 @@ Future<bool> showPrivacyConsentCard(BuildContext context) async {
     context: context,
     barrierDismissible: false,
     barrierLabel: '隐私声明',
-    barrierColor: const Color(0x8a2e2028),
+    barrierColor: const Color(0xb54d43c7),
     transitionDuration: const Duration(milliseconds: 260),
     pageBuilder: (dialogContext, _, __) => const _PrivacyConsentDialog(),
     transitionBuilder: (_, animation, __, child) {
@@ -121,7 +121,7 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xfffff8fc), Color(0xffffeaf4), Color(0xffeee8fa)],
+            colors: [Color(0xff5045ef), Color(0xff7964f4), Color(0xffa58af4)],
           ),
         ),
         child: Center(
@@ -131,42 +131,49 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Container(
-                  width: 104,
-                  height: 104,
-                  padding: const EdgeInsets.all(5),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
+                const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Color(0xffe5dcff),
+                  size: 24,
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '小 悠',
+                  style: TextStyle(
                     color: Colors.white,
-                    boxShadow: const [
-                      BoxShadow(
-                          color: Color(0x35a64c79),
-                          blurRadius: 38,
-                          offset: Offset(0, 16)),
+                    fontSize: 48,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 7,
+                    shadows: [
+                      Shadow(color: Color(0x66524af0), blurRadius: 28),
                     ],
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: const ClipOval(
-                    child: Image(
-                        image: AssetImage('assets/xiaoyou-avatar.png'),
-                        fit: BoxFit.cover),
                   ),
                 ),
-                const SizedBox(height: 22),
-                const Text('小悠',
-                    style: TextStyle(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w800,
-                        color: Color(0xff3b2c34))),
-                const SizedBox(height: 8),
-                const Text('先了解彼此，再开始相伴',
-                    style: TextStyle(color: Color(0xff866f7b))),
+                const SizedBox(height: 10),
+                Text(
+                  '你的专属 AI 陪伴',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.82),
+                    fontSize: 15,
+                    letterSpacing: 1.6,
+                  ),
+                ),
                 if (!_checking) ...[
-                  const SizedBox(height: 26),
-                  FilledButton.icon(
-                    onPressed: _show,
-                    icon: const Icon(Icons.verified_user_outlined),
-                    label: const Text('查看隐私声明'),
+                  const SizedBox(height: 30),
+                  SizedBox(
+                    height: 52,
+                    child: FilledButton.icon(
+                      onPressed: _show,
+                      style: FilledButton.styleFrom(
+                        foregroundColor: const Color(0xff5140e8),
+                        backgroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(26),
+                        ),
+                      ),
+                      icon: const Icon(Icons.verified_user_outlined),
+                      label: const Text('查看隐私声明'),
+                    ),
                   ),
                 ],
               ],
@@ -204,12 +211,12 @@ class _PrivacyConsentDialog extends StatelessWidget {
             constraints: BoxConstraints(maxHeight: height - 48),
             margin: const EdgeInsets.symmetric(horizontal: 22),
             decoration: BoxDecoration(
-              color: const Color(0xfffffbfd),
+              color: const Color(0xff6658ec),
               borderRadius: BorderRadius.circular(30),
               border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
               boxShadow: const [
                 BoxShadow(
-                  color: Color(0x442d1824),
+                  color: Color(0x55332988),
                   blurRadius: 48,
                   offset: Offset(0, 22),
                 ),
@@ -225,7 +232,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(24, 22, 24, 20),
                     decoration: const BoxDecoration(
                       gradient: LinearGradient(
-                        colors: [Color(0xffffeaf3), Color(0xfff1eaff)],
+                        colors: [Color(0xff7667f5), Color(0xff8d76f2)],
                       ),
                     ),
                     child: const Row(
@@ -239,7 +246,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                               Text(
                                 '隐私声明',
                                 style: TextStyle(
-                                  color: Color(0xff33252d),
+                                  color: Colors.white,
                                   fontSize: 22,
                                   fontWeight: FontWeight.w800,
                                 ),
@@ -248,7 +255,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                               Text(
                                 '请在登录小悠前阅读并作出选择',
                                 style: TextStyle(
-                                  color: Color(0xff826d78),
+                                  color: Color(0xffded9ff),
                                   fontSize: 13,
                                 ),
                               ),
@@ -267,7 +274,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           Text(
                             '为了提供账号登录、聊天、语音、图片、通知和多设备同步，小悠会在必要范围内处理以下信息：',
                             style: TextStyle(
-                              color: Color(0xff57464f),
+                              color: Color(0xfff4f1ff),
                               fontSize: 14,
                               height: 1.65,
                             ),
@@ -299,7 +306,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           Text(
                             '点击“同意并继续”即表示你已阅读并同意《隐私政策》和《用户协议》。你可以在系统设置中随时再次查看。',
                             style: TextStyle(
-                              color: Color(0xff806e77),
+                              color: Color(0xffded9ff),
                               fontSize: 12.5,
                               height: 1.55,
                             ),
@@ -316,6 +323,9 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             TextButton(
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.white,
+                              ),
                               onPressed: () => _openDocument(
                                 context,
                                 xiaoyouPrivacyPolicyUrl,
@@ -323,8 +333,11 @@ class _PrivacyConsentDialog extends StatelessWidget {
                               child: const Text('隐私政策'),
                             ),
                             const Text('·',
-                                style: TextStyle(color: Color(0xffa08d97))),
+                                style: TextStyle(color: Color(0xffded9ff))),
                             TextButton(
+                              style: TextButton.styleFrom(
+                                foregroundColor: Colors.white,
+                              ),
                               onPressed: () => _openDocument(
                                 context,
                                 xiaoyouUserAgreementUrl,
@@ -340,7 +353,8 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           child: FilledButton(
                             onPressed: () => Navigator.pop(context, true),
                             style: FilledButton.styleFrom(
-                              backgroundColor: const Color(0xffa64c79),
+                              backgroundColor: Colors.white,
+                              foregroundColor: const Color(0xff5140e8),
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
                               ),
@@ -353,7 +367,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                           onPressed: () => Navigator.pop(context, false),
                           child: const Text(
                             '暂不同意',
-                            style: TextStyle(color: Color(0xff8b7882)),
+                            style: TextStyle(color: Color(0xffded9ff)),
                           ),
                         ),
                       ],
@@ -378,12 +392,12 @@ class _ShieldMark extends StatelessWidget {
       width: 48,
       height: 48,
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.82),
+        color: Colors.white.withValues(alpha: 0.14),
         borderRadius: BorderRadius.circular(16),
       ),
       child: const Icon(
         Icons.verified_user_outlined,
-        color: Color(0xffa64c79),
+        color: Colors.white,
         size: 25,
       ),
     );
@@ -412,10 +426,10 @@ class _PrivacyItem extends StatelessWidget {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: const Color(0xffffedf5),
+              color: Colors.white.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
-            child: Icon(icon, color: const Color(0xffad4f7d), size: 19),
+            child: Icon(icon, color: Colors.white, size: 19),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -425,7 +439,7 @@ class _PrivacyItem extends StatelessWidget {
                 Text(
                   title,
                   style: const TextStyle(
-                    color: Color(0xff3d3037),
+                    color: Colors.white,
                     fontSize: 14,
                     fontWeight: FontWeight.w700,
                   ),
@@ -434,7 +448,7 @@ class _PrivacyItem extends StatelessWidget {
                 Text(
                   detail,
                   style: const TextStyle(
-                    color: Color(0xff806f78),
+                    color: Color(0xffded9ff),
                     fontSize: 12.5,
                     height: 1.5,
                   ),

@@ -399,6 +399,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _locked = false;
         _status = '需要重新连接';
       });
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          unawaited(_openConnectionSheet());
+        }
+      });
       return;
     }
     await _connect(
@@ -1474,9 +1479,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _openConnectionSheet() async {
     final saved = _savedConnection;
     final result = await Navigator.of(context).push<AccountAccessResult>(
-      MaterialPageRoute<AccountAccessResult>(
-        fullscreenDialog: saved == null,
-        builder: (context) => AccountAccessSheet(saved: saved),
+      PageRouteBuilder<AccountAccessResult>(
+        opaque: true,
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        pageBuilder: (context, _, __) => AccountAccessSheet(saved: saved),
       ),
     );
     if (result == null || !mounted) {
@@ -1862,6 +1869,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _locked = false;
       _awaitingReply = false;
       _status = '尚未连接';
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(_openConnectionSheet());
+      }
     });
   }
 
