@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,11 +8,11 @@ import 'legal.dart';
 import 'session_store.dart';
 import 'xiaoyou_api.dart';
 
-const _ink = Color(0xff34272e);
-const _muted = Color(0xff806f78);
-const _rose = Color(0xffad4f7d);
-const _roseDeep = Color(0xff914263);
-const _surface = Color(0xfffff9fc);
+const _ink = Colors.white;
+const _muted = Color(0xffded9ff);
+const _rose = Color(0xff6c5cff);
+const _roseDeep = Color(0xff5140e8);
+const _surface = Color(0xff5e50e9);
 const _defaultBaseUrl = 'https://xiaoyou.yoyoyan.cn/xiaoyou-app';
 
 enum _AccountMode { login, register, reset }
@@ -178,9 +179,12 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   }
 
   bool _validateUsername() {
-    final value = _username.text.trim().toLowerCase();
-    if (!RegExp(r'^[a-z0-9][a-z0-9_.-]{2,31}$').hasMatch(value)) {
-      setState(() => _error = '账号需为 3–32 位字母、数字、点、横线或下划线');
+    final value = _username.text.trim();
+    final valid = RegExp(
+      r'^[\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9][\u3400-\u4dbf\u4e00-\u9fffA-Za-z0-9_.-]{1,31}$',
+    ).hasMatch(value);
+    if (!valid) {
+      setState(() => _error = '账号需为 2–32 位，可使用中文、字母、数字及 . _ -');
       return false;
     }
     return true;
@@ -254,8 +258,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   }
 
   Future<void> _register() async {
-    if (!_validateUsername() ||
-        !_validateEmail() ||
+    if (!_validateEmail() ||
+        !_validateUsername() ||
         !_validatePassword(confirm: true)) {
       return;
     }
@@ -453,65 +457,92 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       canPop: canLeave,
       child: Scaffold(
         backgroundColor: _surface,
-        body: Stack(
-          children: [
-            const Positioned.fill(child: _LoginBackdrop()),
-            SafeArea(
-              child: Column(
-                children: [
-                  SizedBox(
-                    height: 52,
-                    child: Row(
-                      children: [
-                        if (_mode != _AccountMode.login || canLeave)
-                          IconButton(
-                            tooltip: '返回',
-                            onPressed: () {
-                              if (_mode != _AccountMode.login) {
-                                _switchMode(_AccountMode.login);
-                              } else {
-                                Navigator.of(context).maybePop();
-                              }
-                            },
-                            icon: const Icon(Icons.arrow_back_ios_new_rounded),
-                          )
-                        else
-                          const SizedBox(width: 48),
-                        const Spacer(),
-                        const Text(
-                          '小悠',
-                          style: TextStyle(
-                            color: _ink,
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const Spacer(),
-                        const SizedBox(width: 48),
-                      ],
-                    ),
-                  ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      keyboardDismissBehavior:
-                          ScrollViewKeyboardDismissBehavior.onDrag,
-                      padding: const EdgeInsets.fromLTRB(24, 22, 24, 30),
+        resizeToAvoidBottomInset: true,
+        body: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+          child: Stack(
+            children: [
+              const Positioned.fill(child: _LoginBackdrop()),
+              SafeArea(
+                child: LayoutBuilder(
+                  builder: (context, viewport) => SingleChildScrollView(
+                    keyboardDismissBehavior:
+                        ScrollViewKeyboardDismissBehavior.onDrag,
+                    padding: const EdgeInsets.fromLTRB(28, 6, 28, 24),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: math.max(0.0, viewport.maxHeight - 30),
+                      ),
                       child: Center(
                         child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 440),
+                          constraints: const BoxConstraints(maxWidth: 430),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              _LoginHeader(title: _title, subtitle: _subtitle),
-                              const SizedBox(height: 34),
-                              _modeSwitcher(),
-                              const SizedBox(height: 26),
-                              ..._buildFields(),
+                              SizedBox(
+                                height: 42,
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: (_mode != _AccountMode.login ||
+                                          canLeave)
+                                      ? IconButton(
+                                          tooltip: '返回',
+                                          color: Colors.white,
+                                          onPressed: () {
+                                            if (_mode != _AccountMode.login) {
+                                              _switchMode(_AccountMode.login);
+                                            } else {
+                                              Navigator.of(context).maybePop();
+                                            }
+                                          },
+                                          icon: const Icon(
+                                            Icons.arrow_back_ios_new_rounded,
+                                            size: 20,
+                                          ),
+                                        )
+                                      : const SizedBox.shrink(),
+                                ),
+                              ),
+                              _LoginHeader(
+                                title: _title,
+                                subtitle: _subtitle,
+                                compact: _mode == _AccountMode.reset,
+                              ),
+                              SizedBox(
+                                height: _mode == _AccountMode.reset ? 26 : 34,
+                              ),
+                              if (_mode != _AccountMode.reset) ...[
+                                _modeSwitcher(),
+                                const SizedBox(height: 26),
+                              ],
+                              AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 260),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                transitionBuilder: (child, animation) =>
+                                    FadeTransition(
+                                  opacity: animation,
+                                  child: SlideTransition(
+                                    position: Tween<Offset>(
+                                      begin: const Offset(0.04, 0),
+                                      end: Offset.zero,
+                                    ).animate(animation),
+                                    child: child,
+                                  ),
+                                ),
+                                child: Column(
+                                  key: ValueKey(_mode),
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: _buildFields(),
+                                ),
+                              ),
                               if (_error.isNotEmpty) ...[
                                 const SizedBox(height: 12),
                                 _InlineNotice(text: _error, error: true),
                               ],
-                              const SizedBox(height: 18),
+                              const SizedBox(height: 10),
                               if (_mode != _AccountMode.reset)
                                 _RememberRow(
                                   value: _remember,
@@ -519,36 +550,36 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                                       ? null
                                       : (value) =>
                                           setState(() => _remember = value),
+                                  onForgot: _mode == _AccountMode.login &&
+                                          !_busy
+                                      ? () => _switchMode(_AccountMode.reset)
+                                      : null,
                                 ),
                               const SizedBox(height: 12),
+                              _primaryButton(),
+                              const SizedBox(height: 8),
+                              _secondaryActions(),
+                              const SizedBox(height: 14),
                               _AgreementRow(
                                 value: _agreed,
                                 onChanged: _busy
                                     ? null
-                                    : (value) {
-                                        unawaited(_setAgreement(value));
-                                      },
-                                onPrivacy: () => _openDocument(
-                                  xiaoyouPrivacyPolicyUrl,
-                                ),
-                                onTerms: () => _openDocument(
-                                  xiaoyouUserAgreementUrl,
-                                ),
+                                    : (value) =>
+                                        unawaited(_setAgreement(value)),
+                                onPrivacy: () =>
+                                    _openDocument(xiaoyouPrivacyPolicyUrl),
+                                onTerms: () =>
+                                    _openDocument(xiaoyouUserAgreementUrl),
                               ),
-                              const SizedBox(height: 24),
-                              _primaryButton(),
-                              const SizedBox(height: 16),
-                              _secondaryActions(),
-                              const SizedBox(height: 24),
+                              const SizedBox(height: 14),
                               Text(
                                 _mode == _AccountMode.login
-                                    ? '登录后，每个普通用户拥有独立的数据空间；邮箱不会作为公开账号展示。'
-                                    : '邮箱仅用于注册验证与账号找回，不作为日常登录凭据。',
+                                    ? '每个账号拥有独立的数据与记忆空间'
+                                    : '邮箱仅用于注册验证与找回密码',
                                 textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: Color(0xff9b8992),
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.58),
                                   fontSize: 11.5,
-                                  height: 1.5,
                                 ),
                               ),
                             ],
@@ -557,30 +588,31 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                       ),
                     ),
                   ),
-                ],
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _modeSwitcher() {
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.62),
-        borderRadius: BorderRadius.circular(15),
-        border: Border.all(color: const Color(0xfff0e1e8)),
-      ),
+    return SizedBox(
+      height: 52,
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
           _ModeButton(
             label: '登录',
             selected: _mode == _AccountMode.login,
             onTap: () => _switchMode(_AccountMode.login),
+          ),
+          Container(
+            width: 1,
+            height: 22,
+            margin: const EdgeInsets.symmetric(horizontal: 34),
+            color: Colors.white.withValues(alpha: 0.24),
           ),
           _ModeButton(
             label: '注册',
@@ -613,32 +645,28 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       ];
     }
 
-    return [
-      _field(
-        controller: _username,
-        label: '账号',
-        icon: Icons.person_outline_rounded,
-        keyboardType: TextInputType.text,
-        textInputAction: TextInputAction.next,
-        inputFormatters: [
-          FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9_.-]')),
-          LengthLimitingTextInputFormatter(32),
-        ],
-      ),
-      const SizedBox(height: 14),
-      _passwordField(label: '密码'),
-      if (_mode == _AccountMode.register) ...[
-        const SizedBox(height: 14),
-        _passwordField(label: '确认密码', confirm: true),
-        const SizedBox(height: 14),
+    if (_mode == _AccountMode.register) {
+      return [
         _field(
           controller: _email,
-          label: '邮箱（仅用于验证与找回）',
-          icon: Icons.mail_outline_rounded,
+          label: '邮箱',
+          icon: Icons.alternate_email_rounded,
           keyboardType: TextInputType.emailAddress,
-          textInputAction:
-              _codeSent ? TextInputAction.next : TextInputAction.done,
+          textInputAction: TextInputAction.next,
         ),
+        const SizedBox(height: 14),
+        _field(
+          controller: _username,
+          label: '账号名字（可使用中文且不可重复）',
+          icon: Icons.person_outline_rounded,
+          keyboardType: TextInputType.text,
+          textInputAction: TextInputAction.next,
+          inputFormatters: [LengthLimitingTextInputFormatter(32)],
+        ),
+        const SizedBox(height: 14),
+        _passwordField(label: '密码'),
+        const SizedBox(height: 14),
+        _passwordField(label: '确认密码', confirm: true),
         if (_codeSent) ...[
           const SizedBox(height: 14),
           _codeField(),
@@ -647,7 +675,19 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
           const SizedBox(height: 12),
           const _InlineNotice(text: '邮箱验证服务正在维护，暂时无法创建新账号'),
         ],
-      ],
+      ];
+    }
+    return [
+      _field(
+        controller: _username,
+        label: '账号',
+        icon: Icons.person_outline_rounded,
+        keyboardType: TextInputType.text,
+        textInputAction: TextInputAction.next,
+        inputFormatters: [LengthLimitingTextInputFormatter(32)],
+      ),
+      const SizedBox(height: 14),
+      _passwordField(label: '密码'),
     ];
   }
 
@@ -698,6 +738,10 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
           height: 58,
           child: TextButton(
             onPressed: _busy || _resendLeft > 0 ? null : _resendCode,
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white,
+              disabledForegroundColor: Colors.white54,
+            ),
             child: Text(_resendLeft > 0 ? '${_resendLeft}s' : '重新获取'),
           ),
         ),
@@ -730,27 +774,39 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
         }
       },
       decoration: InputDecoration(
-        labelText: label,
-        labelStyle: const TextStyle(color: _muted),
-        prefixIcon: Icon(icon, color: _rose),
+        hintText: label,
+        hintStyle: TextStyle(
+          color: Colors.white.withValues(alpha: 0.68),
+          fontSize: 15,
+        ),
+        prefixIcon: Icon(icon, color: Colors.white, size: 21),
         suffixIcon: suffix,
         filled: true,
-        fillColor: Colors.white.withValues(alpha: 0.76),
+        fillColor: Colors.white.withValues(alpha: 0.13),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xffeadce4)),
+          borderRadius: BorderRadius.circular(22),
+          borderSide: BorderSide(
+            color: Colors.white.withValues(alpha: 0.2),
+          ),
         ),
         disabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: Color(0xffeee4e9)),
+          borderRadius: BorderRadius.circular(22),
+          borderSide: BorderSide(
+            color: Colors.white.withValues(alpha: 0.12),
+          ),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(18),
-          borderSide: const BorderSide(color: _rose, width: 1.4),
+          borderRadius: BorderRadius.circular(22),
+          borderSide: BorderSide(
+            color: Colors.white.withValues(alpha: 0.92),
+            width: 1.3,
+          ),
         ),
       ),
+      cursorColor: Colors.white,
+      style: const TextStyle(color: Colors.white, fontSize: 15.5),
     );
   }
 
@@ -764,15 +820,18 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       opacity: _agreed ? 1 : 0.58,
       duration: const Duration(milliseconds: 180),
       child: SizedBox(
-        height: 54,
+        height: 58,
         child: FilledButton(
           onPressed: _busy ? null : _submit,
           style: FilledButton.styleFrom(
-            backgroundColor: _rose,
-            disabledBackgroundColor: _rose.withValues(alpha: 0.55),
+            foregroundColor: _roseDeep,
+            backgroundColor: Colors.white,
+            disabledForegroundColor: _roseDeep.withValues(alpha: 0.55),
+            disabledBackgroundColor: Colors.white.withValues(alpha: 0.72),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(18),
+              borderRadius: BorderRadius.circular(29),
             ),
+            elevation: 0,
           ),
           child: _busy
               ? const SizedBox(
@@ -780,14 +839,14 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
                   height: 22,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    color: Colors.white,
+                    color: _roseDeep,
                   ),
                 )
               : Text(
                   label,
                   style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+                    fontSize: 17,
+                    fontWeight: FontWeight.w800,
                   ),
                 ),
         ),
@@ -800,6 +859,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
       return Center(
         child: TextButton(
           onPressed: _busy ? null : () => _switchMode(_AccountMode.login),
+          style: TextButton.styleFrom(foregroundColor: Colors.white70),
           child: const Text('返回账号登录'),
         ),
       );
@@ -810,18 +870,13 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
         if (_mode == _AccountMode.login) ...[
           TextButton(
             onPressed: _busy ? null : () => _switchMode(_AccountMode.register),
-            child: const Text('没有账号？注册'),
-          ),
-          const SizedBox(width: 10),
-          Container(width: 1, height: 14, color: const Color(0xffdfcfd7)),
-          const SizedBox(width: 10),
-          TextButton(
-            onPressed: _busy ? null : () => _switchMode(_AccountMode.reset),
-            child: const Text('忘记密码'),
+            style: TextButton.styleFrom(foregroundColor: Colors.white70),
+            child: const Text('还没有账号？去注册'),
           ),
         ] else
           TextButton(
             onPressed: _busy ? null : () => _switchMode(_AccountMode.login),
+            style: TextButton.styleFrom(foregroundColor: Colors.white70),
             child: const Text('已有账号？返回登录'),
           ),
       ],
@@ -829,44 +884,190 @@ class _AccountAccessSheetState extends State<AccountAccessSheet> {
   }
 }
 
-class _LoginBackdrop extends StatelessWidget {
+class _LoginBackdrop extends StatefulWidget {
   const _LoginBackdrop();
 
   @override
+  State<_LoginBackdrop> createState() => _LoginBackdropState();
+}
+
+class _LoginBackdropState extends State<_LoginBackdrop>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _motion;
+
+  @override
+  void initState() {
+    super.initState();
+    _motion = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 9),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _motion.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0xfffff9fc), Color(0xfffff2f7), Color(0xfff7edf4)],
-        ),
-      ),
-      child: Stack(
-        children: [
-          Positioned(
-            right: -70,
-            top: -55,
-            child: Container(
-              width: 220,
-              height: 220,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                color: Color(0x24bf7fa0),
-              ),
+    return AnimatedBuilder(
+      animation: _motion,
+      builder: (context, _) {
+        final phase = _motion.value * math.pi * 2;
+        return DecoratedBox(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xff5045ef),
+                Color(0xff7964f4),
+                Color(0xffa58af4),
+              ],
+              stops: [0, 0.56, 1],
             ),
           ),
-          Positioned(
-            left: -90,
-            bottom: 70,
-            child: Container(
-              width: 240,
-              height: 240,
-              decoration: const BoxDecoration(
-                shape: BoxShape.circle,
-                color: Color(0x18a96792),
+          child: Stack(
+            children: [
+              Positioned(
+                left: -90 + math.sin(phase) * 22,
+                top: 70 + math.cos(phase) * 18,
+                child: const _GlowOrb(
+                  size: 310,
+                  color: Color(0x3a4c4cff),
+                ),
               ),
+              Positioned(
+                right: -105 + math.cos(phase) * 26,
+                top: 245 + math.sin(phase) * 24,
+                child: const _GlowOrb(
+                  size: 330,
+                  color: Color(0x46e7cfff),
+                ),
+              ),
+              Positioned(
+                left: 42,
+                bottom: 40 + math.sin(phase) * 16,
+                child: const _GlowOrb(
+                  size: 190,
+                  color: Color(0x24bcecff),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _GlowOrb extends StatelessWidget {
+  const _GlowOrb({required this.size, required this.color});
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          colors: [color, color.withValues(alpha: 0)],
+        ),
+      ),
+    );
+  }
+}
+
+class _LoginHeader extends StatelessWidget {
+  const _LoginHeader({
+    required this.title,
+    required this.subtitle,
+    required this.compact,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        if (!compact) ...[
+          const _BrandWordmark(),
+          const SizedBox(height: 12),
+          Text(
+            '你的专属 AI 陪伴',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.82),
+              fontSize: 15,
+              letterSpacing: 1.6,
             ),
+          ),
+        ] else ...[
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 30,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: _muted, fontSize: 13, height: 1.5),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _BrandWordmark extends StatelessWidget {
+  const _BrandWordmark();
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 240,
+      height: 105,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned.fill(
+            child: CustomPaint(painter: _BrandOrbitPainter()),
+          ),
+          const Text(
+            '小 悠',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 58,
+              height: 1,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 7,
+              shadows: [
+                Shadow(color: Color(0x66524af0), blurRadius: 28),
+              ],
+            ),
+          ),
+          const Positioned(
+            right: 35,
+            top: 24,
+            child: Icon(Icons.favorite_rounded, color: Colors.white, size: 12),
+          ),
+          const Positioned(
+            left: 42,
+            top: 4,
+            child: Icon(Icons.auto_awesome_rounded,
+                color: Color(0xffe5dcff), size: 20),
           ),
         ],
       ),
@@ -874,76 +1075,24 @@ class _LoginBackdrop extends StatelessWidget {
   }
 }
 
-class _LoginHeader extends StatelessWidget {
-  const _LoginHeader({required this.title, required this.subtitle});
-
-  final String title;
-  final String subtitle;
+class _BrandOrbitPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..shader = const LinearGradient(
+        colors: [Color(0x08ffffff), Color(0xccffffff), Color(0x16ffffff)],
+      ).createShader(Offset.zero & size);
+    final path = Path()
+      ..moveTo(22, size.height * 0.72)
+      ..cubicTo(size.width * 0.35, size.height * 1.02, size.width * 0.93,
+          size.height * 0.83, size.width - 25, size.height * 0.41);
+    canvas.drawPath(path, paint);
+  }
 
   @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Container(
-              width: 94,
-              height: 94,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: Colors.white,
-                border: Border.all(color: const Color(0xffffd7e6)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x2aa64c78),
-                    blurRadius: 30,
-                    offset: Offset(0, 14),
-                  ),
-                ],
-              ),
-              child: const ClipOval(
-                child: Image(
-                  image: AssetImage('assets/xiaoyou-avatar.png'),
-                  fit: BoxFit.cover,
-                ),
-              ),
-            ),
-            Positioned(
-              right: 1,
-              bottom: 7,
-              child: Container(
-                width: 19,
-                height: 19,
-                decoration: BoxDecoration(
-                  color: const Color(0xff36b88b),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 22),
-        Text(
-          title,
-          style: const TextStyle(
-            color: _ink,
-            fontSize: 28,
-            height: 1.1,
-            fontWeight: FontWeight.w800,
-          ),
-        ),
-        const SizedBox(height: 9),
-        Text(
-          subtitle,
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: _muted, fontSize: 13, height: 1.55),
-        ),
-      ],
-    );
-  }
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _ModeButton extends StatelessWidget {
@@ -960,21 +1109,32 @@ class _ModeButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Expanded(
-      child: Material(
-        color: selected ? Colors.white : Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: onTap,
-          child: Center(
-            child: Text(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
               label,
               style: TextStyle(
-                color: selected ? _roseDeep : _muted,
-                fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                color: selected ? Colors.white : Colors.white60,
+                fontSize: 18,
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
               ),
             ),
-          ),
+            const SizedBox(height: 8),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              width: selected ? 34 : 0,
+              height: 3,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -982,40 +1142,65 @@ class _ModeButton extends StatelessWidget {
 }
 
 class _RememberRow extends StatelessWidget {
-  const _RememberRow({required this.value, required this.onChanged});
+  const _RememberRow({
+    required this.value,
+    required this.onChanged,
+    this.onForgot,
+  });
 
   final bool value;
   final ValueChanged<bool>? onChanged;
+  final VoidCallback? onForgot;
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: onChanged == null ? null : () => onChanged!(!value),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          children: [
-            Checkbox(
-              value: value,
-              onChanged: onChanged == null
-                  ? null
-                  : (next) => onChanged!(next ?? false),
-              activeColor: _rose,
-              visualDensity: VisualDensity.compact,
+    return Row(
+      children: [
+        InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onChanged == null ? null : () => onChanged!(!value),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 180),
+                  width: 21,
+                  height: 21,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: value ? Colors.white : Colors.transparent,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: value ? 1 : 0.8),
+                      width: 1.5,
+                    ),
+                  ),
+                  child: value
+                      ? const Icon(Icons.check_rounded,
+                          size: 15, color: _roseDeep)
+                      : null,
+                ),
+                const SizedBox(width: 9),
+                const Text(
+                  '记住登录状态',
+                  style: TextStyle(color: Colors.white, fontSize: 13),
+                ),
+              ],
             ),
-            const Text('记住登录', style: TextStyle(color: _muted, fontSize: 13)),
-            const Spacer(),
-            const Icon(Icons.shield_outlined,
-                size: 16, color: Color(0xffaa959f)),
-            const SizedBox(width: 5),
-            const Text(
-              '密码不会明文保存',
-              style: TextStyle(color: Color(0xffaa959f), fontSize: 11.5),
-            ),
-          ],
+          ),
         ),
-      ),
+        const Spacer(),
+        if (onForgot != null)
+          TextButton(
+            onPressed: onForgot,
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+            ),
+            child: const Text('忘记密码？'),
+          ),
+      ],
     );
   }
 }
@@ -1044,7 +1229,9 @@ class _AgreementRow extends StatelessWidget {
             value: value,
             onChanged:
                 onChanged == null ? null : (next) => onChanged!(next ?? false),
-            activeColor: _rose,
+            activeColor: Colors.white,
+            checkColor: _roseDeep,
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.82)),
             visualDensity: VisualDensity.compact,
           ),
         ),
@@ -1056,22 +1243,30 @@ class _AgreementRow extends StatelessWidget {
               children: [
                 const Text(
                   '已阅读并同意 ',
-                  style: TextStyle(color: _muted, fontSize: 12),
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
                 ),
                 GestureDetector(
                   onTap: onPrivacy,
                   child: const Text(
                     '《隐私政策》',
-                    style: TextStyle(color: _rose, fontSize: 12),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
                 const Text(' 与 ',
-                    style: TextStyle(color: _muted, fontSize: 12)),
+                    style: TextStyle(color: Colors.white70, fontSize: 12)),
                 GestureDetector(
                   onTap: onTerms,
                   child: const Text(
                     '《用户协议》',
-                    style: TextStyle(color: _rose, fontSize: 12),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ],
@@ -1094,10 +1289,14 @@ class _InlineNotice extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       decoration: BoxDecoration(
-        color: error ? const Color(0xffffedf2) : const Color(0xfffff4f8),
+        color: error
+            ? const Color(0x35ff315f)
+            : Colors.white.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: error ? const Color(0xffffcbd9) : const Color(0xffffdce8),
+          color: error
+              ? const Color(0x88ffb4c5)
+              : Colors.white.withValues(alpha: 0.2),
         ),
       ),
       child: Row(
@@ -1106,14 +1305,14 @@ class _InlineNotice extends StatelessWidget {
           Icon(
             error ? Icons.error_outline_rounded : Icons.info_outline_rounded,
             size: 17,
-            color: error ? const Color(0xffc84670) : _rose,
+            color: Colors.white,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               text,
               style: TextStyle(
-                color: error ? const Color(0xff9e385b) : _muted,
+                color: Colors.white,
                 fontSize: 12.5,
                 height: 1.4,
               ),

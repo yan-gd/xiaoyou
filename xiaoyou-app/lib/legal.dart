@@ -9,7 +9,7 @@ const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
 
-const _privacyConsentVersion = '2026-08-07-password-account';
+const _privacyConsentVersion = '2026-08-08-user-profile';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
 const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
 
@@ -71,6 +71,111 @@ Future<bool> showPrivacyConsentCard(BuildContext context) async {
     return true;
   }
   return false;
+}
+
+/// Prevents account/network initialization until first-run consent is given.
+class PrivacyConsentGate extends StatefulWidget {
+  const PrivacyConsentGate({required this.child, super.key});
+
+  final Widget child;
+
+  @override
+  State<PrivacyConsentGate> createState() => _PrivacyConsentGateState();
+}
+
+class _PrivacyConsentGateState extends State<PrivacyConsentGate> {
+  bool _checking = true;
+  bool _accepted = false;
+  bool _dialogOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final accepted = await hasPrivacyConsent();
+    if (!mounted) return;
+    setState(() {
+      _checking = false;
+      _accepted = accepted;
+    });
+    if (!accepted) WidgetsBinding.instance.addPostFrameCallback((_) => _show());
+  }
+
+  Future<void> _show() async {
+    if (!mounted || _dialogOpen || _accepted) return;
+    _dialogOpen = true;
+    final accepted = await showPrivacyConsentCard(context);
+    _dialogOpen = false;
+    if (mounted && accepted) setState(() => _accepted = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_accepted) return widget.child;
+    return Scaffold(
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xfffff8fc), Color(0xffffeaf4), Color(0xffeee8fa)],
+          ),
+        ),
+        child: Center(
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 350),
+            opacity: _checking ? 0.45 : 1,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 104,
+                  height: 104,
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.white,
+                    boxShadow: const [
+                      BoxShadow(
+                          color: Color(0x35a64c79),
+                          blurRadius: 38,
+                          offset: Offset(0, 16)),
+                    ],
+                    border: Border.all(color: Colors.white, width: 2),
+                  ),
+                  child: const ClipOval(
+                    child: Image(
+                        image: AssetImage('assets/xiaoyou-avatar.png'),
+                        fit: BoxFit.cover),
+                  ),
+                ),
+                const SizedBox(height: 22),
+                const Text('小悠',
+                    style: TextStyle(
+                        fontSize: 30,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xff3b2c34))),
+                const SizedBox(height: 8),
+                const Text('先了解彼此，再开始相伴',
+                    style: TextStyle(color: Color(0xff866f7b))),
+                if (!_checking) ...[
+                  const SizedBox(height: 26),
+                  FilledButton.icon(
+                    onPressed: _show,
+                    icon: const Icon(Icons.verified_user_outlined),
+                    label: const Text('查看隐私声明'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _PrivacyConsentDialog extends StatelessWidget {

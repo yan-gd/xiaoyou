@@ -2,6 +2,7 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
 import 'chat_screen.dart';
+import 'legal.dart';
 
 export 'chat_models.dart';
 export 'xiaoyou_api.dart';
@@ -96,7 +97,7 @@ class XiaoyouApp extends StatelessWidget {
           contentTextStyle: TextStyle(color: Colors.white),
         ),
       ),
-      home: const ChatScreen(),
+      home: const PrivacyConsentGate(child: ChatScreen()),
     );
   }
 }

@@ -21,6 +21,7 @@ import 'session_store.dart';
 import 'voice_recorder.dart';
 import 'voice_room_screen.dart';
 import 'xiaoyou_api.dart';
+import 'user_profile_sheet.dart';
 
 const _rose = Color(0xff9f4f79);
 const _roseDark = Color(0xff5c3047);
@@ -87,6 +88,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _systemNotificationsAllowed = false;
   bool _batteryOptimizationIgnored = true;
   bool _selectionMode = false;
+  bool _profilePromptActive = false;
   final Set<String> _transcribedIds = <String>{};
   final Set<String> _selectedIds = <String>{};
   final Set<String> _deletedMessageIds = <String>{};
@@ -545,6 +547,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         unawaited(_syncPushRegistration());
       }
       unawaited(_refreshMoodProfile(api));
+      if (!testMode && accountId != 'yoyo') {
+        unawaited(_ensureUserProfile(api));
+      }
       HapticFeedback.selectionClick();
     } catch (error) {
       if (!activated) {
@@ -2108,6 +2113,32 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         },
       ),
     );
+  }
+
+  Future<void> _ensureUserProfile(XiaoyouApi source) async {
+    if (_profilePromptActive || source.testMode || source.accountId == 'yoyo') {
+      return;
+    }
+    _profilePromptActive = true;
+    try {
+      final profile = await source.accountProfile();
+      if (!mounted ||
+          profile.profileCompleted ||
+          profile.testMode ||
+          _api != source) {
+        return;
+      }
+      await Navigator.of(context).push<XiaoyouUserProfile>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => UserProfileSheet(api: source, profile: profile),
+        ),
+      );
+    } catch (_) {
+      // Profile onboarding is non-blocking; account/chat remain usable.
+    } finally {
+      _profilePromptActive = false;
+    }
   }
 
   Future<void> _refreshMoodProfile([XiaoyouApi? source]) async {

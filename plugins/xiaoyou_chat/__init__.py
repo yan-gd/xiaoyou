@@ -157,6 +157,20 @@ class XiaoyouChat(Plugin):
                     session_id,
                 )
         kwargs["xiaoyou_recent_state_context"] = recent_state_context
+        user_profile_context = ""
+        if session_id and not ephemeral_session:
+            try:
+                from plugins.xiaoyou_common.app_user_profile import (
+                    load_profile_context,
+                )
+
+                user_profile_context = load_profile_context(session_id)
+            except Exception:
+                logger.exception(
+                    "[XiaoyouChat] failed to load isolated user profile session=%s",
+                    session_id,
+                )
+        kwargs["xiaoyou_user_profile_context"] = user_profile_context
 
         context_plan = plan_context(
             current_text,
@@ -435,6 +449,15 @@ Independent trial account rules:
             raw_context = str(raw_context or "").strip()
             if raw_context and raw_context != str(current_text or "").strip():
                 upstream_context = raw_context
+        user_profile_context = str(
+            kwargs.get("xiaoyou_user_profile_context") or ""
+        ).strip()
+        if user_profile_context:
+            upstream_context = "\n\n".join(
+                part
+                for part in ("【当前用户专属资料】\n" + user_profile_context, upstream_context)
+                if part
+            )
 
         if kwargs.get("short_memory_native_history_ready"):
             short_memory_context = kwargs.get("short_memory_summary_context", "")

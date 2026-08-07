@@ -39,6 +39,41 @@ class XiaoyouAuthConfig {
   final int resendInterval;
 }
 
+class XiaoyouUserProfile {
+  const XiaoyouUserProfile({
+    required this.accountId,
+    required this.displayName,
+    required this.birthday,
+    required this.aboutMe,
+    required this.relationshipStartedAt,
+    required this.relationshipDays,
+    required this.profileCompleted,
+    required this.testMode,
+  });
+
+  factory XiaoyouUserProfile.fromJson(Map<String, dynamic> json) =>
+      XiaoyouUserProfile(
+        accountId: '${json['account_id'] ?? ''}'.trim(),
+        displayName: '${json['display_name'] ?? ''}'.trim(),
+        birthday: '${json['birthday'] ?? ''}'.trim(),
+        aboutMe: '${json['about_me'] ?? ''}'.trim(),
+        relationshipStartedAt: DateTime.fromMillisecondsSinceEpoch(
+            asInt(json['relationship_started_at']) * 1000),
+        relationshipDays: max(1, asInt(json['relationship_days'])),
+        profileCompleted: json['profile_completed'] == true,
+        testMode: json['test_mode'] == true,
+      );
+
+  final String accountId;
+  final String displayName;
+  final String birthday;
+  final String aboutMe;
+  final DateTime relationshipStartedAt;
+  final int relationshipDays;
+  final bool profileCompleted;
+  final bool testMode;
+}
+
 class XiaoyouApi {
   XiaoyouApi({
     required String baseUrl,
@@ -305,6 +340,33 @@ class XiaoyouApi {
       query: {'device_id': deviceId},
     );
     return payload;
+  }
+
+  Future<XiaoyouUserProfile> accountProfile() async {
+    final payload = await _request(
+      'GET',
+      '/v1/account/profile',
+      query: {'device_id': deviceId},
+    );
+    return XiaoyouUserProfile.fromJson(payload);
+  }
+
+  Future<XiaoyouUserProfile> updateAccountProfile({
+    required String displayName,
+    String birthday = '',
+    String aboutMe = '',
+  }) async {
+    final payload = await _request(
+      'POST',
+      '/v1/account/profile',
+      body: {
+        'device_id': deviceId,
+        'display_name': displayName,
+        'birthday': birthday,
+        'about_me': aboutMe,
+      },
+    );
+    return XiaoyouUserProfile.fromJson(payload);
   }
 
   Future<List<RelationshipEntry>> relationshipEntries() async {

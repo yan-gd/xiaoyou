@@ -2326,6 +2326,12 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized(device_id):
             return
         device_id = self._device_id(device_id)
+        if parsed.path == "/v1/account/profile":
+            try:
+                self._json(200, self.plugin.auth.get_profile(self.auth_context))
+            except ValueError as error:
+                self._json(400, {"error": str(error)})
+            return
         if parsed.path == "/v1/profile":
             from plugins.xiaoyou_common.inner_state_service import (
                 get_inner_state_service,
@@ -2540,6 +2546,16 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if not self._authorized(self.headers.get("X-Device-Id", "")):
             return
         try:
+            if parsed.path == "/v1/account/profile":
+                payload = self._body()
+                profile = self.plugin.auth.update_profile(
+                    self.auth_context,
+                    payload.get("display_name"),
+                    birthday=payload.get("birthday"),
+                    about_me=payload.get("about_me"),
+                )
+                self._json(200, profile)
+                return
             if parsed.path == "/v1/image-messages":
                 image_bytes = self._image_body()
                 result = self.plugin.runtime.submit_image(

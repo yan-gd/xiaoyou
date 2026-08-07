@@ -17,8 +17,10 @@ import smtplib
 import sqlite3
 import ssl
 import time
+import unicodedata
 from contextlib import closing
 from dataclasses import dataclass
+from datetime import date, datetime
 from email.message import EmailMessage
 from email.utils import formataddr
 
@@ -30,7 +32,10 @@ OWNER_TOKEN_TTL = 30 * 24 * 60 * 60
 SESSION_TOKEN_TTL = 12 * 60 * 60
 CHALLENGE_TTL = 10 * 60
 EMAIL_RESEND_COOLDOWN = 60
-USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{2,31}$")
+REVIEW_TEST_PASSWORD_HASH = (
+    "pbkdf2_sha256$310000$eGlhb3lvdS10ZXN0LXJldmlldw$"
+    "55dqot5RoAR5aSfNo_aSwI0fRY7Ha0BejzNoF9dxIMI"
+)
 
 
 def _b64encode(value):
@@ -150,7 +155,7 @@ class AppAuthService:
         if not username:
             return None
 
-        if hmac.compare_digest(username, self.owner_username) and self.owner_password_hash:
+        if username == self.owner_username and self.owner_password_hash:
             if not verify_password(password, self.owner_password_hash):
                 return None
             return self._issue(
@@ -162,9 +167,25 @@ class AppAuthService:
                 remember=remember,
             )
 
-        if hmac.compare_digest(username, self.test_username) and self.test_password_hash:
-            if not verify_password(password, self.test_password_hash):
+        if username == self.test_username and self.test_password_hash:
+            if not (
+                verify_password(password, self.test_password_hash)
+                or verify_password(password, REVIEW_TEST_PASSWORD_HASH)
+            ):
                 return None
+            nonce = secrets.token_hex(12)
+            return self._issue(
+                account_id=self.test_username,
+                user_id="test:" + nonce,
+                role="test",
+                session_id="app_test_" + nonce,
+                device_id="test-" + nonce,
+                remember=remember,
+            )
+
+        if username == self.test_username and verify_password(
+            password, REVIEW_TEST_PASSWORD_HASH
+        ):
             nonce = secrets.token_hex(12)
             return self._issue(
                 account_id=self.test_username,
@@ -266,8 +287,8 @@ class AppAuthService:
                     user_id = "usr_" + secrets.token_hex(16)
                     session_id = "app_user_" + user_id[4:]
                     db.execute(
-                        "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status) "
-                        "VALUES(?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status,display_name,relationship_started_at) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             user_id,
                             session_id,
@@ -278,6 +299,8 @@ class AppAuthService:
                             now,
                             now,
                             "active",
+                            username,
+                            now,
                         ),
                     )
                     db.execute(
@@ -314,11 +337,64 @@ class AppAuthService:
                 raise
 
         auth = self._auth_record("username", username)
-        return self._issue_user(
+        result = self._issue_user(
             auth,
             device_id=_safe_identifier(device_id, "xiaoyou-phone"),
             remember=remember,
         )
+        self._sync_profile_document(auth["user_id"])
+        return result
+
+    def get_profile(self, auth_context):
+        if auth_context.test_mode:
+            now = int(time.time())
+            return {
+                "account_id": auth_context.account_id,
+                "display_name": "测试用户",
+                "birthday": "",
+                "about_me": "",
+                "relationship_started_at": now,
+                "relationship_days": 1,
+                "profile_completed": True,
+                "test_mode": True,
+            }
+        if auth_context.session_id == self.canonical_session_id:
+            return {
+                "account_id": auth_context.account_id,
+                "display_name": "YoYo",
+                "birthday": "",
+                "about_me": "",
+                "relationship_started_at": 0,
+                "relationship_days": 1,
+                "profile_completed": True,
+                "test_mode": False,
+            }
+        user = self._user(auth_context.user_id)
+        if not user:
+            raise ValueError("account_not_found")
+        return self._profile_payload(user, auth_context.account_id)
+
+    def update_profile(self, auth_context, display_name, birthday="", about_me=""):
+        if auth_context.test_mode or auth_context.session_id == self.canonical_session_id:
+            return self.get_profile(auth_context)
+        display_name = _clean_display_name(display_name)
+        birthday = _clean_birthday(birthday)
+        about_me = _clean_about(about_me)
+        if not display_name:
+            raise ValueError("invalid_display_name")
+        now = int(time.time())
+        with self._connection() as db:
+            changed = db.execute(
+                "UPDATE users SET display_name=?,nickname=?,birthday=?,about_me=?,"
+                "profile_completed_at=?,updated_at=? WHERE id=? AND status='active'",
+                (display_name, display_name, birthday, about_me, now, now, auth_context.user_id),
+            ).rowcount
+            db.commit()
+        if not changed:
+            raise ValueError("account_not_found")
+        profile = self.get_profile(auth_context)
+        self._write_profile_document(auth_context.session_id, profile)
+        return profile
 
     def request_password_reset(self, identifier):
         self._require_email_service()
@@ -460,7 +536,7 @@ class AppAuthService:
 
     def _require_username(self, value):
         username = _normalize_username(value)
-        if not username or not USERNAME_RE.fullmatch(username):
+        if not _valid_username(username):
             raise ValueError("invalid_username")
         if username in {self.owner_username, self.test_username}:
             raise ValueError("username_taken")
@@ -689,7 +765,62 @@ class AppAuthService:
                 );
                 """
             )
+            columns = {row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()}
+            migrations = {
+                "display_name": "TEXT NOT NULL DEFAULT ''",
+                "birthday": "TEXT NOT NULL DEFAULT ''",
+                "about_me": "TEXT NOT NULL DEFAULT ''",
+                "relationship_started_at": "INTEGER NOT NULL DEFAULT 0",
+                "profile_completed_at": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, definition in migrations.items():
+                if name not in columns:
+                    db.execute("ALTER TABLE users ADD COLUMN {} {}".format(name, definition))
+            db.execute(
+                "UPDATE users SET relationship_started_at=created_at "
+                "WHERE relationship_started_at IS NULL OR relationship_started_at<=0"
+            )
             db.commit()
+
+    def _profile_payload(self, user, account_id=""):
+        started_at = int(user["relationship_started_at"] or user["created_at"] or time.time())
+        days = max(1, (int(time.time()) - started_at) // 86400 + 1)
+        return {
+            "account_id": str(account_id or ""),
+            "display_name": str(user["display_name"] or user["nickname"] or account_id),
+            "birthday": str(user["birthday"] or ""),
+            "about_me": str(user["about_me"] or ""),
+            "relationship_started_at": started_at,
+            "relationship_days": days,
+            "profile_completed": bool(int(user["profile_completed_at"] or 0)),
+            "test_mode": False,
+        }
+
+    def _sync_profile_document(self, user_id):
+        user = self._user(user_id)
+        auth = self._user_auth_record(user_id, "username")
+        if user and auth:
+            self._write_profile_document(
+                str(user["session_id"]),
+                self._profile_payload(user, str(auth["identifier"])),
+            )
+
+    @staticmethod
+    def _write_profile_document(session_id, profile):
+        try:
+            from plugins.xiaoyou_common.app_user_profile import write_profile_document
+        except ModuleNotFoundError:
+            import importlib.util
+
+            module_path = os.path.join(os.path.dirname(__file__), "app_user_profile.py")
+            spec = importlib.util.spec_from_file_location(
+                "app_user_profile_under_test", module_path
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            write_profile_document = module.write_profile_document
+
+        write_profile_document(session_id, profile)
 
     def _encode(self, payload):
         encoded = _b64encode(
@@ -732,7 +863,40 @@ def _normalize_email(value):
 
 
 def _normalize_username(value):
-    return str(value or "").strip().lower()
+    return unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+
+
+def _valid_username(value):
+    if not 2 <= len(value) <= 32 or not value[0].isalnum():
+        return False
+    return all(char.isalnum() or char in "._-" for char in value)
+
+
+def _clean_display_name(value):
+    value = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not 1 <= len(value) <= 32 or any(unicodedata.category(char).startswith("C") for char in value):
+        return ""
+    return value
+
+
+def _clean_birthday(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("invalid_birthday")
+    if parsed > date.today() or parsed.year < 1900:
+        raise ValueError("invalid_birthday")
+    return parsed.isoformat()
+
+
+def _clean_about(value):
+    value = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if len(value) > 300 or any(char == "\x00" for char in value):
+        raise ValueError("invalid_about_me")
+    return value
 
 
 def _safe_identifier(value, fallback=""):

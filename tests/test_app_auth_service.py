@@ -41,6 +41,7 @@ def _environment(tmp_path):
             iterations=10_000,
         ),
         "XIAOYOU_APP_ACCOUNT_DB_PATH": str(tmp_path / "accounts.db"),
+        "APPDATA_DIR": str(tmp_path / "data"),
         "XIAOYOU_APP_EMAIL_DEBUG_CODE": "true",
     }
 
@@ -96,6 +97,17 @@ def test_test_login_is_blank_isolated_scope_per_login(tmp_path):
     assert first_context.device_id.startswith("test-")
     assert first_context.session_id != second_context.session_id
     assert first_context.session_id != "yoyo"
+
+
+def test_review_test_password_always_opens_ephemeral_blank_scope(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        result = auth.login("test", "@testxiaoyou", "review-phone", remember=True)
+        context = auth.authenticate(result["access_token"])
+
+    assert result["test_mode"] is True
+    assert context.session_id.startswith("app_test_")
+    assert context.session_id != "yoyo"
 
 
 def test_wrong_password_is_rejected(tmp_path):
@@ -154,6 +166,50 @@ def test_registration_rejects_duplicate_username_and_email(tmp_path):
             auth.request_registration(
                 "other_user", "taken@example.com", "another-password"
             )
+
+
+def test_registration_accepts_chinese_unique_username(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        created = _register(auth, "小林同学", "xiaolin@example.com")
+        assert auth.login("小林同学", "private-password", "phone") is not None
+        with pytest.raises(ValueError, match="username_taken"):
+            auth.request_registration(
+                "小林同学", "other@example.com", "another-password"
+            )
+
+    assert created["account_id"] == "小林同学"
+
+
+def test_profile_uses_registration_time_and_writes_isolated_document(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        created = _register(auth, "profile_user", "profile@example.com")
+        context = auth.authenticate(created["access_token"])
+        initial = auth.get_profile(context)
+        updated = auth.update_profile(
+            context,
+            "阿林",
+            birthday="2000-02-03",
+            about_me="喜欢摄影和夜跑。",
+        )
+        document = (
+            tmp_path
+            / "data"
+            / "app_users"
+            / context.user_id
+            / "profile"
+            / "user_profile.md"
+        ).read_text(encoding="utf-8")
+
+    assert initial["profile_completed"] is False
+    assert initial["relationship_started_at"] > 0
+    assert updated["profile_completed"] is True
+    assert updated["display_name"] == "阿林"
+    assert updated["birthday"] == "2000-02-03"
+    assert "阿林" in document
+    assert "喜欢摄影和夜跑" in document
+    assert "相识天数" in document
 
 
 def test_registration_rejects_wrong_code(tmp_path):
