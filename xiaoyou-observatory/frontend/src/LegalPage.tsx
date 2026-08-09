@@ -81,6 +81,7 @@ function PrivacyPolicy() {
         <DataRow><strong>通知</strong><span>展示新消息、主动提醒和会话通知</span><span>只能在打开 App 后看到新消息</span></DataRow>
         <DataRow><strong>照片/媒体保存</strong><span>选择要发送的图片，或将聊天图片保存到相册；旧版 Android 可能请求存储权限</span><span>不影响文字聊天，但无法使用相应媒体操作</span></DataRow>
         <DataRow><strong>生物识别</strong><span>使用系统指纹或面容解锁 App</span><span>可关闭 App 锁；小悠不读取、存储或上传生物特征模板</span></DataRow>
+        <DataRow><strong>剪切板（仅主动编辑时）</strong><span>仅当你主动打开输入框的文本编辑菜单或执行“粘贴”操作时，系统会检查剪切板是否包含可粘贴文本，并在你确认粘贴时读取所选文本；App 启动、切换前后台及无操作状态下不会主动读取剪切板</span><span>用于提供输入框的复制/粘贴能力；不使用该能力不影响账号登录、文字输入等基本功能。仅检查可粘贴状态不会上传剪切板内容；你主动粘贴并发送的内容按聊天与媒体规则处理</span></DataRow>
         <DataRow><strong>后台与自启动相关能力</strong><span>维持消息连接、接收推送及恢复未读消息</span><span>系统可能延迟后台通知；可随时在系统设置中关闭</span></DataRow>
       </DataTable>
       <p>权限均按具体功能触发申请。你可以在 Android“设置—应用—小悠—权限/通知”中随时调整授权。</p>

@@ -292,6 +292,11 @@ class _PrivacyConsentDialog extends StatelessWidget {
                             detail: '你主动发送的文字、语音和图片，以及为保持对话连续性所需的聊天记录与记忆。',
                           ),
                           _PrivacyItem(
+                            icon: Icons.content_paste_outlined,
+                            title: '剪切板',
+                            detail: '仅在你主动打开文本编辑菜单或执行粘贴时使用，不会在启动、后台或无操作时主动读取。',
+                          ),
+                          _PrivacyItem(
                             icon: Icons.notifications_none_rounded,
                             title: '设备与通知',
                             detail: '设备登录信息和通知标识，用于安全登录、消息同步及系统通知。',
