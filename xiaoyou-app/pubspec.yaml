@@ -29,6 +29,8 @@ flutter:
     - shaders/voice_orb.frag
     - shaders/digital_xiaoyou.frag
   assets:
+    - assets/QQ.png
+    - assets/login_background.png
     - assets/xiaoyou-avatar.png
     - assets/email-login.png
     - assets/achievements/

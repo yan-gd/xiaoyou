@@ -2505,6 +2505,24 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._json(400, {"error": "invalid_login_request"})
             return
+        if parsed.path == "/v1/auth/email/request":
+            self._auth_action(
+                lambda payload: self.plugin.auth.request_email_login(
+                    payload.get("email")
+                ),
+                success_status=202,
+            )
+            return
+        if parsed.path == "/v1/auth/email/verify":
+            self._auth_action(
+                lambda payload: self.plugin.auth.verify_email_login(
+                    payload.get("email"),
+                    payload.get("code"),
+                    payload.get("device_id"),
+                    remember=payload.get("remember", True),
+                )
+            )
+            return
         if parsed.path == "/v1/auth/register/request":
             self._auth_action(
                 lambda payload: self.plugin.auth.request_registration(

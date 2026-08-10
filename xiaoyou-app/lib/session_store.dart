@@ -134,6 +134,8 @@ class SessionStore {
   static const _showMessageTimeKey = 'xiaoyou.show_message_time';
   static const _favoriteMessageIdsKey = 'xiaoyou.favorite_message_ids';
   static const _deletedMessageIdsKey = 'xiaoyou.deleted_message_ids';
+  static const _firstRunOnboardingSeenKey =
+      'xiaoyou.first_run_onboarding_seen.v3';
   static const _tokenKey = 'xiaoyou.connection_token';
 
   final SharedPreferencesAsync _preferences;
@@ -249,6 +251,49 @@ class SessionStore {
     await _preferences.setString(
       _deletedMessageIdsKey,
       jsonEncode(normalized),
+    );
+  }
+
+  Future<Set<String>> _loadFirstRunOnboardingSeen() async {
+    final raw = await _preferences.getString(_firstRunOnboardingSeenKey);
+    if (raw == null || raw.trim().isEmpty) {
+      return <String>{};
+    }
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) {
+        return <String>{};
+      }
+      return decoded
+          .whereType<String>()
+          .where((value) => value.trim().isNotEmpty)
+          .toSet();
+    } catch (_) {
+      return <String>{};
+    }
+  }
+
+  Future<bool> hasSeenFirstRunOnboarding(String scope) async {
+    final normalized = scope.trim();
+    if (normalized.isEmpty) {
+      return false;
+    }
+    return (await _loadFirstRunOnboardingSeen()).contains(normalized);
+  }
+
+  Future<void> markFirstRunOnboardingSeen(String scope) async {
+    final normalized = scope.trim();
+    if (normalized.isEmpty) {
+      return;
+    }
+    final values = await _loadFirstRunOnboardingSeen();
+    if (!values.add(normalized)) {
+      return;
+    }
+    final sorted = values.toList()..sort();
+    await _preferences.setString(
+      _firstRunOnboardingSeenKey,
+      jsonEncode(sorted),
     );
   }
 

@@ -10,6 +10,7 @@ export 'xiaoyou_api.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  deferXiaoyouFirstFrame();
   await loadXiaoyouThemeMode();
   runApp(const XiaoyouApp());
 }

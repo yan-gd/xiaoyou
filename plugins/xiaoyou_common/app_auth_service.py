@@ -207,6 +207,92 @@ class AppAuthService:
         self._touch_user(auth["user_id"])
         return self._issue_user(auth, device_id=device_id, remember=remember)
 
+    def request_email_login(self, email):
+        self._require_email_service()
+        email = _normalize_email(email)
+        if not email:
+            raise ValueError("invalid_email")
+
+        email_auth = self._auth_record("email", email)
+        username_auth = None
+        if (
+            email_auth
+            and int(email_auth["verified"] or 0)
+            and email_auth["status"] == "active"
+        ):
+            username_auth = self._user_auth_record(
+                email_auth["user_id"], "username"
+            )
+
+        # Keep the request response non-enumerating: unknown/unusable emails
+        # receive the same public shape, but no message is sent.
+        if (
+            not username_auth
+            or not int(username_auth["verified"] or 0)
+            or username_auth["status"] != "active"
+        ):
+            return {"accepted": True, "expires_in": CHALLENGE_TTL}
+
+        if self._challenge_is_fresh(
+            "email_login", email, EMAIL_RESEND_COOLDOWN
+        ):
+            raise ValueError("email_code_too_frequent")
+
+        code = self._create_challenge(
+            "email_login",
+            email,
+            {
+                "user_id": str(username_auth["user_id"]),
+                "username": str(username_auth["identifier"]),
+            },
+        )
+        self._send_code(
+            email,
+            code,
+            "小悠登录验证码",
+            action="登录小悠",
+        )
+        return self._challenge_response(code)
+
+    def verify_email_login(
+        self, email, code, device_id, remember=True
+    ):
+        email = _normalize_email(email)
+        if not email:
+            raise ValueError("invalid_email")
+        payload = self._consume_challenge("email_login", email, code)
+        if payload is None:
+            raise ValueError("invalid_or_expired_code")
+
+        email_auth = self._auth_record("email", email)
+        if (
+            not email_auth
+            or not int(email_auth["verified"] or 0)
+            or email_auth["status"] != "active"
+            or str(payload.get("user_id") or "")
+            != str(email_auth["user_id"])
+        ):
+            raise ValueError("invalid_or_expired_code")
+
+        username_auth = self._user_auth_record(
+            email_auth["user_id"], "username"
+        )
+        if (
+            not username_auth
+            or not int(username_auth["verified"] or 0)
+            or username_auth["status"] != "active"
+        ):
+            raise ValueError("invalid_or_expired_code")
+
+        self._touch_user(username_auth["user_id"])
+        return self._issue_user(
+            username_auth,
+            device_id=_safe_identifier(
+                device_id, fallback="xiaoyou-phone"
+            ),
+            remember=remember,
+        )
+
     def request_registration(self, username, email, password):
         self._require_email_service()
         username = self._require_username(username)

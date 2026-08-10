@@ -138,6 +138,40 @@ def test_registration_creates_username_password_account(tmp_path):
     assert context.device_id.startswith("usr-")
 
 
+def test_email_code_login_uses_verified_bound_email(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        registered = _register(
+            auth,
+            "mail_login",
+            "mail-login@example.com",
+            "private-password",
+            "first-phone",
+        )
+        challenge = auth.request_email_login("mail-login@example.com")
+        login = auth.verify_email_login(
+            "mail-login@example.com",
+            challenge["debug_code"],
+            "second-phone",
+            remember=True,
+        )
+        registered_context = auth.authenticate(registered["access_token"])
+        login_context = auth.authenticate(login["access_token"])
+
+    assert login["account_id"] == "mail_login"
+    assert login_context.user_id == registered_context.user_id
+    assert login_context.session_id == registered_context.session_id
+    assert login_context.device_id.startswith("usr-")
+
+
+def test_unknown_email_login_request_does_not_reveal_account(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        result = auth.request_email_login("nobody@example.com")
+
+    assert result == {"accepted": True, "expires_in": 600}
+
+
 def test_registered_users_get_distinct_stable_memory_scopes(tmp_path):
     with patch.dict(os.environ, _environment(tmp_path), clear=True):
         auth = AppAuthService("yoyo")

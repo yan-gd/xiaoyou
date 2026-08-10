@@ -127,6 +127,38 @@ class XiaoyouApi {
     return _loginResult(values);
   }
 
+  static Future<Map<String, dynamic>> requestEmailLogin({
+    required String baseUrl,
+    required String email,
+  }) =>
+      _publicRequest(
+        baseUrl,
+        'POST',
+        '/v1/auth/email/request',
+        body: {'email': email},
+      );
+
+  static Future<XiaoyouLoginResult> verifyEmailLogin({
+    required String baseUrl,
+    required String email,
+    required String code,
+    required String deviceId,
+    required bool remember,
+  }) async {
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/email/verify',
+      body: {
+        'email': email,
+        'code': code,
+        'device_id': deviceId,
+        'remember': remember,
+      },
+    );
+    return _loginResult(values);
+  }
+
   static Future<XiaoyouAuthConfig> authConfig(String baseUrl) async {
     final values = await _publicRequest(baseUrl, 'GET', '/v1/auth/config');
     return XiaoyouAuthConfig(

@@ -22,7 +22,7 @@ import 'theme_controller.dart';
 import 'voice_recorder.dart';
 import 'voice_room_screen.dart';
 import 'xiaoyou_api.dart';
-import 'user_profile_sheet.dart';
+import 'first_run_onboarding.dart';
 
 const _rose = Color(0xff9f4f79);
 const _roseDark = Color(0xff5c3047);
@@ -90,6 +90,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _batteryOptimizationIgnored = true;
   bool _selectionMode = false;
   bool _profilePromptActive = false;
+  bool _firstRunOnboardingActive = false;
   final Set<String> _transcribedIds = <String>{};
   final Set<String> _selectedIds = <String>{};
   final Set<String> _deletedMessageIds = <String>{};
@@ -364,16 +365,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final privacyConsent = await hasPrivacyConsent();
       if (!mounted) return;
       if (!privacyConsent || saved == null) {
+        releaseXiaoyouFirstFrame();
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) unawaited(_openConnectionSheet());
         });
         return;
       }
       if (saved.appLockEnabled) {
+        releaseXiaoyouFirstFrame();
         await _unlock();
       } else {
         // _connect 内部会先加载本地档案再连接，避免并行竞态。
         await _connectSaved(saved);
+        releaseXiaoyouFirstFrame();
       }
     } catch (error) {
       if (!mounted) {
@@ -383,6 +387,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         _booting = false;
         _status = '本机登录信息读取失败';
       });
+      releaseXiaoyouFirstFrame();
       _showNotice('无法读取本机登录', '$error');
     }
   }
@@ -467,6 +472,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     String accountId = 'yoyo',
     bool testMode = false,
     required bool persist,
+    XiaoyouUserProfile? prefetchedProfile,
+    bool? prefetchedShouldOnboard,
   }) async {
     if (_connecting) {
       return;
@@ -485,7 +492,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final previousApi = _api;
     var activated = false;
     try {
-      await _restoreLocalArchive(
+      final onboardingKey = _firstRunOnboardingKey(
+        baseUrl: baseUrl,
+        accountId: accountId,
+        testMode: testMode,
+      );
+      final onboardingProfile =
+          prefetchedProfile != null && prefetchedShouldOnboard != null
+              ? (prefetchedShouldOnboard ? prefetchedProfile : null)
+              : await _firstRunProfileIfNeeded(
+                  api,
+                  onboardingKey,
+                );
+      if (!mounted) {
+        api.close();
+        return;
+      }
+      if (onboardingProfile != null) {
+        setState(() => _firstRunOnboardingActive = true);
+      }
+      final connectionFuture = () async {
+        await _restoreLocalArchive(
         baseUrl,
         accountId: accountId,
         testMode: testMode,
@@ -498,12 +525,28 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // 始终请求一次历史：本地已有缓存时它遇到首条重叠消息即停，
       // 只用于拿到服务器最新 last_event_sequence（保证 _poll 不漏消息）；
       // 本地为空（首次连接/清数据）时才使用其消息列表。
-      final history = await api.history(
-        stopAfterMessageIds: _messages
-            .where((message) => message.id.isNotEmpty)
-            .map((message) => message.id)
-            .toSet(),
-      );
+        return api.history(
+          stopAfterMessageIds: _messages
+              .where((message) => message.id.isNotEmpty)
+              .map((message) => message.id)
+              .toSet(),
+        );
+      }();
+      if (onboardingProfile != null) {
+        await Future.wait<void>([
+          connectionFuture.then<void>((_) {}),
+          _runFirstRunOnboarding(
+            api,
+            onboardingProfile,
+            onboardingKey,
+          ),
+        ]);
+        if (!mounted) {
+          api.close();
+          return;
+        }
+      }
+      final history = await connectionFuture;
       if (!mounted) {
         api.close();
         return;
@@ -532,6 +575,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ..clear()
           ..addAll(synchronizedMessages);
         _lastEventSequence = history.lastEventSequence;
+        _firstRunOnboardingActive = false;
         _status = '在线';
         if (persist) {
           _locked = false;
@@ -541,6 +585,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _scheduleArchiveSave(immediate: true);
       previousApi?.close();
       _registerDeliveryEvents(history.messages);
+
       // 连接完成后的收尾全部异步执行，不阻塞界面进入在线状态。
       _scrollToEnd(animated: false);
       if (!testMode) {
@@ -553,9 +598,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         unawaited(_syncPushRegistration());
       }
       unawaited(_refreshMoodProfile(api));
-      if (!testMode && accountId != 'yoyo') {
-        unawaited(_ensureUserProfile(api));
-      }
       HapticFeedback.selectionClick();
     } catch (error) {
       if (!activated) {
@@ -1490,6 +1532,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (result == null || !mounted) {
       return;
     }
+    setState(() {
+      _firstRunOnboardingActive = result.shouldOnboard == true;
+    });
     try {
       await _connect(
         baseUrl: result.baseUrl,
@@ -1498,6 +1543,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         accountId: result.login.accountId,
         testMode: result.login.testMode,
         persist: result.remember,
+        prefetchedProfile: result.profile,
+        prefetchedShouldOnboard: result.shouldOnboard,
       );
     } catch (error) {
       if (!mounted) {
@@ -2120,29 +2167,72 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _ensureUserProfile(XiaoyouApi source) async {
-    if (_profilePromptActive || source.testMode || source.accountId == 'yoyo') {
+  String _firstRunOnboardingKey({
+    required String baseUrl,
+    required String accountId,
+    required bool testMode,
+  }) {
+    final normalizedBase = baseUrl.replaceFirst(RegExp(r'/+$'), '');
+    final mode = testMode ? 'test' : 'user';
+    return '$normalizedBase|$mode|$accountId';
+  }
+
+  Future<XiaoyouUserProfile?> _firstRunProfileIfNeeded(
+    XiaoyouApi source,
+    String onboardingKey,
+  ) async {
+    try {
+      if (await _sessionStore.hasSeenFirstRunOnboarding(onboardingKey)) {
+        return null;
+      }
+      final profile = await source.accountProfile();
+      final specialAccount = source.testMode || source.accountId == 'yoyo';
+      if (!specialAccount && profile.profileCompleted) {
+        await _sessionStore.markFirstRunOnboardingSeen(onboardingKey);
+        return null;
+      }
+      return profile;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _runFirstRunOnboarding(
+    XiaoyouApi source,
+    XiaoyouUserProfile profile,
+    String onboardingKey,
+  ) async {
+    if (_profilePromptActive || !mounted) {
       return;
     }
     _profilePromptActive = true;
     try {
-      final profile = await source.accountProfile();
-      if (!mounted ||
-          profile.profileCompleted ||
-          profile.testMode ||
-          _api != source) {
-        return;
-      }
-      await Navigator.of(context).push<XiaoyouUserProfile>(
-        MaterialPageRoute(
-          fullscreenDialog: true,
-          builder: (_) => UserProfileSheet(api: source, profile: profile),
+      final result = await Navigator.of(context).push<FirstRunOnboardingResult>(
+        PageRouteBuilder<FirstRunOnboardingResult>(
+          opaque: true,
+          transitionDuration: Duration.zero,
+          reverseTransitionDuration: Duration.zero,
+          pageBuilder: (context, _, __) => FirstRunOnboardingScreen(
+            api: source,
+            profile: profile,
+          ),
+          transitionsBuilder: (context, animation, _, child) => FadeTransition(
+            opacity: CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutCubic,
+            ),
+            child: child,
+          ),
         ),
       );
+      if (result != null) {
+        await _sessionStore.markFirstRunOnboardingSeen(onboardingKey);
+      }
     } catch (_) {
-      // Profile onboarding is non-blocking; account/chat remain usable.
+      // Onboarding must never make a valid login unusable.
     } finally {
       _profilePromptActive = false;
+
     }
   }
 
@@ -2334,19 +2424,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     late final Widget screen;
-    if (_locked) {
+    if (_booting) {
+      screen = const FirstRunAppBootSurface();
+    } else if (_locked) {
       screen = _LockScreen(
         authenticating: _authenticating,
         onUnlock: _unlock,
         onReconnect: _openConnectionSheet,
       );
+    } else if ((_connecting && _api == null) || _firstRunOnboardingActive) {
+      screen = _firstRunOnboardingActive
+          ? const FirstRunOnboardingHandoff()
+          : const FirstRunAppBootSurface();
     } else if (_savedConnection == null &&
         _api == null &&
         !_booting &&
         !_connecting) {
-      screen = Scaffold(
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      );
+      screen = const FirstRunAppBootSurface();
     } else {
       screen = _buildConversation();
     }
