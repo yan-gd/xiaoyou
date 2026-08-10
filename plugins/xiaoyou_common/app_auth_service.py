@@ -32,6 +32,11 @@ OWNER_TOKEN_TTL = 30 * 24 * 60 * 60
 SESSION_TOKEN_TTL = 12 * 60 * 60
 CHALLENGE_TTL = 10 * 60
 EMAIL_RESEND_COOLDOWN = 60
+EMAIL_REQUEST_EMAIL_HOUR_LIMIT = 5
+EMAIL_REQUEST_EMAIL_DAY_LIMIT = 20
+EMAIL_REQUEST_IP_HOUR_LIMIT = 20
+EMAIL_REQUEST_IP_DAY_LIMIT = 60
+EMAIL_REQUEST_RETENTION = 24 * 60 * 60
 REVIEW_TEST_PASSWORD_HASH = (
     "pbkdf2_sha256$310000$eGlhb3lvdS10ZXN0LXJldmlldw$"
     "55dqot5RoAR5aSfNo_aSwI0fRY7Ha0BejzNoF9dxIMI"
@@ -207,11 +212,16 @@ class AppAuthService:
         self._touch_user(auth["user_id"])
         return self._issue_user(auth, device_id=device_id, remember=remember)
 
-    def request_email_login(self, email):
+    def request_email_login(self, email, client_ip=""):
         self._require_email_service()
         email = _normalize_email(email)
         if not email:
             raise ValueError("invalid_email")
+        self._enforce_email_request_limits(
+            email,
+            client_ip=client_ip,
+            purpose="email_login",
+        )
 
         email_auth = self._auth_record("email", email)
         username_auth = None
@@ -293,13 +303,18 @@ class AppAuthService:
             remember=remember,
         )
 
-    def request_registration(self, username, email, password):
+    def request_registration(self, username, email, password, client_ip=""):
         self._require_email_service()
         username = self._require_username(username)
         email = _normalize_email(email)
         if not email:
             raise ValueError("invalid_email")
         self._validate_password(password)
+        self._enforce_email_request_limits(
+            email,
+            client_ip=client_ip,
+            purpose="register",
+        )
         self._ensure_username_available(username)
 
         email_auth = self._auth_record("email", email)
@@ -482,9 +497,14 @@ class AppAuthService:
         self._write_profile_document(auth_context.session_id, profile)
         return profile
 
-    def request_password_reset(self, identifier):
+    def request_password_reset(self, identifier, client_ip=""):
         self._require_email_service()
         auth, email = self._resolve_account_and_email(identifier)
+        self._enforce_email_request_limits(
+            email or identifier,
+            client_ip=client_ip,
+            purpose="password_reset",
+        )
         # Do not reveal account existence. Unknown accounts get the same public response.
         if not auth or not email:
             return {"accepted": True, "expires_in": CHALLENGE_TTL}
@@ -657,6 +677,82 @@ class AppAuthService:
         email_auth = self._user_auth_record(auth["user_id"], "email")
         email = str(email_auth["identifier"] if email_auth else "")
         return auth, email
+
+    def _rate_limit_digest(self, scope, value):
+        value = str(value or "").strip().lower()
+        if not value:
+            return ""
+        return hmac.new(
+            self.secret.encode("utf-8"),
+            "{}\n{}".format(scope, value).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _enforce_email_request_limits(
+        self,
+        identifier,
+        *,
+        client_ip="",
+        purpose="email",
+    ):
+        now = int(time.time())
+        hour_cutoff = now - 60 * 60
+        day_cutoff = now - 24 * 60 * 60
+        checks = []
+
+        identifier_key = self._rate_limit_digest("email_identifier", identifier)
+        if identifier_key:
+            checks.append(
+                (
+                    "identifier",
+                    identifier_key,
+                    EMAIL_REQUEST_EMAIL_HOUR_LIMIT,
+                    EMAIL_REQUEST_EMAIL_DAY_LIMIT,
+                )
+            )
+
+        ip_key = self._rate_limit_digest("client_ip", client_ip)
+        if ip_key:
+            checks.append(
+                (
+                    "ip",
+                    ip_key,
+                    EMAIL_REQUEST_IP_HOUR_LIMIT,
+                    EMAIL_REQUEST_IP_DAY_LIMIT,
+                )
+            )
+
+        if not checks:
+            return
+
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "DELETE FROM auth_rate_events WHERE created_at<?",
+                (now - EMAIL_REQUEST_RETENTION,),
+            )
+            for scope, key_digest, hour_limit, day_limit in checks:
+                hour_count = db.execute(
+                    "SELECT COUNT(*) FROM auth_rate_events "
+                    "WHERE scope=? AND key_digest=? AND created_at>=?",
+                    (scope, key_digest, hour_cutoff),
+                ).fetchone()[0]
+                day_count = db.execute(
+                    "SELECT COUNT(*) FROM auth_rate_events "
+                    "WHERE scope=? AND key_digest=? AND created_at>=?",
+                    (scope, key_digest, day_cutoff),
+                ).fetchone()[0]
+                if int(hour_count) >= int(hour_limit) or int(day_count) >= int(day_limit):
+                    db.rollback()
+                    raise ValueError("email_request_rate_limited")
+
+            for scope, key_digest, _, _ in checks:
+                db.execute(
+                    "INSERT INTO auth_rate_events(scope,key_digest,purpose,created_at) "
+                    "VALUES(?,?,?,?)",
+                    (scope, key_digest, str(purpose or "email"), now),
+                )
+            db.commit()
 
     def _challenge_is_fresh(self, purpose, identifier, seconds):
         cutoff = int(time.time()) - max(0, int(seconds))
@@ -849,6 +945,15 @@ class AppAuthService:
                     code_digest TEXT NOT NULL, payload TEXT NOT NULL DEFAULT '{}', attempts INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, UNIQUE(purpose,identifier)
                 );
+                CREATE TABLE IF NOT EXISTS auth_rate_events(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scope TEXT NOT NULL,
+                    key_digest TEXT NOT NULL,
+                    purpose TEXT NOT NULL DEFAULT '',
+                    created_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_auth_rate_events_scope_key_time
+                    ON auth_rate_events(scope,key_digest,created_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()}

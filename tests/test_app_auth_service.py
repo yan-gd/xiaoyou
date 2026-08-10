@@ -359,3 +359,68 @@ def test_public_config_exposes_password_account_flow(tmp_path):
         "code_ttl": 600,
         "resend_interval": 60,
     }
+
+
+def test_email_login_keeps_profile_incomplete_until_onboarding(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        registered = _register(
+            auth,
+            "mail_onboarding",
+            "mail-onboarding@example.com",
+            "private-password",
+            "first-phone",
+        )
+        first_context = auth.authenticate(registered["access_token"])
+        assert auth.get_profile(first_context)["profile_completed"] is False
+
+        challenge = auth.request_email_login(
+            "mail-onboarding@example.com",
+            client_ip="203.0.113.10",
+        )
+        login = auth.verify_email_login(
+            "mail-onboarding@example.com",
+            challenge["debug_code"],
+            "second-phone",
+            remember=True,
+        )
+        login_context = auth.authenticate(login["access_token"])
+        profile = auth.get_profile(login_context)
+
+    assert profile["profile_completed"] is False
+    assert login_context.user_id == first_context.user_id
+    assert login_context.session_id == first_context.session_id
+
+
+def test_email_request_rate_limit_by_identifier(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        for index in range(MODULE.EMAIL_REQUEST_EMAIL_HOUR_LIMIT):
+            result = auth.request_email_login(
+                "unknown-rate@example.com",
+                client_ip="203.0.113.{}".format(index + 1),
+            )
+            assert result["accepted"] is True
+
+        with pytest.raises(ValueError, match="email_request_rate_limited"):
+            auth.request_email_login(
+                "unknown-rate@example.com",
+                client_ip="198.51.100.99",
+            )
+
+
+def test_email_request_rate_limit_by_ip(tmp_path):
+    with patch.dict(os.environ, _environment(tmp_path), clear=True):
+        auth = AppAuthService("yoyo")
+        for index in range(MODULE.EMAIL_REQUEST_IP_HOUR_LIMIT):
+            result = auth.request_email_login(
+                "unknown-ip-{}@example.com".format(index),
+                client_ip="203.0.113.77",
+            )
+            assert result["accepted"] is True
+
+        with pytest.raises(ValueError, match="email_request_rate_limited"):
+            auth.request_email_login(
+                "unknown-ip-overflow@example.com",
+                client_ip="203.0.113.77",
+            )

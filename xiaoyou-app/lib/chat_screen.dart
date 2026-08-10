@@ -2182,13 +2182,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     String onboardingKey,
   ) async {
     try {
-      if (await _sessionStore.hasSeenFirstRunOnboarding(onboardingKey)) {
-        return null;
-      }
+      final seen =
+          await _sessionStore.hasSeenFirstRunOnboarding(onboardingKey);
       final profile = await source.accountProfile();
       final specialAccount = source.testMode || source.accountId == 'yoyo';
-      if (!specialAccount && profile.profileCompleted) {
-        await _sessionStore.markFirstRunOnboardingSeen(onboardingKey);
+      if (specialAccount) {
+        return seen ? null : profile;
+      }
+      // Normal registered accounts follow the server profile state. If the user
+      // skipped or a stale local flag was written, an incomplete profile must
+      // still re-enter onboarding on the next login.
+      if (profile.profileCompleted) {
+        if (!seen) {
+          await _sessionStore.markFirstRunOnboardingSeen(onboardingKey);
+        }
         return null;
       }
       return profile;

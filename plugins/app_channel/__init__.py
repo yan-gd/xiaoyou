@@ -8,6 +8,7 @@ second chat model, memory database, or turn scheduler.
 
 import base64
 import hmac
+import ipaddress
 import json
 import mimetypes
 import os
@@ -2290,6 +2291,22 @@ class AppRequestHandler(BaseHTTPRequestHandler):
     plugin = None
     auth_context = None
 
+    def _client_ip(self):
+        candidates = [
+            self.headers.get("X-Real-IP", ""),
+            (self.headers.get("X-Forwarded-For", "").split(",")[0]).strip(),
+            str((self.client_address or ("", 0))[0] or ""),
+        ]
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if not value:
+                continue
+            try:
+                return str(ipaddress.ip_address(value))
+            except ValueError:
+                continue
+        return ""
+
     def log_message(self, format_string, *args):
         if args and isinstance(args[0], str) and "ticket=" in args[0]:
             args = (
@@ -2508,7 +2525,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/auth/email/request":
             self._auth_action(
                 lambda payload: self.plugin.auth.request_email_login(
-                    payload.get("email")
+                    payload.get("email"),
+                    client_ip=self._client_ip(),
                 ),
                 success_status=202,
             )
@@ -2529,6 +2547,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
                     payload.get("username"),
                     payload.get("email"),
                     payload.get("password"),
+                    client_ip=self._client_ip(),
                 ),
                 success_status=202,
             )
@@ -2547,7 +2566,8 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/auth/password/reset/request":
             self._auth_action(
                 lambda payload: self.plugin.auth.request_password_reset(
-                    payload.get("identifier")
+                    payload.get("identifier"),
+                    client_ip=self._client_ip(),
                 ),
                 success_status=202,
             )
@@ -3151,7 +3171,9 @@ class AppRequestHandler(BaseHTTPRequestHandler):
             result = action(payload)
             self._json(success_status, result or {"ok": True})
         except ValueError as error:
-            self._json(400, {"error": str(error)[:80]})
+            code = str(error)[:80]
+            status = 429 if code == "email_request_rate_limited" else 400
+            self._json(status, {"error": code})
         except (UnicodeDecodeError, json.JSONDecodeError):
             self._json(400, {"error": "invalid_auth_request"})
         except RuntimeError as error:

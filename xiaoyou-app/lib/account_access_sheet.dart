@@ -420,8 +420,12 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
       final store = SessionStore();
       final seen = await store.hasSeenFirstRunOnboarding(onboardingKey);
       final specialAccount = login.testMode || login.accountId == 'yoyo';
-      shouldOnboard =
-          !seen && (specialAccount || !fetchedProfile.profileCompleted);
+      // For normal registered users the server-side profile completion flag is
+      // authoritative. A stale local "seen" flag must never suppress unfinished
+      // onboarding, including sessions created through email-code login.
+      shouldOnboard = specialAccount
+          ? !seen
+          : !fetchedProfile.profileCompleted;
       if (!specialAccount && fetchedProfile.profileCompleted && !seen) {
         await store.markFirstRunOnboardingSeen(onboardingKey);
       }
@@ -468,6 +472,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
     if (value.contains('registration_mismatch')) return '注册信息已变化，请重新获取验证码';
     if (value.contains('invalid_or_expired_code')) return '验证码错误或已过期，请重新获取';
     if (value.contains('email_code_too_frequent')) return '验证码刚刚已经发送，请稍后再获取';
+    if (value.contains('email_request_rate_limited')) {
+      return '验证码请求过于频繁，请稍后再试';
+    }
     if (value.contains('account_disabled')) return '这个账号当前不可用';
     if (value.contains('email_service_unavailable')) return '邮箱验证服务暂不可用，请稍后再试';
     if (value.contains('auth_service_unavailable')) return '账号服务正在维护，请稍后再试';
