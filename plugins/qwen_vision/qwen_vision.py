@@ -2,6 +2,8 @@
 import os
 import time
 import base64
+import hashlib
+import io
 import json
 import mimetypes
 import threading
@@ -40,7 +42,7 @@ THREAD_STARTED = False
 @plugins.register(
     name="QwenVision",
     desc="Use Qwen VLM to understand WeChat images with following user question",
-    version="1.3-immediate-recompute",
+    version="1.4-lightweight-vision",
     author="yoyo",
     desire_priority=980,
 )
@@ -834,17 +836,16 @@ class QwenVision(Plugin):
             content=joined_query,
             session_id=session_id,
             long_memory_query=joined_query,
-            long_memory_max_results=max(1, int(os.getenv("VISION_MEMORY_TOP_N", "10"))),
+            long_memory_max_results=max(1, int(os.getenv("VISION_MEMORY_TOP_N", "4"))),
             include_character=True,
             include_short_memory=True,
-            short_memory_max_chars=max(1000, int(os.getenv("VISION_CONTEXT_MAX_CHARS", "5000"))),
+            short_memory_max_chars=max(1000, int(os.getenv("VISION_CONTEXT_MAX_CHARS", "2400"))),
             component="QwenVision",
         )
         identity_context = identity_context if isinstance(identity_context, dict) else {}
         provenance = identity_context.get("provenance") if isinstance(identity_context.get("provenance"), dict) else {}
         profile = identity_context.get("profile") if isinstance(identity_context.get("profile"), dict) else {}
         yoyo_profile = identity_context.get("yoyo_profile") if isinstance(identity_context.get("yoyo_profile"), dict) else {}
-        recent_photos = identity_context.get("recent_photos") if isinstance(identity_context.get("recent_photos"), list) else []
 
         if followup_texts:
             joined = "\n".join("%d. %s" % (idx + 1, text) for idx, text in enumerate(followup_texts))
@@ -868,7 +869,7 @@ class QwenVision(Plugin):
                 ensure_ascii=False,
             )
         else:
-            identity_fact = """图片来源没有与小悠近期生成记录确定匹配。当前图片之后可能附带两类、且已明确标注身份的参考图：小悠参考图只用于判断图片中的女性是否是小悠；YoYo参考图只用于判断图片中的男性是否是YoYo本人。参考图不是YoYo本轮发送的聊天内容，绝不能互相混淆或把两张脸融合。请综合稳定脸型和五官比例判断，眼镜、发型、衣服、表情与光线都可能变化。只有证据充分时才自然认出对应本人；不确定时允许表达不确定，不能硬认。若认出YoYo，应直接把图中男性当作正在聊天的“你”，不要称为陌生男生。"""
+            identity_fact = """本地没有确认当前图片来自小悠近期生活照。后续参考图只用于人物身份比对：xiaoyou 只定义小悠，yoyo 只定义YoYo；参考图不是本轮聊天图片，不能混淆或融合身份。只有证据充分时才认出本人，不确定就保持不确定；认出YoYo时直接把图中男性称为“你”。"""
 
         return f"""{base_prompt}
 
@@ -887,8 +888,6 @@ class QwenVision(Plugin):
 YoYo稳定视觉身份档案：
 {json.dumps(yoyo_profile, ensure_ascii=False)}
 
-小悠近期亲自分享过的生活照记录：
-{json.dumps(recent_photos, ensure_ascii=False)}
 
 当前图片身份事实：
 {identity_fact}
@@ -938,11 +937,15 @@ YoYo稳定视觉身份档案：
                 {"path": path, "identity": "xiaoyou", "label": "小悠人脸身份参考"}
                 for path in list(reference_paths or [])
             ]
+        maximum = max(0, int(os.getenv("VISION_IDENTITY_REFERENCE_MAX", "2")))
+        selected_references = self._select_identity_references(
+            normalized_references,
+            maximum,
+        )
         reference_count = 0
-        maximum = max(1, int(os.getenv("VISION_IDENTITY_REFERENCE_MAX", "3")))
-        for item in normalized_references[:maximum]:
+        for item in selected_references:
             path = item.get("path")
-            reference_url = self._image_data_url(path)
+            reference_url = self._optimized_reference_data_url(path)
             if not reference_url:
                 continue
             reference_count += 1
@@ -966,15 +969,16 @@ YoYo稳定视觉身份档案：
                     "content": content,
                 }
             ],
-            "max_tokens": 800,
+            "max_tokens": 300,
             "temperature": 0.7,
             **build_thinking_payload("VISION"),
         }
 
         logger.info(
-            "[QwenVision] ask vision model=%s identity_references=%s",
+            "[QwenVision] ask vision model=%s identity_references=%s prompt_chars=%s",
             model,
             reference_count,
+            len(prompt),
         )
         result = chat_completion(
             component="QwenVision",
@@ -989,6 +993,151 @@ YoYo稳定视觉身份档案：
                 % (result.error_kind, result.status_code, result.error_code)
             )
         return result.content.strip()
+
+    def _select_identity_references(self, references, maximum):
+        maximum = max(0, int(maximum or 0))
+        if maximum <= 0:
+            return []
+
+        clean = [item for item in list(references or []) if isinstance(item, dict)]
+        selected = []
+        used_paths = set()
+
+        # Keep identity coverage before adding redundant angles of the same face.
+        for identity in ("xiaoyou", "yoyo"):
+            for item in clean:
+                if str(item.get("identity") or "").strip().lower() != identity:
+                    continue
+                path = os.path.realpath(str(item.get("path") or ""))
+                if not path or path in used_paths:
+                    continue
+                selected.append(item)
+                used_paths.add(path)
+                break
+            if len(selected) >= maximum:
+                return selected[:maximum]
+
+        for item in clean:
+            path = os.path.realpath(str(item.get("path") or ""))
+            if not path or path in used_paths:
+                continue
+            selected.append(item)
+            used_paths.add(path)
+            if len(selected) >= maximum:
+                break
+        return selected[:maximum]
+
+    def _optimized_reference_data_url(self, path):
+        real_path = os.path.realpath(str(path or ""))
+        if not real_path or not os.path.isfile(real_path):
+            return ""
+
+        try:
+            stat = os.stat(real_path)
+            max_side = max(
+                640,
+                min(1600, int(os.getenv("VISION_REFERENCE_MAX_SIDE", "1024"))),
+            )
+            quality = max(
+                68,
+                min(92, int(os.getenv("VISION_REFERENCE_JPEG_QUALITY", "84"))),
+            )
+            target_bytes = max(
+                160,
+                int(os.getenv("VISION_REFERENCE_TARGET_MAX_KB", "350")),
+            ) * 1024
+            cache_dir = os.getenv(
+                "VISION_REFERENCE_CACHE_DIR",
+                "/app/data/qwen_vision/reference_cache",
+            ).strip() or "/app/data/qwen_vision/reference_cache"
+            os.makedirs(cache_dir, exist_ok=True)
+
+            cache_key = hashlib.sha256(
+                ("%s|%s|%s|%s|%s|%s" % (
+                    real_path,
+                    stat.st_size,
+                    stat.st_mtime_ns,
+                    max_side,
+                    quality,
+                    target_bytes,
+                )).encode("utf-8")
+            ).hexdigest()
+            cache_path = os.path.join(cache_dir, cache_key + ".jpg")
+
+            if os.path.isfile(cache_path) and os.path.getsize(cache_path) >= 1024:
+                with open(cache_path, "rb") as handle:
+                    raw = handle.read()
+                logger.info(
+                    "[QwenVision] identity reference cache hit original_bytes=%s optimized_bytes=%s",
+                    stat.st_size,
+                    len(raw),
+                )
+                return "data:image/jpeg;base64,%s" % base64.b64encode(raw).decode("ascii")
+
+            from PIL import Image, ImageOps
+
+            with Image.open(real_path) as source:
+                image = ImageOps.exif_transpose(source)
+                image.thumbnail(
+                    (max_side, max_side),
+                    getattr(Image, "Resampling", Image).LANCZOS,
+                )
+                if image.mode in ("RGBA", "LA"):
+                    rgba = image.convert("RGBA")
+                    background = Image.new("RGB", rgba.size, (255, 255, 255))
+                    background.paste(rgba, mask=rgba.getchannel("A"))
+                    image = background
+                else:
+                    image = image.convert("RGB")
+
+                working = image
+                encoded = b""
+                for _resize_round in range(4):
+                    for candidate_quality in range(quality, 67, -4):
+                        output = io.BytesIO()
+                        working.save(
+                            output,
+                            format="JPEG",
+                            quality=candidate_quality,
+                            optimize=True,
+                            progressive=True,
+                            subsampling=1,
+                        )
+                        encoded = output.getvalue()
+                        if len(encoded) <= target_bytes:
+                            break
+                    if len(encoded) <= target_bytes:
+                        break
+                    next_size = (
+                        max(1, int(working.width * 0.84)),
+                        max(1, int(working.height * 0.84)),
+                    )
+                    if next_size == working.size or max(next_size) < 480:
+                        break
+                    working = working.resize(
+                        next_size,
+                        getattr(Image, "Resampling", Image).LANCZOS,
+                    )
+
+            if not encoded:
+                return ""
+
+            temp_path = cache_path + ".tmp"
+            with open(temp_path, "wb") as handle:
+                handle.write(encoded)
+            os.replace(temp_path, cache_path)
+            logger.info(
+                "[QwenVision] identity reference optimized original_bytes=%s optimized_bytes=%s max_side=%s",
+                stat.st_size,
+                len(encoded),
+                max_side,
+            )
+            return "data:image/jpeg;base64,%s" % base64.b64encode(encoded).decode("ascii")
+        except Exception:
+            logger.exception("[QwenVision] failed to optimize identity reference")
+            # Correctness first: fall back to the original reference rather than
+            # dropping identity recognition because an optional optimization failed.
+            return self._image_data_url(real_path)
 
     def _image_data_url(self, path):
         path = os.path.realpath(str(path or ""))

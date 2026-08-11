@@ -243,10 +243,14 @@ services: # Docker Compose 服务集合。
       VISION_CHECK_INTERVAL: '0.5' # 每0.5秒扫描一次待处理图片任务。
       VISION_MAX_FOLLOWUP_MESSAGES: '6' # 一张图片最多合并6条后续补充消息。
       VISION_MAX_FOLLOWUP_CHARS: '500' # 图片补充文字合计最多500字符。
-      VISION_CONTEXT_MAX_CHARS: '5000' # 看图时最多注入5000字符的图片之前近期聊天。
-      VISION_MEMORY_TOP_N: '10' # 有补充文字时最多检索10条相关长期记忆；不改变长期记忆写入。
+      VISION_CONTEXT_MAX_CHARS: '2400' # 视觉回复只注入最近2400字符真实聊天，减少多模态输入负担。
+      VISION_MEMORY_TOP_N: '4' # 仅图片补话时最多检索4条相关长期记忆；纯图片本来就不会检索长期记忆。
       VISION_REFERENCE_MAX_MB: '8' # 当前图片或单张身份参考图允许编码进视觉请求的最大体积，单位MB。
-      VISION_IDENTITY_REFERENCE_MAX: '3' # 单次看图最多附带3张身份比对图：2张小悠人脸和1张YoYo真实自拍。
+      VISION_REFERENCE_MAX_SIDE: '1024' # 人脸身份参考图最长边压到1024，降低视觉token与上传负担。
+      VISION_REFERENCE_JPEG_QUALITY: '84' # 人脸参考图JPEG初始质量；只影响身份参考，不压缩用户当前图片。
+      VISION_REFERENCE_TARGET_MAX_KB: '350' # 单张身份参考图目标约350KB，并缓存到data目录复用。
+      VISION_REFERENCE_CACHE_DIR: '/app/data/qwen_vision/reference_cache' # 压缩后身份参考缓存；data卷持久化。
+      VISION_IDENTITY_REFERENCE_MAX: '2' # 身份参考最多2张；代码优先保留1张小悠与1张YoYo参考。
       VISION_IDENTITY_HASH_DISTANCE: '8' # 微信压缩后图片感知哈希允许最多8位差异；越大越宽松，也越可能误匹配。
 
       # ===== 兼容性本地记忆配置 =====
