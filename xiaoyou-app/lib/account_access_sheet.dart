@@ -108,7 +108,12 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
   Future<void> _loadInitialState() async {
     final consent = await hasPrivacyConsent();
     if (!mounted) return;
-    setState(() => _agreed = consent);
+
+    // The authentication-page agreement must always start unchecked. A
+    // previously stored privacy consent may unlock config loading, but it must
+    // never count as an active consent action for the current login/register
+    // attempt.
+    setState(() => _agreed = false);
     if (consent) unawaited(_loadConfig());
   }
 
@@ -423,9 +428,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
       // For normal registered users the server-side profile completion flag is
       // authoritative. A stale local "seen" flag must never suppress unfinished
       // onboarding, including sessions created through email-code login.
-      shouldOnboard = specialAccount
-          ? !seen
-          : !fetchedProfile.profileCompleted;
+      shouldOnboard = specialAccount ? !seen : !fetchedProfile.profileCompleted;
       if (!specialAccount && fetchedProfile.profileCompleted && !seen) {
         await store.markFirstRunOnboardingSeen(onboardingKey);
       }
@@ -463,22 +466,48 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
 
   String _friendly(Object error) {
     final value = '$error';
-    if (value.contains('invalid_credentials')) return '账号或密码不正确';
-    if (value.contains('invalid_username')) return '账号格式不正确';
-    if (value.contains('username_taken')) return '这个账号已经被使用';
-    if (value.contains('invalid_email')) return '请输入有效的邮箱地址';
-    if (value.contains('email_already_registered')) return '这个邮箱已经绑定其他账号';
-    if (value.contains('invalid_password_length')) return '密码至少 8 位，且不要超过 72 字节';
-    if (value.contains('registration_mismatch')) return '注册信息已变化，请重新获取验证码';
-    if (value.contains('invalid_or_expired_code')) return '验证码错误或已过期，请重新获取';
-    if (value.contains('email_code_too_frequent')) return '验证码刚刚已经发送，请稍后再获取';
-    if (value.contains('email_request_rate_limited')) {
-      return '验证码请求过于频繁，请稍后再试';
+
+    if (value.contains('invalid_credentials')) {
+      return '????????';
     }
-    if (value.contains('account_disabled')) return '这个账号当前不可用';
-    if (value.contains('email_service_unavailable')) return '邮箱验证服务暂不可用，请稍后再试';
-    if (value.contains('auth_service_unavailable')) return '账号服务正在维护，请稍后再试';
-    return '暂时无法完成操作，请检查网络后重试';
+    if (value.contains('invalid_username')) {
+      return '???????';
+    }
+    if (value.contains('username_taken')) {
+      return '?????????';
+    }
+    if (value.contains('invalid_email')) {
+      return '??????????';
+    }
+    if (value.contains('email_already_registered')) {
+      return '????????????';
+    }
+    if (value.contains('invalid_password_length')) {
+      return '???? 8 ??????? 72 ??';
+    }
+    if (value.contains('registration_mismatch')) {
+      return '????????????????';
+    }
+    if (value.contains('invalid_or_expired_code')) {
+      return '???????????????';
+    }
+    if (value.contains('email_code_too_frequent')) {
+      return '????????????????';
+    }
+    if (value.contains('email_request_rate_limited')) {
+      return '???????????????';
+    }
+    if (value.contains('account_disabled')) {
+      return '?????????';
+    }
+    if (value.contains('email_service_unavailable')) {
+      return '????????????????';
+    }
+    if (value.contains('auth_service_unavailable')) {
+      return '??????????????';
+    }
+
+    return '?????????????????';
   }
 
   String get _title => switch (_mode) {
@@ -493,9 +522,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         _AccountMode.emailLogin => _codeSent
             ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效'
             : '使用绑定邮箱获取验证码，无需输入密码',
-        _AccountMode.register => _codeSent
-            ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效'
-            : '邮箱只用于验证与找回密码',
+        _AccountMode.register =>
+          _codeSent ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效' : '邮箱只用于验证与找回密码',
         _AccountMode.reset => _codeSent ? '输入验证码并设置新密码' : '验证绑定邮箱后即可重置密码',
       };
 
@@ -666,9 +694,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
               Padding(
                 padding: const EdgeInsets.only(top: 2),
                 child: _InlineModeButton(
-                  label: loginMode
-                      ? '注册'
-                      : (emailLoginMode ? '账号登录' : '登录'),
+                  label: loginMode ? '注册' : (emailLoginMode ? '账号登录' : '登录'),
                   onTap: _busy
                       ? null
                       : () => _switchMode(
@@ -690,9 +716,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
             const SizedBox(height: 8),
             _RememberRow(
               value: _remember,
-              onChanged: _busy
-                  ? null
-                  : (value) => setState(() => _remember = value),
+              onChanged:
+                  _busy ? null : (value) => setState(() => _remember = value),
               onForgot: loginMode && !_busy
                   ? () => _switchMode(_AccountMode.reset)
                   : null,
@@ -707,9 +732,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
           SizedBox(height: registerMode ? 10 : 13),
           _AgreementRow(
             value: _agreed,
-            onChanged: _busy
-                ? null
-                : (value) => unawaited(_setAgreement(value)),
+            onChanged:
+                _busy ? null : (value) => unawaited(_setAgreement(value)),
             onPrivacy: () => _openDocument(xiaoyouPrivacyPolicyUrl),
             onTerms: () => _openDocument(xiaoyouUserAgreementUrl),
           ),
@@ -925,8 +949,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(28),
-            borderSide:
-                const BorderSide(color: Color(0xff9d92f7), width: 1.5),
+            borderSide: const BorderSide(color: Color(0xff9d92f7), width: 1.5),
           ),
         ),
       ),
@@ -991,9 +1014,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
             _QQButton(onTap: _busy ? null : _qqLogin),
             const SizedBox(width: 42),
             _EmailLoginButton(
-              onTap: _busy
-                  ? null
-                  : () => _switchMode(_AccountMode.emailLogin),
+              onTap: _busy ? null : () => _switchMode(_AccountMode.emailLogin),
             ),
           ],
         ),
@@ -1074,8 +1095,7 @@ class _AuthSheet extends StatelessWidget {
           height: double.infinity,
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.965),
-            borderRadius:
-                const BorderRadius.vertical(top: Radius.circular(42)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(42)),
             border: Border(
               top: BorderSide(
                 color: Colors.white.withValues(alpha: 0.98),
@@ -1194,7 +1214,8 @@ class _BouncyPrimaryButtonState extends State<_BouncyPrimaryButton> {
   Widget build(BuildContext context) {
     return GestureDetector(
       onTapDown: widget.enabled ? (_) => setState(() => _pressed = true) : null,
-      onTapCancel: widget.enabled ? () => setState(() => _pressed = false) : null,
+      onTapCancel:
+          widget.enabled ? () => setState(() => _pressed = false) : null,
       onTapUp: widget.enabled
           ? (_) {
               setState(() => _pressed = false);
@@ -1319,9 +1340,8 @@ class _QQButtonState extends State<_QQButton> {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: widget.onTap == null
-          ? null
-          : (_) => setState(() => _pressed = true),
+      onTapDown:
+          widget.onTap == null ? null : (_) => setState(() => _pressed = true),
       onTapCancel:
           widget.onTap == null ? null : () => setState(() => _pressed = false),
       onTapUp: widget.onTap == null
@@ -1389,9 +1409,8 @@ class _EmailLoginButtonState extends State<_EmailLoginButton> {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: widget.onTap == null
-          ? null
-          : (_) => setState(() => _pressed = true),
+      onTapDown:
+          widget.onTap == null ? null : (_) => setState(() => _pressed = true),
       onTapCancel:
           widget.onTap == null ? null : () => setState(() => _pressed = false),
       onTapUp: widget.onTap == null
