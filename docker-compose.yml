@@ -238,8 +238,8 @@ services: # Docker Compose 服务集合。
       VISION_MODEL: 'qwen3.7-max-2026-06-08' # 分析用户图片所用的视觉模型。
       VISION_ENABLE_THINKING: 'false' # 视觉理解关闭思考以降低延迟；复杂推理可改为true。
       VISION_IMAGE_TTL: '250' # 待处理图片最多保留250秒，超时后丢弃以免错配后续文字。
-      VISION_IMAGE_WAIT_SECONDS: '10.0' # 收到图片后最多等待10秒，让用户补充说明文字。
-      VISION_TEXT_SETTLE_SECONDS: '6.0' # 最后一条图片补充文字后等待6秒再统一理解。
+      VISION_IMAGE_WAIT_SECONDS: '0' # 收到图片后立即提交视觉分析；新输入通过版本机制使旧结果失效。
+      VISION_TEXT_SETTLE_SECONDS: '0' # 图片补话确认后立即重算，不再额外等待固定时间窗。
       VISION_CHECK_INTERVAL: '0.5' # 每0.5秒扫描一次待处理图片任务。
       VISION_MAX_FOLLOWUP_MESSAGES: '6' # 一张图片最多合并6条后续补充消息。
       VISION_MAX_FOLLOWUP_CHARS: '500' # 图片补充文字合计最多500字符。

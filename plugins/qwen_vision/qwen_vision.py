@@ -33,13 +33,14 @@ from plugins.xiaoyou_common.relationship_profile_service import (
 # session_id -> pending image context
 PENDING_IMAGES = {}
 LOCK = threading.Lock()
+WAKE_EVENT = threading.Event()
 THREAD_STARTED = False
 
 
 @plugins.register(
     name="QwenVision",
     desc="Use Qwen VLM to understand WeChat images with following user question",
-    version="1.2-couple-visual-identity",
+    version="1.3-immediate-recompute",
     author="yoyo",
     desire_priority=980,
 )
@@ -113,6 +114,10 @@ class QwenVision(Plugin):
                 "[YoYo 发来了一张图片]",
             )
 
+            # Start visual analysis immediately. The model execution time itself
+            # is the natural continuation window; newer input invalidates this
+            # revision instead of forcing every image to wait first.
+            WAKE_EVENT.set()
             e_context.action = EventAction.BREAK
 
         except Exception:
@@ -129,7 +134,7 @@ class QwenVision(Plugin):
         if not user_text:
             return
 
-        if self._has_pending_user_image(session_id, receiver):
+        if self._reserve_pending_followup(session_id, receiver):
             semantic_route = classify_photo_semantics(
                 text=user_text,
                 session_id=session_id,
@@ -153,7 +158,7 @@ class QwenVision(Plugin):
         with LOCK:
             # 1. 优先精确匹配 session_id
             item = PENDING_IMAGES.get(session_id)
-            if item and item.get("status") in ("waiting", "sending"):
+            if item and item.get("status") in ("waiting", "sending", "routing"):
                 matched_key = session_id
                 matched_item = item
                 matched_by = "session_id"
@@ -161,7 +166,7 @@ class QwenVision(Plugin):
             # 2. 其次匹配 receiver
             if not matched_item:
                 for key, item in list(PENDING_IMAGES.items()):
-                    if item.get("status") not in ("waiting", "sending"):
+                    if item.get("status") not in ("waiting", "sending", "routing"):
                         continue
                     if receiver and item.get("receiver") == receiver:
                         matched_key = key
@@ -173,7 +178,7 @@ class QwenVision(Plugin):
             if not matched_item:
                 candidates = []
                 for key, item in list(PENDING_IMAGES.items()):
-                    if item.get("status") not in ("waiting", "sending"):
+                    if item.get("status") not in ("waiting", "sending", "routing"):
                         continue
 
                     img_path = item.get("path")
@@ -213,10 +218,12 @@ class QwenVision(Plugin):
             matched_item["revision"] = int(matched_item.get("revision") or 0) + 1
             matched_item["channel"] = e_context["channel"]
             matched_item["turn_context"] = context
-            if matched_item.get("status") == "sending":
-                matched_item["dirty"] = True
+            matched_item["routing"] = False
+            matched_item["status"] = "waiting"
+            matched_item["dirty"] = False
             PENDING_IMAGES[matched_key] = matched_item
 
+        WAKE_EVENT.set()
         logger.info(
             "[QwenVision] appended follow-up matched_by=%s image_session=%s text_session=%s receiver=%s chars=%s",
             matched_by,
@@ -236,13 +243,51 @@ class QwenVision(Plugin):
     def _clean_followup_text(self, content):
         return extract_current_user_text(content)
 
+    def _reserve_pending_followup(self, session_id, receiver):
+        # Mark the current visual request obsolete before semantic routing.
+        # "routing" preserves the image but prevents a duplicate paid visual
+        # request from starting until the router decides what the new text is.
+        with LOCK:
+            matched_key = None
+            matched_item = PENDING_IMAGES.get(session_id)
+
+            if matched_item and matched_item.get("status") in (
+                "waiting",
+                "sending",
+                "routing",
+            ):
+                matched_key = session_id
+            else:
+                matched_item = None
+                for key, item in list(PENDING_IMAGES.items()):
+                    if item.get("status") not in (
+                        "waiting",
+                        "sending",
+                        "routing",
+                    ):
+                        continue
+                    if receiver and item.get("receiver") == receiver:
+                        matched_key = key
+                        matched_item = item
+                        break
+
+            if not matched_item or not matched_key:
+                return False
+
+            matched_item["revision"] = int(matched_item.get("revision") or 0) + 1
+            matched_item["routing"] = True
+            matched_item["dirty"] = True
+            matched_item["status"] = "routing"
+            PENDING_IMAGES[matched_key] = matched_item
+            return True
+
     def _has_pending_user_image(self, session_id, receiver):
         with LOCK:
             item = PENDING_IMAGES.get(session_id)
-            if item and item.get("status") in ("waiting", "sending"):
+            if item and item.get("status") in ("waiting", "sending", "routing"):
                 return True
             return any(
-                pending.get("status") in ("waiting", "sending")
+                pending.get("status") in ("waiting", "sending", "routing")
                 and receiver
                 and pending.get("receiver") == receiver
                 for pending in PENDING_IMAGES.values()
@@ -258,19 +303,30 @@ class QwenVision(Plugin):
     def _loop(self):
         while True:
             try:
-                interval = float(os.getenv("VISION_CHECK_INTERVAL", "1.0"))
-                time.sleep(max(0.5, interval))
+                interval = max(
+                    0.1,
+                    float(os.getenv("VISION_CHECK_INTERVAL", "0.5")),
+                )
+                WAKE_EVENT.wait(timeout=interval)
+                WAKE_EVENT.clear()
                 self._check_pending_images()
             except Exception:
                 logger.exception("[QwenVision] loop error")
-                time.sleep(3)
+                WAKE_EVENT.wait(timeout=3)
+                WAKE_EVENT.clear()
 
     def _check_pending_images(self):
         now = time.time()
         due_items = []
 
-        image_wait = float(os.getenv("VISION_IMAGE_WAIT_SECONDS", "5.0"))
-        text_settle = float(os.getenv("VISION_TEXT_SETTLE_SECONDS", "3.0"))
+        image_wait = max(
+            0.0,
+            float(os.getenv("VISION_IMAGE_WAIT_SECONDS", "0")),
+        )
+        text_settle = max(
+            0.0,
+            float(os.getenv("VISION_TEXT_SETTLE_SECONDS", "0")),
+        )
 
         with LOCK:
             for session_id, item in list(PENDING_IMAGES.items()):
@@ -371,10 +427,17 @@ class QwenVision(Plugin):
                     # 只有模型生成期间真的收到新补充（revision/dirty变化）才重算。
                     # 同一revision的context一旦stale就永远不会重新变新，重新排队只会
                     # 造成“调用成功→丢弃→再次调用”的付费死循环。
-                    if current_revision != revision or current.get("dirty"):
+                    if current.get("routing"):
+                        # A newer text input already invalidated this result,
+                        # but its semantic route is still being decided.
+                        current["status"] = "routing"
+                        current["dirty"] = False
+                        PENDING_IMAGES[session_id] = current
+                    elif current_revision != revision or current.get("dirty"):
                         current["status"] = "waiting"
                         current["dirty"] = False
                         PENDING_IMAGES[session_id] = current
+                        WAKE_EVENT.set()
                     else:
                         PENDING_IMAGES.pop(session_id, None)
 
