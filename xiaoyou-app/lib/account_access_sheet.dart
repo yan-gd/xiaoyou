@@ -536,46 +536,46 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
     }
 
     if (value.contains('invalid_credentials')) {
-      return '????????';
+      return '账号或密码不正确';
     }
     if (value.contains('invalid_username')) {
-      return '???????';
+      return '账号格式不正确';
     }
     if (value.contains('username_taken')) {
-      return '?????????';
+      return '这个账号已经被使用';
     }
     if (value.contains('invalid_email')) {
-      return '??????????';
+      return '请输入有效的邮箱地址';
     }
     if (value.contains('email_already_registered')) {
-      return '????????????';
+      return '这个邮箱已经绑定其他账号';
     }
     if (value.contains('invalid_password_length')) {
-      return '???? 8 ??????? 72 ??';
+      return '密码至少 8 位，且不要超过 72 字节';
     }
     if (value.contains('registration_mismatch')) {
-      return '????????????????';
+      return '注册信息已变化，请重新获取验证码';
     }
     if (value.contains('invalid_or_expired_code')) {
-      return '???????????????';
+      return '验证码错误或已过期，请重新获取';
     }
     if (value.contains('email_code_too_frequent')) {
-      return '????????????????';
+      return '验证码刚刚已经发送，请稍后再获取';
     }
     if (value.contains('email_request_rate_limited')) {
-      return '???????????????';
+      return '验证码请求过于频繁，请稍后再试';
     }
     if (value.contains('account_disabled')) {
-      return '?????????';
+      return '这个账号当前不可用';
     }
     if (value.contains('email_service_unavailable')) {
-      return '????????????????';
+      return '邮箱验证服务暂不可用，请稍后再试';
     }
     if (value.contains('auth_service_unavailable')) {
-      return '??????????????';
+      return '账号服务正在维护，请稍后再试';
     }
 
-    return '?????????????????';
+    return '暂时无法完成操作，请检查网络后重试';
   }
 
   String get _title => switch (_mode) {
