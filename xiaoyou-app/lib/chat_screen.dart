@@ -375,9 +375,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         releaseXiaoyouFirstFrame();
         await _unlock();
       } else {
+        // First frame must not wait for health/register/history network calls.
         // _connect 内部会先加载本地档案再连接，避免并行竞态。
-        await _connectSaved(saved);
         releaseXiaoyouFirstFrame();
+        await _connectSaved(saved);
       }
     } catch (error) {
       if (!mounted) {
@@ -513,18 +514,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
       final connectionFuture = () async {
         await _restoreLocalArchive(
-        baseUrl,
-        accountId: accountId,
-        testMode: testMode,
-      );
-      // health 与 registerDevice 互不依赖，并行减少连接等待。
-      await Future.wait([
-        api.health(),
-        api.registerDevice(),
-      ]);
-      // 始终请求一次历史：本地已有缓存时它遇到首条重叠消息即停，
-      // 只用于拿到服务器最新 last_event_sequence（保证 _poll 不漏消息）；
-      // 本地为空（首次连接/清数据）时才使用其消息列表。
+          baseUrl,
+          accountId: accountId,
+          testMode: testMode,
+        );
+        // health 与 registerDevice 互不依赖，并行减少连接等待。
+        await Future.wait([
+          api.health(),
+          api.registerDevice(),
+        ]);
+        // 始终请求一次历史：本地已有缓存时它遇到首条重叠消息即停，
+        // 只用于拿到服务器最新 last_event_sequence（保证 _poll 不漏消息）；
+        // 本地为空（首次连接/清数据）时才使用其消息列表。
         return api.history(
           stopAfterMessageIds: _messages
               .where((message) => message.id.isNotEmpty)
@@ -2182,8 +2183,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     String onboardingKey,
   ) async {
     try {
-      final seen =
-          await _sessionStore.hasSeenFirstRunOnboarding(onboardingKey);
+      final seen = await _sessionStore.hasSeenFirstRunOnboarding(onboardingKey);
       final profile = await source.accountProfile();
       final specialAccount = source.testMode || source.accountId == 'yoyo';
       if (specialAccount) {
@@ -2239,7 +2239,6 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       // Onboarding must never make a valid login unusable.
     } finally {
       _profilePromptActive = false;
-
     }
   }
 

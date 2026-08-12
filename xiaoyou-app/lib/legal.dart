@@ -10,10 +10,9 @@ const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
 
-const _privacyConsentVersion = '2026-08-08-user-profile';
+const _privacyConsentVersion = '2026-08-12-github-oauth';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
 const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
-
 
 bool _xiaoyouFirstFrameDeferred = false;
 bool _xiaoyouFirstFrameReleased = false;
@@ -29,6 +28,7 @@ void releaseXiaoyouFirstFrame() {
   _xiaoyouFirstFrameReleased = true;
   WidgetsBinding.instance.allowFirstFrame();
 }
+
 const _loginBackgroundAsset = 'assets/login_background.png';
 const _violet = Color(0xff8c82f4);
 const _violetDeep = Color(0xff7568ef);
@@ -139,14 +139,26 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
   }
 
   Future<void> _check() async {
-    final accepted = await hasPrivacyConsent();
-    if (!mounted) return;
+    var accepted = false;
+    try {
+      accepted = await hasPrivacyConsent().timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // Fail closed: show the privacy gate instead of leaving startup stuck.
+      accepted = false;
+    }
+
+    if (!mounted) {
+      releaseXiaoyouFirstFrame();
+      return;
+    }
     setState(() {
       _checking = false;
       _accepted = accepted;
     });
+
+    // Never keep the Android window waiting for account/session/network work.
+    releaseXiaoyouFirstFrame();
     if (!accepted) {
-      releaseXiaoyouFirstFrame();
       WidgetsBinding.instance.addPostFrameCallback((_) => _show());
     }
   }
@@ -181,7 +193,11 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
-                colors: [Color(0x08ffffff), Color(0x10ffffff), Color(0x38ffffff)],
+                colors: [
+                  Color(0x08ffffff),
+                  Color(0x10ffffff),
+                  Color(0x38ffffff)
+                ],
               ),
             ),
           ),
@@ -206,7 +222,11 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
                           style: TextStyle(
                             color: Color(0xff8b82f1),
                             fontFamily: 'serif',
-                            fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
+                            fontFamilyFallback: [
+                              'Noto Serif CJK SC',
+                              'Noto Serif SC',
+                              'serif'
+                            ],
                             fontSize: 56,
                             height: 1.02,
                             fontWeight: FontWeight.w600,
@@ -219,7 +239,11 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
                           style: TextStyle(
                             color: Color(0xff7068c8),
                             fontFamily: 'serif',
-                            fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
+                            fontFamilyFallback: [
+                              'Noto Serif CJK SC',
+                              'Noto Serif SC',
+                              'serif'
+                            ],
                             fontSize: 14.5,
                             height: 1.35,
                             fontWeight: FontWeight.w500,
@@ -389,7 +413,8 @@ class _PrivacyConsentDialog extends StatelessWidget {
                                 _PrivacyItem(
                                   icon: Icons.forum_outlined,
                                   title: '聊天与记忆',
-                                  detail: '你主动发送的文字、语音、图片，以及为了保持对话连续性所需的聊天与记忆数据。',
+                                  detail:
+                                      '你主动发送的文字、语音、图片，以及为了保持对话连续性所需的聊天与记忆数据。',
                                 ),
                                 _PrivacyItem(
                                   icon: Icons.content_paste_outlined,

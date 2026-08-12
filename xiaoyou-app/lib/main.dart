@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 
@@ -10,9 +12,20 @@ export 'xiaoyou_api.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  deferXiaoyouFirstFrame();
-  await loadXiaoyouThemeMode();
+
+  // Draw the local privacy/startup UI immediately. Startup preferences and
+  // session/network restoration must never hold Android's first Flutter frame.
   runApp(const XiaoyouApp());
+  unawaited(_loadStartupPreferences());
+}
+
+Future<void> _loadStartupPreferences() async {
+  try {
+    await loadXiaoyouThemeMode().timeout(const Duration(seconds: 2));
+  } catch (_) {
+    // Keep the in-memory default theme and let the App remain usable even if
+    // SharedPreferences is temporarily slow/unavailable on a vendor ROM.
+  }
 }
 
 class XiaoyouApp extends StatelessWidget {

@@ -2323,6 +2323,34 @@ class AppRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/auth/config":
             self._json(200, self.plugin.auth.public_config())
             return
+        oauth_prefix = "/v1/auth/oauth/"
+        if parsed.path.startswith(oauth_prefix) and parsed.path.endswith("/callback"):
+            tail = parsed.path[len(oauth_prefix):].strip("/")
+            parts = tail.split("/")
+            if len(parts) != 2 or parts[1] != "callback":
+                self._html(404, "登录失败", "无效的登录回调地址。")
+                return
+            provider = parts[0]
+            query = parse_qs(parsed.query)
+            try:
+                result = self.plugin.auth.complete_oauth(
+                    provider,
+                    (query.get("state") or [""])[0],
+                    code=(query.get("code") or [""])[0],
+                    error=(query.get("error") or [""])[0],
+                )
+            except ValueError:
+                self._html(400, "登录失败", "登录请求已失效，请返回小悠重新发起登录。")
+                return
+            except Exception:
+                logger.exception("[AppChannel] OAuth callback failed provider=%s", provider)
+                self._html(502, "登录失败", "第三方登录暂时不可用，请返回小悠稍后重试。")
+                return
+            if result.get("ok"):
+                self._html(200, "登录成功", "授权已经完成，可以返回小悠 App 继续使用。")
+            else:
+                self._html(400, "登录未完成", "授权已取消或失败，可以返回小悠重新尝试。")
+            return
         query = parse_qs(parsed.query)
         device_id = (query.get("device_id") or [""])[0]
         if parsed.path.startswith("/v1/media/"):
@@ -2506,6 +2534,26 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urlparse(self.path)
+        oauth_prefix = "/v1/auth/oauth/"
+        if parsed.path.startswith(oauth_prefix):
+            tail = parsed.path[len(oauth_prefix):].strip("/")
+            parts = tail.split("/")
+            if len(parts) == 2 and parts[1] == "start":
+                provider = parts[0]
+                self._auth_action(
+                    lambda payload: self.plugin.auth.start_oauth(
+                        provider,
+                        payload.get("device_id"),
+                        remember=payload.get("remember", True),
+                    )
+                )
+                return
+            if len(parts) == 2 and parts[1] == "poll":
+                provider = parts[0]
+                self._auth_action(
+                    lambda payload: self.plugin.auth.poll_oauth(provider, payload.get("poll_token"))
+                )
+                return
         if parsed.path == "/v1/auth/login":
             try:
                 payload = self._body()
@@ -3213,7 +3261,7 @@ class AppRequestHandler(BaseHTTPRequestHandler):
 @plugins.register(
     name="AppChannel",
     desc="Authenticated mobile App channel sharing Xiaoyou's existing runtime",
-    version="1.6-continuous-o2-voice",
+    version="1.7-github-oauth-login",
     author="yoyo",
     desire_priority=10001,
 )

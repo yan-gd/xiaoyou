@@ -30,6 +30,7 @@ class XiaoyouAuthConfig {
     required this.passwordMinLength,
     required this.codeTtl,
     required this.resendInterval,
+    required this.githubLoginEnabled,
   });
 
   final bool registrationEnabled;
@@ -37,6 +38,19 @@ class XiaoyouAuthConfig {
   final int passwordMinLength;
   final int codeTtl;
   final int resendInterval;
+  final bool githubLoginEnabled;
+}
+
+class XiaoyouOAuthStart {
+  const XiaoyouOAuthStart({
+    required this.authorizationUrl,
+    required this.pollToken,
+    required this.expiresIn,
+  });
+
+  final String authorizationUrl;
+  final String pollToken;
+  final int expiresIn;
 }
 
 class XiaoyouUserProfile {
@@ -127,6 +141,63 @@ class XiaoyouApi {
     return _loginResult(values);
   }
 
+  static String _oauthProvider(String provider) {
+    final value = provider.trim().toLowerCase();
+    if (value != 'github') {
+      throw const FormatException('invalid_oauth_provider');
+    }
+    return value;
+  }
+
+  static Future<XiaoyouOAuthStart> startOAuth({
+    required String baseUrl,
+    required String provider,
+    required String deviceId,
+    required bool remember,
+  }) async {
+    final safeProvider = _oauthProvider(provider);
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/oauth/$safeProvider/start',
+      body: {'device_id': deviceId, 'remember': remember},
+    );
+    final authorizationUrl = '${values['authorization_url'] ?? ''}'.trim();
+    final pollToken = '${values['poll_token'] ?? ''}'.trim();
+    final expiresIn = asInt(values['expires_in']);
+    if (authorizationUrl.isEmpty || pollToken.isEmpty || expiresIn <= 0) {
+      throw const FormatException('invalid_oauth_start_response');
+    }
+    return XiaoyouOAuthStart(
+      authorizationUrl: authorizationUrl,
+      pollToken: pollToken,
+      expiresIn: expiresIn,
+    );
+  }
+
+  static Future<XiaoyouLoginResult?> pollOAuth({
+    required String baseUrl,
+    required String provider,
+    required String pollToken,
+  }) async {
+    final safeProvider = _oauthProvider(provider);
+    final values = await _publicRequest(
+      baseUrl,
+      'POST',
+      '/v1/auth/oauth/$safeProvider/poll',
+      body: {'poll_token': pollToken},
+    );
+    final status = '${values['status'] ?? ''}'.trim();
+    if (status == 'pending') return null;
+    if (status == 'failed') {
+      throw StateError('${values['error'] ?? 'oauth_provider_failed'}');
+    }
+    if (status != 'completed') {
+      throw const FormatException('invalid_oauth_poll_response');
+    }
+    return _loginResult(values);
+  }
+
   static Future<Map<String, dynamic>> requestEmailLogin({
     required String baseUrl,
     required String email,
@@ -167,6 +238,7 @@ class XiaoyouApi {
       passwordMinLength: max(8, asInt(values['password_min_length'])),
       codeTtl: asInt(values['code_ttl']),
       resendInterval: asInt(values['resend_interval']),
+      githubLoginEnabled: values['github_login_enabled'] == true,
     );
   }
 

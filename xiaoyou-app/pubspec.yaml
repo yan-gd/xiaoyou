@@ -30,6 +30,7 @@ flutter:
     - shaders/digital_xiaoyou.frag
   assets:
     - assets/QQ.png
+    - assets/github.png
     - assets/login_background.png
     - assets/xiaoyou-avatar.png
     - assets/email-login.png

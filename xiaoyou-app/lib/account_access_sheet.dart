@@ -17,6 +17,7 @@ const _defaultBaseUrl = 'https://xiaoyou.yoyoyan.cn/xiaoyou-app';
 const _loginBackgroundAsset = 'assets/login_background.png';
 const _qqAsset = 'assets/QQ.png';
 const _emailLoginAsset = 'assets/email-login.png';
+const _githubAsset = 'assets/github.png';
 
 enum _AccountMode { login, emailLogin, register, reset }
 
@@ -452,6 +453,59 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
     );
   }
 
+  Future<void> _githubLogin() async {
+    if (_busy || !_ensureConsent() || !_validateBase()) return;
+    if (_config?.githubLoginEnabled == false) {
+      setState(() => _error = 'GitHub 登录暂未配置');
+      return;
+    }
+    FocusManager.instance.primaryFocus?.unfocus();
+    HapticFeedback.selectionClick();
+    setState(() {
+      _busy = true;
+      _error = '';
+    });
+    try {
+      final flow = await XiaoyouApi.startOAuth(
+        baseUrl: _base.text.trim(),
+        provider: 'github',
+        deviceId: _device.text.trim(),
+        remember: _remember,
+      );
+      await openLegalUrl(flow.authorizationUrl);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          const SnackBar(
+            content: Text('已打开 GitHub 授权页面，完成后返回小悠即可'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      final deadline = DateTime.now().add(
+        Duration(seconds: flow.expiresIn.clamp(30, 600).toInt()),
+      );
+      while (mounted && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 1400));
+        if (!mounted) return;
+        final login = await XiaoyouApi.pollOAuth(
+          baseUrl: _base.text.trim(),
+          provider: 'github',
+          pollToken: flow.pollToken,
+        );
+        if (login != null) {
+          await _finish(login);
+          return;
+        }
+      }
+      throw TimeoutException('oauth_timeout');
+    } catch (error) {
+      if (mounted) setState(() => _error = _friendly(error));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   void _qqLogin() {
     HapticFeedback.selectionClick();
     ScaffoldMessenger.of(context)
@@ -466,6 +520,20 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
 
   String _friendly(Object error) {
     final value = '$error';
+
+    if (value.contains('oauth_cancelled')) {
+      return '已取消第三方账号授权';
+    }
+    if (value.contains('oauth_provider_unavailable')) {
+      return '这个第三方登录方式暂未配置';
+    }
+    if (value.contains('oauth_expired') || value.contains('oauth_timeout')) {
+      return '登录授权已超时，请重新尝试';
+    }
+    if (value.contains('oauth_provider_failed') ||
+        value.contains('invalid_oauth')) {
+      return '第三方登录暂时失败，请稍后重试';
+    }
 
     if (value.contains('invalid_credentials')) {
       return '????????';
@@ -988,6 +1056,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
   }
 
   Widget _qqLoginArea() {
+    final githubEnabled = _config?.githubLoginEnabled ?? true;
     return Column(
       children: [
         Row(
@@ -1009,12 +1078,18 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         ),
         const SizedBox(height: 12),
         Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
             _QQButton(onTap: _busy ? null : _qqLogin),
-            const SizedBox(width: 42),
             _EmailLoginButton(
               onTap: _busy ? null : () => _switchMode(_AccountMode.emailLogin),
+            ),
+            _ProviderLoginButton(
+              asset: _githubAsset,
+              label: 'GitHub',
+              onTap: _busy || !githubEnabled
+                  ? null
+                  : () => unawaited(_githubLogin()),
             ),
           ],
         ),
@@ -1459,6 +1534,86 @@ class _EmailLoginButtonState extends State<_EmailLoginButton> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProviderLoginButton extends StatefulWidget {
+  const _ProviderLoginButton({
+    required this.asset,
+    required this.label,
+    required this.onTap,
+  });
+
+  final String asset;
+  final String label;
+  final VoidCallback? onTap;
+
+  @override
+  State<_ProviderLoginButton> createState() => _ProviderLoginButtonState();
+}
+
+class _ProviderLoginButtonState extends State<_ProviderLoginButton> {
+  bool _pressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onTap != null;
+    return GestureDetector(
+      onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
+      onTapCancel: enabled ? () => setState(() => _pressed = false) : null,
+      onTapUp: enabled
+          ? (_) {
+              setState(() => _pressed = false);
+              HapticFeedback.selectionClick();
+              widget.onTap!();
+            }
+          : null,
+      child: AnimatedOpacity(
+        opacity: enabled ? 1 : 0.38,
+        duration: const Duration(milliseconds: 160),
+        child: AnimatedScale(
+          scale: _pressed ? 0.94 : 1,
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOutCubic,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 54,
+                height: 54,
+                padding: const EdgeInsets.all(9),
+                decoration: BoxDecoration(
+                  color: const Color(0xfffbfaff),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xffe9e6f5)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x13746bd2),
+                      blurRadius: 14,
+                      offset: Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Image.asset(
+                  widget.asset,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                ),
+              ),
+              const SizedBox(height: 7),
+              Text(
+                widget.label,
+                style: const TextStyle(
+                  color: _violetDeep,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

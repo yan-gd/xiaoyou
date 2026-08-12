@@ -23,6 +23,9 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from email.message import EmailMessage
 from email.utils import formataddr
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 
 PASSWORD_ITERATIONS = 310_000
@@ -37,6 +40,8 @@ EMAIL_REQUEST_EMAIL_DAY_LIMIT = 20
 EMAIL_REQUEST_IP_HOUR_LIMIT = 20
 EMAIL_REQUEST_IP_DAY_LIMIT = 60
 EMAIL_REQUEST_RETENTION = 24 * 60 * 60
+OAUTH_TRANSACTION_TTL = 10 * 60
+OAUTH_HTTP_TIMEOUT = 15
 REVIEW_TEST_PASSWORD_HASH = (
     "pbkdf2_sha256$310000$eGlhb3lvdS10ZXN0LXJldmlldw$"
     "55dqot5RoAR5aSfNo_aSwI0fRY7Ha0BejzNoF9dxIMI"
@@ -127,6 +132,15 @@ class AppAuthService:
         self.debug_email_code = _truthy(
             os.getenv("XIAOYOU_APP_EMAIL_DEBUG_CODE", "false")
         )
+        self.oauth_public_base_url = os.getenv(
+            "XIAOYOU_APP_OAUTH_PUBLIC_BASE_URL", ""
+        ).strip().rstrip("/")
+        self.github_client_id = os.getenv(
+            "XIAOYOU_APP_GITHUB_CLIENT_ID", ""
+        ).strip()
+        self.github_client_secret = os.getenv(
+            "XIAOYOU_APP_GITHUB_CLIENT_SECRET", ""
+        ).strip()
         self._initialize_database()
 
     @property
@@ -152,6 +166,7 @@ class AppAuthService:
             "password_min_length": PASSWORD_MIN_LENGTH,
             "code_ttl": CHALLENGE_TTL,
             "resend_interval": EMAIL_RESEND_COOLDOWN,
+            "github_login_enabled": self.oauth_provider_enabled("github"),
         }
 
     def login(self, username, password, device_id, remember=True):
@@ -211,6 +226,346 @@ class AppAuthService:
             return None
         self._touch_user(auth["user_id"])
         return self._issue_user(auth, device_id=device_id, remember=remember)
+
+    def oauth_provider_enabled(self, provider):
+        provider = str(provider or "").strip().lower()
+        return bool(
+            provider == "github"
+            and len(self.secret) >= 32
+            and self.oauth_public_base_url
+            and self.github_client_id
+            and self.github_client_secret
+        )
+
+    def start_oauth(self, provider, device_id, remember=True):
+        provider = self._require_oauth_provider(provider)
+        device_id = _safe_identifier(device_id, fallback="xiaoyou-phone")
+        if not device_id:
+            raise ValueError("invalid_device_id")
+        state = secrets.token_urlsafe(32)
+        poll_token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        transaction_id = "oauth_" + secrets.token_hex(12)
+        with self._connection() as db:
+            db.execute("DELETE FROM oauth_transactions WHERE expires_at<?", (now,))
+            db.execute(
+                "INSERT INTO oauth_transactions(id,provider,state_digest,poll_digest,device_id,remember,status,result_json,error,created_at,expires_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    transaction_id,
+                    provider,
+                    self._oauth_digest("state", state),
+                    self._oauth_digest("poll", poll_token),
+                    device_id,
+                    1 if bool(remember) else 0,
+                    "pending",
+                    "{}",
+                    "",
+                    now,
+                    now + OAUTH_TRANSACTION_TTL,
+                ),
+            )
+            db.commit()
+        redirect_uri = self._oauth_redirect_uri(provider)
+        query = {
+            "client_id": self.github_client_id,
+            "redirect_uri": redirect_uri,
+            "scope": "read:user user:email",
+            "state": state,
+            "allow_signup": "true",
+        }
+        return {
+            "provider": provider,
+            "authorization_url": "https://github.com/login/oauth/authorize?" + urlencode(query),
+            "poll_token": poll_token,
+            "expires_in": OAUTH_TRANSACTION_TTL,
+        }
+
+    def complete_oauth(self, provider, state, code="", error=""):
+        provider = self._require_oauth_provider(provider)
+        state = str(state or "").strip()
+        if not state:
+            raise ValueError("invalid_oauth_state")
+        now = int(time.time())
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM oauth_transactions WHERE provider=? AND state_digest=?",
+                (provider, self._oauth_digest("state", state)),
+            ).fetchone()
+        if not row or int(row["expires_at"] or 0) <= now:
+            raise ValueError("invalid_oauth_state")
+        status = str(row["status"] or "pending")
+        if status == "completed":
+            return {"ok": True, "already_completed": True}
+        if status == "failed":
+            return {"ok": False, "error": str(row["error"] or "oauth_provider_failed")}
+        if str(error or "").strip() or not str(code or "").strip():
+            self._finish_oauth_transaction(row["id"], status="failed", error="oauth_cancelled")
+            return {"ok": False, "error": "oauth_cancelled"}
+        try:
+            identity = self._oauth_exchange_identity(provider, str(code).strip())
+            result = self._oauth_login_or_create(
+                provider,
+                identity,
+                device_id=str(row["device_id"]),
+                remember=bool(row["remember"]),
+            )
+        except ValueError as exc:
+            error_code = str(exc or "oauth_provider_failed")[:80]
+            if not error_code.startswith("oauth_"):
+                error_code = "oauth_provider_failed"
+            self._finish_oauth_transaction(row["id"], status="failed", error=error_code)
+            return {"ok": False, "error": error_code}
+        except RuntimeError:
+            self._finish_oauth_transaction(row["id"], status="failed", error="oauth_provider_failed")
+            return {"ok": False, "error": "oauth_provider_failed"}
+        self._finish_oauth_transaction(row["id"], status="completed", result=result)
+        return {"ok": True, "account_id": result.get("account_id", "")}
+
+    def poll_oauth(self, provider, poll_token):
+        provider = self._require_oauth_provider(provider)
+        poll_token = str(poll_token or "").strip()
+        if not poll_token:
+            raise ValueError("invalid_oauth_poll")
+        now = int(time.time())
+        with self._connection() as db:
+            db.execute("DELETE FROM oauth_transactions WHERE expires_at<?", (now,))
+            row = db.execute(
+                "SELECT * FROM oauth_transactions WHERE provider=? AND poll_digest=?",
+                (provider, self._oauth_digest("poll", poll_token)),
+            ).fetchone()
+            db.commit()
+        if not row:
+            raise ValueError("oauth_expired")
+        status = str(row["status"] or "pending")
+        if status == "pending":
+            return {"status": "pending"}
+        if status == "failed":
+            return {"status": "failed", "error": str(row["error"] or "oauth_provider_failed")}
+        if status != "completed":
+            raise ValueError("oauth_provider_failed")
+        try:
+            result = json.loads(row["result_json"] or "{}")
+        except json.JSONDecodeError:
+            raise ValueError("oauth_provider_failed")
+        if not isinstance(result, dict) or not result.get("access_token"):
+            raise ValueError("oauth_provider_failed")
+        return {"status": "completed", **result}
+
+    def _require_oauth_provider(self, provider):
+        provider = str(provider or "").strip().lower()
+        if provider != "github":
+            raise ValueError("invalid_oauth_provider")
+        if not self.oauth_provider_enabled(provider):
+            raise ValueError("oauth_provider_unavailable")
+        return provider
+
+    def _oauth_redirect_uri(self, provider):
+        return "{}/v1/auth/oauth/{}/callback".format(self.oauth_public_base_url, provider)
+
+    def _oauth_digest(self, purpose, value):
+        return hmac.new(
+            self.secret.encode("utf-8"),
+            "oauth:{}:{}".format(purpose, str(value or "")).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _finish_oauth_transaction(self, transaction_id, *, status, result=None, error=""):
+        with self._connection() as db:
+            db.execute(
+                "UPDATE oauth_transactions SET status=?,result_json=?,error=? WHERE id=?",
+                (
+                    str(status),
+                    json.dumps(result or {}, ensure_ascii=False),
+                    str(error or "")[:80],
+                    str(transaction_id),
+                ),
+            )
+            db.commit()
+
+    def _oauth_exchange_identity(self, provider, code):
+        self._require_oauth_provider(provider)
+        redirect_uri = self._oauth_redirect_uri(provider)
+        token = self._oauth_http_json(
+            "https://github.com/login/oauth/access_token",
+            method="POST",
+            form={
+                "client_id": self.github_client_id,
+                "client_secret": self.github_client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+        )
+        access_token = str(token.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("oauth_provider_failed")
+        headers = {
+            "Authorization": "Bearer " + access_token,
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        profile = self._oauth_http_json("https://api.github.com/user", headers=headers)
+        subject = str(profile.get("id") or "").strip()
+        if not subject:
+            raise RuntimeError("oauth_provider_failed")
+        emails = self._oauth_http_json("https://api.github.com/user/emails", headers=headers)
+        email = ""
+        verified = False
+        if isinstance(emails, list):
+            preferred = None
+            for item in emails:
+                if not isinstance(item, dict) or item.get("verified") is not True:
+                    continue
+                if item.get("primary") is True:
+                    preferred = item
+                    break
+                if preferred is None:
+                    preferred = item
+            if preferred:
+                email = _normalize_email(preferred.get("email"))
+                verified = bool(email)
+        return {
+            "subject": subject,
+            "email": email,
+            "email_verified": verified,
+            "display_name": str(profile.get("name") or profile.get("login") or "").strip(),
+            "username": str(profile.get("login") or "").strip(),
+            "avatar": str(profile.get("avatar_url") or "").strip(),
+        }
+
+    @staticmethod
+    def _oauth_http_json(url, *, method="GET", form=None, headers=None):
+        request_headers = {
+            "Accept": "application/json",
+            "User-Agent": "Xiaoyou-App-OAuth/1.0",
+        }
+        request_headers.update(headers or {})
+        data = None
+        if form is not None:
+            data = urlencode(form).encode("utf-8")
+            request_headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
+        request = Request(str(url), data=data, headers=request_headers, method=str(method or "GET").upper())
+        try:
+            with urlopen(request, timeout=OAUTH_HTTP_TIMEOUT) as response:
+                raw = response.read(1024 * 1024)
+        except (HTTPError, URLError, TimeoutError, OSError):
+            raise RuntimeError("oauth_provider_failed")
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise RuntimeError("oauth_provider_failed")
+
+    def _oauth_login_or_create(self, provider, identity, *, device_id, remember=True):
+        provider = self._require_oauth_provider(provider)
+        subject = str(identity.get("subject") or "").strip()
+        if not subject:
+            raise ValueError("oauth_invalid_identity")
+        auth_type = "oauth_github"
+        email = _normalize_email(identity.get("email"))
+        email_verified = bool(identity.get("email_verified") and email)
+        display_name = _clean_display_name(identity.get("display_name"))
+        avatar = str(identity.get("avatar") or "").strip()[:1000]
+        now = int(time.time())
+        with self._connection() as db:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                oauth_row = self._auth_record_with_connection(db, auth_type, subject)
+                if oauth_row:
+                    if str(oauth_row["status"] or "") != "active":
+                        raise ValueError("account_disabled")
+                    user_id = str(oauth_row["user_id"])
+                else:
+                    user_id = ""
+                    if email_verified:
+                        email_row = self._auth_record_with_connection(db, "email", email)
+                        if email_row and str(email_row["status"] or "") == "active":
+                            user_id = str(email_row["user_id"])
+                    if not user_id:
+                        user_id = "usr_" + secrets.token_hex(16)
+                        session_id = "app_user_" + user_id[4:]
+                        username = self._oauth_unique_username(db, provider, identity)
+                        safe_display = display_name or username
+                        db.execute(
+                            "INSERT INTO users(id,session_id,nickname,avatar,vip_level,created_at,updated_at,last_login_at,status,display_name,relationship_started_at) "
+                            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                            (user_id, session_id, safe_display, avatar, 0, now, now, now, "active", safe_display, now),
+                        )
+                        db.execute(
+                            "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                            ("auth_" + secrets.token_hex(12), user_id, "username", username, "", 1, now, now),
+                        )
+                    else:
+                        user = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+                        if not user or str(user["status"] or "") != "active":
+                            raise ValueError("account_disabled")
+                    db.execute(
+                        "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        ("auth_" + secrets.token_hex(12), user_id, auth_type, subject, "", 1, now, now),
+                    )
+                username_auth = self._user_auth_record_with_connection(db, user_id, "username")
+                if not username_auth:
+                    username = self._oauth_unique_username(db, provider, identity)
+                    db.execute(
+                        "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                        ("auth_" + secrets.token_hex(12), user_id, "username", username, "", 1, now, now),
+                    )
+                if email_verified:
+                    email_row = self._auth_record_with_connection(db, "email", email)
+                    if email_row is None:
+                        db.execute(
+                            "INSERT INTO user_auth(id,user_id,auth_type,identifier,password_hash,verified,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)",
+                            ("auth_" + secrets.token_hex(12), user_id, "email", email, "", 1, now, now),
+                        )
+                if display_name or avatar:
+                    db.execute(
+                        "UPDATE users SET "
+                        "nickname=CASE WHEN nickname='' THEN ? ELSE nickname END,"
+                        "display_name=CASE WHEN display_name='' THEN ? ELSE display_name END,"
+                        "avatar=CASE WHEN avatar='' THEN ? ELSE avatar END,"
+                        "last_login_at=?,updated_at=? WHERE id=?",
+                        (display_name, display_name, avatar, now, now, user_id),
+                    )
+                else:
+                    db.execute(
+                        "UPDATE users SET last_login_at=?,updated_at=? WHERE id=?",
+                        (now, now, user_id),
+                    )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        username_auth = self._user_auth_record(user_id, "username")
+        result = self._issue_user(
+            username_auth,
+            device_id=_safe_identifier(device_id, fallback="xiaoyou-phone"),
+            remember=remember,
+        )
+        self._sync_profile_document(user_id)
+        return result
+
+    def _oauth_unique_username(self, db, provider, identity):
+        self._require_oauth_provider(provider)
+        subject = str(identity.get("subject") or "").strip()
+        hint = str(identity.get("username") or "").strip()
+        if not hint:
+            email = _normalize_email(identity.get("email"))
+            hint = email.split("@", 1)[0] if email else ""
+        hint = unicodedata.normalize("NFKC", hint)
+        hint = re.sub(r"[^A-Za-z0-9_.-]+", "-", hint).strip("._-")
+        seed = hashlib.sha256("github:{}".format(subject).encode("utf-8")).hexdigest()[:6]
+        core = hint[:20] or seed
+        base = _normalize_username("gh_{}".format(core))
+        if not _valid_username(base):
+            base = "gh_{}".format(seed)
+        candidate = base[:32]
+        for index in range(100):
+            suffix = "" if index == 0 else "_{}".format(index)
+            value = candidate[: 32 - len(suffix)] + suffix
+            if value in {self.owner_username, self.test_username}:
+                continue
+            if self._auth_record_with_connection(db, "username", value) is None:
+                return value
+        raise ValueError("username_taken")
 
     def request_email_login(self, email, client_ip=""):
         self._require_email_service()
@@ -954,6 +1309,16 @@ class AppAuthService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_auth_rate_events_scope_key_time
                     ON auth_rate_events(scope,key_digest,created_at);
+                CREATE TABLE IF NOT EXISTS oauth_transactions(
+                    id TEXT PRIMARY KEY, provider TEXT NOT NULL,
+                    state_digest TEXT NOT NULL UNIQUE, poll_digest TEXT NOT NULL UNIQUE,
+                    device_id TEXT NOT NULL, remember INTEGER NOT NULL DEFAULT 1,
+                    status TEXT NOT NULL DEFAULT 'pending', result_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_oauth_transactions_expiry
+                    ON oauth_transactions(expires_at);
                 """
             )
             columns = {row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()}
