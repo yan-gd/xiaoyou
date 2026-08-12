@@ -7,12 +7,13 @@ import 'package:flutter/services.dart';
 import 'legal.dart';
 import 'session_store.dart';
 import 'xiaoyou_api.dart';
+import 'theme_controller.dart';
 
-const _violet = Color(0xff8c82f4);
-const _violetDeep = Color(0xff7568ef);
-const _ink = Color(0xff25243a);
-const _muted = Color(0xff9693ad);
-const _line = Color(0xffe6e4f2);
+const _violet = Color(0xff111111);
+const _violetDeep = Color(0xff1d1d1f);
+const _ink = Color(0xff1d1d1f);
+const _muted = Color(0xff86868b);
+const _line = Color(0xffd2d2d7);
 const _defaultBaseUrl = 'https://xiaoyou.yoyoyan.cn/xiaoyou-app';
 const _loginBackgroundAsset = 'assets/login_background.png';
 const _qqAsset = 'assets/QQ.png';
@@ -64,6 +65,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
   bool _remember = true;
   bool _agreed = false;
   bool _busy = false;
+  bool _githubWaiting = false;
+  int _oauthAttempt = 0;
+  OverlayEntry? _noticeEntry;
   bool _codeSent = false;
   bool _hidePassword = true;
   bool _hideConfirmPassword = true;
@@ -94,6 +98,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
 
   @override
   void dispose() {
+    _oauthAttempt += 1;
+    _noticeEntry?.remove();
+    _noticeEntry = null;
     _resendTimer?.cancel();
     _entrance.dispose();
     _base.dispose();
@@ -142,10 +149,28 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
       await openLegalUrl(url);
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('暂时无法打开页面，请检查网络后重试')),
-      );
+      _showNotice('页面暂时打不开，请稍后再试');
     }
+  }
+
+  void _showNotice(String message) {
+    if (!mounted) return;
+    final previous = _noticeEntry;
+    if (previous != null && previous.mounted) previous.remove();
+
+    late final OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (overlayContext) => _XiaoyouNoticeCard(
+        message: message,
+        onDismiss: () {
+          if (_noticeEntry != entry) return;
+          if (entry.mounted) entry.remove();
+          _noticeEntry = null;
+        },
+      ),
+    );
+    _noticeEntry = entry;
+    Overlay.of(context, rootOverlay: true).insert(entry);
   }
 
   void _switchMode(_AccountMode mode) {
@@ -354,9 +379,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         if (debugCode.isNotEmpty) _code.text = debugCode;
       });
       _startResendCooldown();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('如果账号存在，验证码已发送到绑定邮箱')),
-      );
+      _showNotice('如果账号存在，验证码已发送到绑定邮箱');
       return;
     }
     if (_code.text.trim().length != 6 || !_validatePassword(confirm: true)) {
@@ -372,9 +395,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
     final loginName = identifier.contains('@') ? '' : identifier;
     _switchMode(_AccountMode.login);
     if (loginName.isNotEmpty) _username.text = loginName;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('密码已更新，请使用新密码登录')),
-    );
+    _showNotice('密码已更新，请使用新密码登录');
   }
 
   Future<void> _resendCode() async {
@@ -459,12 +480,16 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
       setState(() => _error = 'GitHub 登录暂未配置');
       return;
     }
+
+    final attempt = ++_oauthAttempt;
     FocusManager.instance.primaryFocus?.unfocus();
     HapticFeedback.selectionClick();
     setState(() {
       _busy = true;
+      _githubWaiting = true;
       _error = '';
     });
+
     try {
       final flow = await XiaoyouApi.startOAuth(
         baseUrl: _base.text.trim(),
@@ -472,50 +497,69 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         deviceId: _device.text.trim(),
         remember: _remember,
       );
+      if (!mounted || attempt != _oauthAttempt || !_githubWaiting) return;
+
       await openLegalUrl(flow.authorizationUrl);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(
-          const SnackBar(
-            content: Text('已打开 GitHub 授权页面，完成后返回小悠即可'),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+      if (!mounted || attempt != _oauthAttempt || !_githubWaiting) return;
+
+      _showNotice('已打开 GitHub 授权页，完成后回到小悠即可');
+
       final deadline = DateTime.now().add(
         Duration(seconds: flow.expiresIn.clamp(30, 600).toInt()),
       );
-      while (mounted && DateTime.now().isBefore(deadline)) {
+      while (mounted &&
+          attempt == _oauthAttempt &&
+          _githubWaiting &&
+          DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 1400));
-        if (!mounted) return;
+        if (!mounted || attempt != _oauthAttempt || !_githubWaiting) return;
+
         final login = await XiaoyouApi.pollOAuth(
           baseUrl: _base.text.trim(),
           provider: 'github',
           pollToken: flow.pollToken,
         );
+        if (!mounted || attempt != _oauthAttempt || !_githubWaiting) return;
+
         if (login != null) {
+          setState(() => _githubWaiting = false);
           await _finish(login);
           return;
         }
       }
-      throw TimeoutException('oauth_timeout');
+
+      if (attempt == _oauthAttempt && _githubWaiting) {
+        throw TimeoutException('oauth_timeout');
+      }
     } catch (error) {
-      if (mounted) setState(() => _error = _friendly(error));
+      if (mounted && attempt == _oauthAttempt) {
+        setState(() => _error = _friendly(error));
+      }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted && attempt == _oauthAttempt) {
+        setState(() {
+          _busy = false;
+          _githubWaiting = false;
+        });
+      }
     }
+  }
+
+  void _cancelGithubLogin() {
+    if (!_githubWaiting) return;
+    _oauthAttempt += 1;
+    HapticFeedback.selectionClick();
+    setState(() {
+      _githubWaiting = false;
+      _busy = false;
+      _error = '';
+    });
+    _showNotice('已取消 GitHub 登录');
   }
 
   void _qqLogin() {
     HapticFeedback.selectionClick();
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        const SnackBar(
-          content: Text('QQ 登录需要腾讯 App ID 与服务端 OAuth 回调，当前工程尚未配置'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+    _showNotice('QQ 登录暂未开放，请先使用其他登录方式');
   }
 
   String _friendly(Object error) {
@@ -921,7 +965,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         }),
         icon: Icon(
           hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-          color: const Color(0xffaaa7bd),
+          color: const Color(0xffaeaeb2),
           size: 20,
         ),
       ),
@@ -952,7 +996,7 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
             onPressed: _busy || _resendLeft > 0 ? null : _resendCode,
             style: TextButton.styleFrom(
               foregroundColor: _violetDeep,
-              disabledForegroundColor: const Color(0xffbbb8c8),
+              disabledForegroundColor: const Color(0xffaeaeb2),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(18),
               ),
@@ -989,8 +1033,8 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
           if (textInputAction == TextInputAction.done) unawaited(_submit());
         },
         cursorColor: _violetDeep,
-        style: const TextStyle(
-          color: _ink,
+        style: TextStyle(
+          color: xiaoyouPrimaryText(context),
           fontSize: 15.5,
           fontWeight: FontWeight.w600,
         ),
@@ -1004,7 +1048,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
           prefixIcon: Icon(icon, color: _violetDeep, size: 21),
           suffixIcon: suffix,
           filled: true,
-          fillColor: Colors.white.withValues(alpha: 0.84),
+          fillColor:
+              (xiaoyouIsDark(context) ? const Color(0xff111114) : Colors.white)
+                  .withValues(alpha: 0.88),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           enabledBorder: OutlineInputBorder(
@@ -1025,6 +1071,72 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
   }
 
   Widget _primaryButton() {
+    if (_githubWaiting) {
+      return SizedBox(
+        height: 54,
+        child: Row(
+          children: [
+            Expanded(
+              child: Container(
+                height: 54,
+                decoration: BoxDecoration(
+                  color: const Color(0xfff5f5f7),
+                  borderRadius: BorderRadius.circular(23),
+                  border: Border.all(
+                    color: const Color(0xffd1d1d6),
+                    width: 1,
+                  ),
+                ),
+                child: const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    SizedBox(
+                      width: 17,
+                      height: 17,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: _violetDeep,
+                      ),
+                    ),
+                    SizedBox(width: 9),
+                    Text(
+                      '等待 GitHub 授权',
+                      style: TextStyle(
+                        color: _violetDeep,
+                        fontSize: 14.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+            SizedBox(
+              width: 78,
+              height: 54,
+              child: OutlinedButton(
+                onPressed: _cancelGithubLogin,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _ink,
+                  backgroundColor: Colors.white.withValues(alpha: 0.88),
+                  side: const BorderSide(color: _line),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(23),
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                child: const Text('取消'),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     final label = switch (_mode) {
       _AccountMode.login => '登录',
       _AccountMode.emailLogin => _codeSent ? '验证并登录' : '获取邮箱验证码',
@@ -1098,18 +1210,157 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
   }
 }
 
+class _XiaoyouNoticeCard extends StatefulWidget {
+  const _XiaoyouNoticeCard({
+    required this.message,
+    required this.onDismiss,
+  });
+
+  final String message;
+  final VoidCallback onDismiss;
+
+  @override
+  State<_XiaoyouNoticeCard> createState() => _XiaoyouNoticeCardState();
+}
+
+class _XiaoyouNoticeCardState extends State<_XiaoyouNoticeCard>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  Timer? _dismissTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 210),
+      reverseDuration: const Duration(milliseconds: 170),
+    )..forward();
+
+    _dismissTimer = Timer(const Duration(milliseconds: 1250), () async {
+      if (!mounted) return;
+      await _controller.reverse();
+      if (mounted) widget.onDismiss();
+    });
+  }
+
+  @override
+  void dispose() {
+    _dismissTimer?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    final animation = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+
+    return Positioned(
+      left: 18,
+      right: 18,
+      top: MediaQuery.of(context).padding.top + 10,
+      child: IgnorePointer(
+        child: Material(
+          color: Colors.transparent,
+          child: FadeTransition(
+            opacity: animation,
+            child: SlideTransition(
+              position: Tween<Offset>(
+                begin: const Offset(0, -0.14),
+                end: Offset.zero,
+              ).animate(animation),
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.985, end: 1).animate(animation),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(18),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+                    child: Container(
+                      constraints: const BoxConstraints(minHeight: 48),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 15,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: dark
+                            ? const Color(0xff272331).withValues(alpha: 0.68)
+                            : Colors.white.withValues(alpha: 0.68),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(
+                          color: dark
+                              ? Colors.white.withValues(alpha: 0.10)
+                              : Colors.white.withValues(alpha: 0.72),
+                          width: 0.9,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x10463746),
+                            blurRadius: 18,
+                            offset: Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 7,
+                            height: 7,
+                            decoration: const BoxDecoration(
+                              color: _violet,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 11),
+                          Expanded(
+                            child: Text(
+                              widget.message,
+                              style: TextStyle(
+                                color: dark ? const Color(0xfff3eff9) : _ink,
+                                fontSize: 13.5,
+                                height: 1.35,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _LoginBackdrop extends StatelessWidget {
   const _LoginBackdrop();
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     return DecoratedBox(
-      decoration: const BoxDecoration(color: Colors.white),
-      child: Image.asset(
-        _loginBackgroundAsset,
-        fit: BoxFit.fill,
-        filterQuality: FilterQuality.high,
-        gaplessPlayback: true,
+      decoration:
+          BoxDecoration(color: dark ? const Color(0xff0b0b0d) : Colors.white),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Image.asset(
+            _loginBackgroundAsset,
+            fit: BoxFit.fill,
+            filterQuality: FilterQuality.high,
+            gaplessPlayback: true,
+          ),
+          if (dark) const ColoredBox(color: Color(0x88070709)),
+        ],
       ),
     );
   }
@@ -1127,7 +1378,7 @@ class _BrandHeader extends StatelessWidget {
         Text(
           '小 悠',
           style: TextStyle(
-            color: Color(0xff8d83f3),
+            color: Color(0xff1d1d1f),
             fontFamily: 'serif',
             fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
             fontSize: 56,
@@ -1140,7 +1391,7 @@ class _BrandHeader extends StatelessWidget {
         Text(
           '遇见小悠，遇见更从容的自己 ♡',
           style: TextStyle(
-            color: Color(0xff746bd2),
+            color: Color(0xff6e6e73),
             fontFamily: 'serif',
             fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
             fontSize: 14.5,
@@ -1169,17 +1420,22 @@ class _AuthSheet extends StatelessWidget {
           width: double.infinity,
           height: double.infinity,
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.965),
+            color: (xiaoyouIsDark(context)
+                    ? const Color(0xff151518)
+                    : Colors.white)
+                .withValues(alpha: 0.965),
             borderRadius: const BorderRadius.vertical(top: Radius.circular(42)),
             border: Border(
               top: BorderSide(
-                color: Colors.white.withValues(alpha: 0.98),
+                color: xiaoyouIsDark(context)
+                    ? const Color(0x24ffffff)
+                    : Colors.white.withValues(alpha: 0.98),
                 width: 1.2,
               ),
             ),
             boxShadow: const [
               BoxShadow(
-                color: Color(0x1f746bd2),
+                color: Color(0x16000000),
                 blurRadius: 42,
                 offset: Offset(0, -5),
               ),
@@ -1231,7 +1487,7 @@ class _GlassIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return IconButton(
       onPressed: onTap,
-      icon: Icon(icon, color: const Color(0xff5f5877), size: 20),
+      icon: Icon(icon, color: const Color(0xff1d1d1f), size: 20),
       style: IconButton.styleFrom(
         backgroundColor: Colors.white.withValues(alpha: 0.66),
         minimumSize: const Size(42, 42),
@@ -1309,12 +1565,14 @@ class _BouncyPrimaryButtonState extends State<_BouncyPrimaryButton> {
             alignment: Alignment.center,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xff9c92fa), Color(0xff7d6ff0)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xff2c2c2e), Color(0xff050505)],
               ),
               borderRadius: BorderRadius.circular(28),
               boxShadow: const [
                 BoxShadow(
-                  color: Color(0x2c7b6ff0),
+                  color: Color(0x26000000),
                   blurRadius: 22,
                   offset: Offset(0, 9),
                 ),
@@ -1356,7 +1614,7 @@ class _RememberRow extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: value ? _violet : Colors.transparent,
                   border: Border.all(
-                    color: value ? _violet : const Color(0xffd9d6e8),
+                    color: value ? _violet : const Color(0xffd1d1d6),
                     width: 1.5,
                   ),
                 ),
@@ -1436,12 +1694,12 @@ class _QQButtonState extends State<_QQButton> {
               height: 54,
               padding: const EdgeInsets.all(9),
               decoration: BoxDecoration(
-                color: const Color(0xfffbfaff),
+                color: const Color(0xffffffff),
                 shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xffe9e6f5)),
+                border: Border.all(color: const Color(0xffe5e5ea)),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color(0x13746bd2),
+                    color: Color(0x12000000),
                     blurRadius: 14,
                     offset: Offset(0, 5),
                   ),
@@ -1507,12 +1765,12 @@ class _EmailLoginButtonState extends State<_EmailLoginButton> {
               height: 54,
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: const Color(0xfffbfaff),
+                color: const Color(0xffffffff),
                 shape: BoxShape.circle,
-                border: Border.all(color: const Color(0xffe9e6f5)),
+                border: Border.all(color: const Color(0xffe5e5ea)),
                 boxShadow: const [
                   BoxShadow(
-                    color: Color(0x13746bd2),
+                    color: Color(0x12000000),
                     blurRadius: 14,
                     offset: Offset(0, 5),
                   ),
@@ -1586,12 +1844,12 @@ class _ProviderLoginButtonState extends State<_ProviderLoginButton> {
                 height: 54,
                 padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                  color: const Color(0xfffbfaff),
+                  color: const Color(0xffffffff),
                   shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xffe9e6f5)),
+                  border: Border.all(color: const Color(0xffe5e5ea)),
                   boxShadow: const [
                     BoxShadow(
-                      color: Color(0x13746bd2),
+                      color: Color(0x12000000),
                       blurRadius: 14,
                       offset: Offset(0, 5),
                     ),
@@ -1648,7 +1906,7 @@ class _AgreementRow extends StatelessWidget {
               shape: BoxShape.circle,
               color: value ? _violet : Colors.transparent,
               border: Border.all(
-                color: value ? _violet : const Color(0xffd9d6e8),
+                color: value ? _violet : const Color(0xffd1d1d6),
                 width: 1.4,
               ),
             ),

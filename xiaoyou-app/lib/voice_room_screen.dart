@@ -10,6 +10,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import 'realtime_voice_player.dart';
+import 'theme_controller.dart';
 import 'voice_recorder.dart';
 import 'xiaoyou_api.dart';
 
@@ -849,6 +850,7 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -861,15 +863,21 @@ class _VoiceRoomScreenState extends State<VoiceRoomScreen>
           children: [
             Positioned.fill(
               child: DecoratedBox(
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xfffffbfd),
-                      Color(0xffffeef6),
-                      Color(0xffeee9fa),
-                    ],
+                    colors: dark
+                        ? const [
+                            Color(0xff0d0d11),
+                            Color(0xff171219),
+                            Color(0xff11121a)
+                          ]
+                        : const [
+                            Color(0xfffffbfd),
+                            Color(0xffffeef6),
+                            Color(0xffeee9fa)
+                          ],
                   ),
                 ),
               ),
@@ -1064,7 +1072,9 @@ class _VoiceControlButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final background = dark ? const Color(0xff241c21) : Colors.white;
+    final background = dark
+        ? const Color(0xff241c21)
+        : (xiaoyouIsDark(context) ? const Color(0xff262329) : Colors.white);
     final foreground = dark ? Colors.white : _voiceInk;
     return Semantics(
       button: true,
@@ -1224,7 +1234,7 @@ class _VoiceRoomArchiveSheetState extends State<_VoiceRoomArchiveSheet> {
                   itemBuilder: (context, index) {
                     final room = rooms[index];
                     return Material(
-                      color: const Color(0xd9ffffff),
+                      color: xiaoyouCardSurface(context),
                       borderRadius: BorderRadius.circular(24),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(24),

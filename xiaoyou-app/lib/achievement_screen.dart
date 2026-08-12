@@ -5,12 +5,12 @@ import 'package:flutter/material.dart';
 
 import 'achievement_models.dart';
 import 'chat_models.dart';
+import 'theme_controller.dart';
 
 const _achievementInk = Color(0xff382932);
 const _achievementMuted = Color(0xff8f7a86);
 const _achievementRose = Color(0xffa8517e);
 const _achievementRoseDark = Color(0xff64354f);
-const _achievementCanvas = Color(0xfffffbfd);
 const _storybookBackground = 'assets/achievements/storybook-background.png';
 const _achievementJewelFrame = 'assets/achievements/jewel-frame.png';
 const _achievementLevelMedallion = 'assets/achievements/level-medallion.png';
@@ -82,7 +82,7 @@ class _ChatAchievementScreenState extends State<ChatAchievementScreen> {
     final chapterAchievements = _chapterAchievements;
     final selected = _selected ?? chapterAchievements.first;
     return Scaffold(
-      backgroundColor: _achievementCanvas,
+      backgroundColor: xiaoyouPageSurface(context),
       body: Stack(
         children: [
           const Positioned.fill(child: _AchievementBackground()),
@@ -193,7 +193,8 @@ class _GlassIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white.withValues(alpha: 0.68),
+      color: (xiaoyouIsDark(context) ? const Color(0xff242227) : Colors.white)
+          .withValues(alpha: 0.78),
       shape: const CircleBorder(),
       child: InkWell(
         onTap: onTap,
@@ -203,7 +204,7 @@ class _GlassIconButton extends StatelessWidget {
           height: 42,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
-            border: Border.all(color: const Color(0xcaffffff)),
+            border: Border.all(color: xiaoyouGlassBorder(context)),
             boxShadow: const [
               BoxShadow(
                 color: Color(0x145b3148),
@@ -247,14 +248,20 @@ class _AchievementSummary extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.fromLTRB(17, 16, 17, 15),
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xe8ffffff),
-              Color(0xe8fff5fa),
-              Color(0xeaf1ecfa),
-            ],
+            colors: xiaoyouIsDark(context)
+                ? const [
+                    Color(0xe827242a),
+                    Color(0xe8231e25),
+                    Color(0xea1e1c27)
+                  ]
+                : const [
+                    Color(0xe8ffffff),
+                    Color(0xe8fff5fa),
+                    Color(0xeaf1ecfa)
+                  ],
           ),
           borderRadius: BorderRadius.circular(25),
           boxShadow: const [

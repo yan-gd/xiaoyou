@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'xiaoyou_api.dart';
+import 'theme_controller.dart';
 
 enum FirstRunOnboardingResult { completed, skipped }
 
@@ -18,7 +19,7 @@ class FirstRunAppBootSurface extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(backgroundColor: _page);
+    return Scaffold(backgroundColor: xiaoyouPageSurface(context));
   }
 }
 
@@ -30,7 +31,7 @@ class FirstRunOnboardingHandoff extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(backgroundColor: _page);
+    return Scaffold(backgroundColor: xiaoyouPageSurface(context));
   }
 }
 
@@ -125,9 +126,7 @@ class _FirstRunOnboardingScreenState extends State<FirstRunOnboardingScreen>
   String get _conversationReply {
     if (_stage == 1) {
       final value = _name.text.trim();
-      return value.isEmpty
-          ? '告诉我一个你喜欢的称呼，以后聊天我就这样叫你。'
-          : '好。以后我就叫你「$value」。';
+      return value.isEmpty ? '告诉我一个你喜欢的称呼，以后聊天我就这样叫你。' : '好。以后我就叫你「$value」。';
     }
     if (_stage == 2) {
       final value = _birthday;
@@ -282,7 +281,7 @@ class _FirstRunOnboardingScreenState extends State<FirstRunOnboardingScreen>
       canPop: false,
       child: Scaffold(
         resizeToAvoidBottomInset: false,
-        backgroundColor: _page,
+        backgroundColor: xiaoyouPageSurface(context),
         body: AnimatedPadding(
           padding: EdgeInsets.only(bottom: keyboard),
           duration: const Duration(milliseconds: 220),
@@ -339,7 +338,8 @@ class _FirstRunOnboardingScreenState extends State<FirstRunOnboardingScreen>
                               opacity: animation,
                               child: SlideTransition(
                                 position: slide,
-                                child: ScaleTransition(scale: scale, child: child),
+                                child:
+                                    ScaleTransition(scale: scale, child: child),
                               ),
                             );
                           },
@@ -626,8 +626,7 @@ class _KineticTextEntrance extends StatelessWidget {
                 .clamp(0.0, 1.0)
                 .toDouble();
             final opacity = Curves.easeOutQuart.transform(raw);
-            final spring = 1 -
-                math.exp(-6.8 * raw) * math.cos(9.2 * raw);
+            final spring = 1 - math.exp(-6.8 * raw) * math.cos(9.2 * raw);
             final settled = spring.clamp(0.0, 1.065).toDouble();
             final y = 22.0 * (1 - settled);
             final scale = 0.945 + 0.055 * settled;
@@ -642,7 +641,11 @@ class _KineticTextEntrance extends StatelessWidget {
                     text[index],
                     style: TextStyle(
                       fontFamily: 'serif',
-                      fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
+                      fontFamilyFallback: [
+                        'Noto Serif CJK SC',
+                        'Noto Serif SC',
+                        'serif'
+                      ],
                       fontSize: fontSize,
                       height: 1.10,
                       letterSpacing: letterSpacing * 0.55,
@@ -997,7 +1000,11 @@ class _StepScaffoldState extends State<_StepScaffold>
                       maxLines: 2,
                       style: TextStyle(
                         fontFamily: 'serif',
-                        fontFamilyFallback: ['Noto Serif CJK SC', 'Noto Serif SC', 'serif'],
+                        fontFamilyFallback: [
+                          'Noto Serif CJK SC',
+                          'Noto Serif SC',
+                          'serif'
+                        ],
                         fontSize: compact ? 27 : 31,
                         height: 1.12,
                         letterSpacing: -0.25,
@@ -1094,9 +1101,9 @@ class _LiveConversationPreview extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.9),
+        color: xiaoyouCardSurface(context),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xffefebec)),
+        border: Border.all(color: xiaoyouHairline(context)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x0a24191f),
@@ -1129,7 +1136,7 @@ class _LiveConversationPreview extends StatelessWidget {
               constraints: const BoxConstraints(maxWidth: 230),
               padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
               decoration: BoxDecoration(
-                color: const Color(0xfff1f0f1),
+                color: xiaoyouSoftSurface(context),
                 borderRadius: BorderRadius.circular(13),
               ),
               child: Text(
@@ -1217,8 +1224,10 @@ class _TraitChip extends StatelessWidget {
       side: BorderSide(
         color: selected ? const Color(0xffa89bc8) : const Color(0xffe4e0e1),
       ),
-      backgroundColor: Colors.white.withValues(alpha: 0.88),
-      selectedColor: const Color(0xfff0ecf8),
+      backgroundColor: xiaoyouCardSurface(context),
+      selectedColor: xiaoyouIsDark(context)
+          ? const Color(0xff352e3d)
+          : const Color(0xfff0ecf8),
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       labelStyle: TextStyle(
         fontSize: 13,
@@ -1246,11 +1255,11 @@ class _SelectionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: Colors.white.withValues(alpha: 0.92),
+      color: xiaoyouCardSurface(context),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(18),
         side: BorderSide(
-          color: selected ? const Color(0xffa89bc8) : _hairline,
+          color: selected ? const Color(0xffa89bc8) : xiaoyouHairline(context),
         ),
       ),
       child: InkWell(

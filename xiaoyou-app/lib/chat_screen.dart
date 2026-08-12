@@ -2460,7 +2460,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Widget _buildConversation() {
     final connected = _api != null;
-    final palette = _appearancePalette(_preferences.palette);
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final lightPalette = _appearancePalette(_preferences.palette);
+    final palette =
+        darkMode ? _darkAppearancePalette(lightPalette) : lightPalette;
     final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
     return Scaffold(
       resizeToAvoidBottomInset: false,
@@ -2718,23 +2721,27 @@ class _AiGeneratedWatermark extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Semantics(
       label: '内容由人工智能生成，请注意甄别',
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 2, 12, 4),
-        child: const Row(
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               Icons.auto_awesome_rounded,
               size: 11,
-              color: Color(0xB29F4F79),
+              color:
+                  darkMode ? const Color(0xffc997b0) : const Color(0xB29F4F79),
             ),
-            SizedBox(width: 5),
+            const SizedBox(width: 5),
             Text(
               '内容由 AI 生成 · 请注意甄别',
               style: TextStyle(
-                color: Color(0xB26F5E67),
+                color: darkMode
+                    ? const Color(0xff8f868d)
+                    : const Color(0xB26F5E67),
                 fontSize: 10.5,
                 height: 1.25,
                 fontWeight: FontWeight.w600,
@@ -2849,6 +2856,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
   Widget build(BuildContext context) {
     final connection = widget.connection;
     final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final selectedThemeMode = xiaoyouThemeMode.value;
     final settingsCanvas = darkMode ? const Color(0xff15131f) : _canvas;
     final settingsTitle = darkMode ? const Color(0xfff4f0fb) : _ink;
     final settingsMuted = darkMode ? const Color(0xffaaa1bb) : _muted;
@@ -2872,16 +2880,7 @@ class _SettingsSheetState extends State<_SettingsSheet> {
             fontSize: 19,
           ),
         ),
-        actions: [
-          IconButton(
-            tooltip: darkMode ? '切换到日间模式' : '切换到夜间模式',
-            onPressed: () => unawaited(setXiaoyouDarkMode(!darkMode)),
-            icon: Icon(
-              darkMode ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-            ),
-          ),
-          const SizedBox(width: 6),
-        ],
+        actions: const [SizedBox(width: 6)],
       ),
       body: SafeArea(
         top: false,
@@ -2891,10 +2890,10 @@ class _SettingsSheetState extends State<_SettingsSheet> {
             children: [
               const _Avatar(size: 70),
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 '小悠',
                 style: TextStyle(
-                  color: _ink,
+                  color: settingsTitle,
                   fontWeight: FontWeight.w700,
                   fontSize: 22,
                 ),
@@ -2909,18 +2908,54 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 children: [
                   ListTile(
                     leading: _SettingsIcon(
-                      icon: darkMode
-                          ? Icons.nightlight_round
-                          : Icons.wb_sunny_rounded,
+                      icon: selectedThemeMode == ThemeMode.system
+                          ? Icons.brightness_auto_rounded
+                          : selectedThemeMode == ThemeMode.dark
+                              ? Icons.dark_mode_rounded
+                              : Icons.light_mode_rounded,
                     ),
-                    title: const Text('夜间模式'),
+                    title: const Text('界面外观'),
                     subtitle: Text(
-                      darkMode ? '已开启深色界面，点击太阳可切回日间模式' : '减少夜间亮度刺激，点击月亮即可开启',
+                      selectedThemeMode == ThemeMode.system
+                          ? '跟随手机系统的日间 / 夜间设置'
+                          : selectedThemeMode == ThemeMode.dark
+                              ? '固定使用夜间模式'
+                              : '固定使用日间模式',
                     ),
-                    trailing: Switch.adaptive(
-                      value: darkMode,
-                      onChanged: (value) =>
-                          unawaited(setXiaoyouDarkMode(value)),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: SegmentedButton<ThemeMode>(
+                        segments: const [
+                          ButtonSegment(
+                            value: ThemeMode.system,
+                            icon: Icon(Icons.brightness_auto_rounded, size: 17),
+                            label: Text('跟随系统'),
+                          ),
+                          ButtonSegment(
+                            value: ThemeMode.light,
+                            icon: Icon(Icons.light_mode_rounded, size: 17),
+                            label: Text('日间'),
+                          ),
+                          ButtonSegment(
+                            value: ThemeMode.dark,
+                            icon: Icon(Icons.dark_mode_rounded, size: 17),
+                            label: Text('夜间'),
+                          ),
+                        ],
+                        selected: <ThemeMode>{selectedThemeMode},
+                        showSelectedIcon: false,
+                        onSelectionChanged: (selection) {
+                          final mode = selection.first;
+                          unawaited(
+                            setXiaoyouThemeMode(mode).then((_) {
+                              if (mounted) setState(() {});
+                            }),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ],
@@ -3539,7 +3574,8 @@ class _ConversationToolsSheet extends StatelessWidget {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Material(
-          color: _pearl.withValues(alpha: 0.93),
+          color: (xiaoyouIsDark(context) ? const Color(0xff17161a) : _pearl)
+              .withValues(alpha: 0.95),
           clipBehavior: Clip.antiAlias,
           child: SafeArea(
             top: false,
@@ -3561,7 +3597,7 @@ class _ConversationToolsSheet extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 18),
-                  const Row(
+                  Row(
                     children: [
                       _Avatar(size: 48),
                       SizedBox(width: 12),
@@ -3571,7 +3607,7 @@ class _ConversationToolsSheet extends StatelessWidget {
                           Text(
                             '聊天工具',
                             style: TextStyle(
-                              color: _ink,
+                              color: xiaoyouPrimaryText(context),
                               fontSize: 20,
                               fontWeight: FontWeight.w800,
                             ),
@@ -3579,7 +3615,9 @@ class _ConversationToolsSheet extends StatelessWidget {
                           SizedBox(height: 3),
                           Text(
                             '把常用操作放在手边，也让每一次聊天更有连续感',
-                            style: TextStyle(color: _muted, fontSize: 12),
+                            style: TextStyle(
+                                color: xiaoyouSecondaryText(context),
+                                fontSize: 12),
                           ),
                         ],
                       ),
@@ -3696,21 +3734,24 @@ class _ConversationToolButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     final width = (MediaQuery.sizeOf(context).width - 50) / 2;
     return SizedBox(
       width: width,
       height: 74,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          gradient: enabled
-              ? const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xffffffff), Color(0xfffbf2f8)],
-                )
-              : const LinearGradient(
-                  colors: [Color(0xfff3edf0), Color(0xfff3edf0)],
-                ),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: dark
+                ? (enabled
+                    ? const [Color(0xff29272d), Color(0xff201e23)]
+                    : const [Color(0xff201e22), Color(0xff1c1a1e)])
+                : (enabled
+                    ? const [Color(0xffffffff), Color(0xfffbf2f8)]
+                    : const [Color(0xfff3edf0), Color(0xfff3edf0)]),
+          ),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: enabled ? const Color(0xdfffffff) : const Color(0xffeadfe4),
@@ -3740,7 +3781,10 @@ class _ConversationToolButton extends StatelessWidget {
                   Text(
                     label,
                     style: TextStyle(
-                      color: enabled ? _ink : _muted,
+                      color: enabled
+                          ? xiaoyouPrimaryText(context)
+                          : xiaoyouSecondaryText(context)
+                              .withValues(alpha: 0.55),
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -3765,19 +3809,22 @@ class _ConversationToolGlyph extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     return Container(
       width: 40,
       height: 40,
       decoration: BoxDecoration(
-        gradient: enabled
-            ? const LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xffffe7f1), Color(0xffeee8f9)],
-              )
-            : const LinearGradient(
-                colors: [Color(0xffece6e9), Color(0xffe8e2e7)],
-              ),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: dark
+              ? (enabled
+                  ? const [Color(0xff443340), Color(0xff302c3d)]
+                  : const [Color(0xff2b292d), Color(0xff252328)])
+              : (enabled
+                  ? const [Color(0xffffe7f1), Color(0xffeee8f9)]
+                  : const [Color(0xffece6e9), Color(0xffe8e2e7)]),
+        ),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: enabled ? const Color(0xe6ffffff) : const Color(0xffe0d9de),
@@ -3807,8 +3854,9 @@ class _ConversationStat extends StatelessWidget {
         children: [
           Text(
             value,
-            style: const TextStyle(
-              color: _roseDark,
+            style: TextStyle(
+              color:
+                  xiaoyouIsDark(context) ? const Color(0xffe4a6c4) : _roseDark,
               fontSize: 19,
               fontWeight: FontWeight.w700,
             ),
@@ -3816,7 +3864,8 @@ class _ConversationStat extends StatelessWidget {
           const SizedBox(height: 3),
           Text(
             label,
-            style: const TextStyle(color: _muted, fontSize: 11),
+            style:
+                TextStyle(color: xiaoyouSecondaryText(context), fontSize: 11),
           ),
         ],
       ),
@@ -3856,15 +3905,19 @@ class _RelationshipChartState extends State<_RelationshipChart>
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
+        gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [Color(0xfffff8fb), Color(0xfff4effa)],
+          colors: dark
+              ? const [Color(0xff201e23), Color(0xff17161a)]
+              : const [Color(0xfffff8fb), Color(0xfff4effa)],
         ),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xdfffffff)),
+        border: Border.all(
+            color: dark ? const Color(0xff38343b) : const Color(0xdfffffff)),
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
@@ -3872,10 +3925,10 @@ class _RelationshipChartState extends State<_RelationshipChart>
           children: [
             Row(
               children: [
-                const Text(
+                Text(
                   '最近的聊天节奏',
                   style: TextStyle(
-                    color: _ink,
+                    color: xiaoyouPrimaryText(context),
                     fontSize: 12,
                     fontWeight: FontWeight.w700,
                   ),
@@ -3906,11 +3959,15 @@ class _RelationshipChartState extends State<_RelationshipChart>
               ),
             ),
             const SizedBox(height: 3),
-            const Row(
+            Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('近 7 天', style: TextStyle(color: _muted, fontSize: 10)),
-                Text('消息活跃度', style: TextStyle(color: _muted, fontSize: 10)),
+                Text('近 7 天',
+                    style: TextStyle(
+                        color: xiaoyouSecondaryText(context), fontSize: 10)),
+                Text('消息活跃度',
+                    style: TextStyle(
+                        color: xiaoyouSecondaryText(context), fontSize: 10)),
               ],
             ),
           ],
@@ -4049,7 +4106,7 @@ class _FavoriteMessagesSheet extends StatelessWidget {
     return FractionallySizedBox(
       heightFactor: 0.72,
       child: Material(
-        color: _canvas,
+        color: xiaoyouPageSurface(context),
         borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
         clipBehavior: Clip.antiAlias,
         child: SafeArea(
@@ -4065,8 +4122,8 @@ class _FavoriteMessagesSheet extends StatelessWidget {
                   borderRadius: BorderRadius.circular(99),
                 ),
               ),
-              const Padding(
-                padding: EdgeInsets.fromLTRB(20, 18, 20, 12),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
                 child: Row(
                   children: [
                     Icon(Icons.bookmark_rounded, color: _rose),
@@ -4074,7 +4131,7 @@ class _FavoriteMessagesSheet extends StatelessWidget {
                     Text(
                       '我的收藏',
                       style: TextStyle(
-                        color: _ink,
+                        color: xiaoyouPrimaryText(context),
                         fontSize: 20,
                         fontWeight: FontWeight.w700,
                       ),
@@ -4093,7 +4150,7 @@ class _FavoriteMessagesSheet extends StatelessWidget {
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
                       ),
-                      tileColor: Colors.white,
+                      tileColor: xiaoyouCardSurface(context),
                       leading: message.fromXiaoyou
                           ? const _Avatar(size: 38)
                           : const CircleAvatar(
@@ -4198,6 +4255,9 @@ class _ConversationHeaderState extends State<_ConversationHeader>
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final headerTitle = darkMode ? const Color(0xfff4f1f3) : _ink;
+    final headerMuted = darkMode ? const Color(0xffa49ca2) : _muted;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
       child: RepaintBoundary(
@@ -4216,22 +4276,33 @@ class _ConversationHeaderState extends State<_ConversationHeader>
               filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.65),
-                  gradient: const LinearGradient(
+                  color: darkMode
+                      ? const Color(0xff1d1b20).withValues(alpha: 0.74)
+                      : Colors.white.withValues(alpha: 0.65),
+                  gradient: LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xeaffffff),
-                      Color(0xc9fff5fa),
-                    ],
+                    colors: darkMode
+                        ? const [
+                            Color(0xe826242a),
+                            Color(0xd918171b),
+                          ]
+                        : const [
+                            Color(0xeaffffff),
+                            Color(0xc9fff5fa),
+                          ],
                   ),
                   borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: _glassBorder),
-                  boxShadow: const [
+                  border: Border.all(
+                    color: darkMode ? const Color(0x26ffffff) : _glassBorder,
+                  ),
+                  boxShadow: [
                     BoxShadow(
-                      color: Color(0x14572a40),
+                      color: darkMode
+                          ? const Color(0x70000000)
+                          : const Color(0x14572a40),
                       blurRadius: 18,
-                      offset: Offset(0, 6),
+                      offset: const Offset(0, 6),
                     ),
                   ],
                 ),
@@ -4264,19 +4335,19 @@ class _ConversationHeaderState extends State<_ConversationHeader>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
+                              Row(
                                 children: [
                                   Text(
                                     '小悠',
                                     style: TextStyle(
-                                      color: _ink,
+                                      color: headerTitle,
                                       fontWeight: FontWeight.w800,
                                       fontSize: 18,
                                       letterSpacing: 0.1,
                                     ),
                                   ),
-                                  SizedBox(width: 6),
-                                  Icon(
+                                  const SizedBox(width: 6),
+                                  const Icon(
                                     Icons.favorite_rounded,
                                     size: 13,
                                     color: Color(0xffc36d98),
@@ -4291,8 +4362,8 @@ class _ConversationHeaderState extends State<_ConversationHeader>
                                   key: ValueKey(widget.status),
                                   style: TextStyle(
                                     color: widget.connected
-                                        ? const Color(0xff5e8d77)
-                                        : _muted,
+                                        ? const Color(0xff63a886)
+                                        : headerMuted,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w500,
                                   ),
@@ -4424,25 +4495,34 @@ class _HeaderIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Tooltip(
       message: tooltip,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xffffffff),
-              Color(0xfff5edf7),
-            ],
+            colors: darkMode
+                ? const [
+                    Color(0xff302d34),
+                    Color(0xff201e24),
+                  ]
+                : const [
+                    Color(0xffffffff),
+                    Color(0xfff5edf7),
+                  ],
           ),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: const Color(0xe0ffffff)),
-          boxShadow: const [
+          border: Border.all(
+            color: darkMode ? const Color(0x24ffffff) : const Color(0xe0ffffff),
+          ),
+          boxShadow: [
             BoxShadow(
-              color: Color(0x10572a40),
+              color:
+                  darkMode ? const Color(0x42000000) : const Color(0x10572a40),
               blurRadius: 8,
-              offset: Offset(0, 3),
+              offset: const Offset(0, 3),
             ),
           ],
         ),
@@ -5157,26 +5237,38 @@ class _MessageRowState extends State<_MessageRow>
   Widget build(BuildContext context) {
     final message = widget.message;
     final fromXiaoyou = message.fromXiaoyou;
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     final screenWidth = MediaQuery.sizeOf(context).width;
     final maxBubbleWidth = min(screenWidth * 0.78, 346.0);
     final slideBegin = Offset(fromXiaoyou ? -0.06 : 0.06, 0.04);
-    final outgoingLight =
-        Color.lerp(widget.userBubbleColor, Colors.white, 0.14)!;
+    final outgoingLight = Color.lerp(
+      widget.userBubbleColor,
+      darkMode ? const Color(0xff3a343c) : Colors.white,
+      darkMode ? 0.18 : 0.14,
+    )!;
     final glassBubble = widget.bubbleStyle == 'glass';
     final flatBubble = widget.bubbleStyle == 'flat';
     final bubbleGradient = widget.highlighted
-        ? const LinearGradient(
-            colors: [Color(0xffffedf6), Color(0xffffdfef)],
+        ? LinearGradient(
+            colors: darkMode
+                ? const [Color(0xff3b2a34), Color(0xff30222b)]
+                : const [Color(0xffffedf6), Color(0xffffdfef)],
           )
         : fromXiaoyou
             ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: glassBubble
-                    ? const [Color(0xd9ffffff), Color(0xbffffafd)]
-                    : flatBubble
-                        ? const [Color(0xffffffff), Color(0xffffffff)]
-                        : const [Color(0xfaffffff), Color(0xf6fffafd)],
+                colors: darkMode
+                    ? (glassBubble
+                        ? const [Color(0xd92e2b31), Color(0xbf242127)]
+                        : flatBubble
+                            ? const [Color(0xff272429), Color(0xff272429)]
+                            : const [Color(0xfa2d2a30), Color(0xf6252328)])
+                    : (glassBubble
+                        ? const [Color(0xd9ffffff), Color(0xbffffafd)]
+                        : flatBubble
+                            ? const [Color(0xffffffff), Color(0xffffffff)]
+                            : const [Color(0xfaffffff), Color(0xf6fffafd)]),
               )
             : LinearGradient(
                 begin: Alignment.topLeft,
@@ -5259,11 +5351,16 @@ class _MessageRowState extends State<_MessageRow>
                                   : widget.highlighted
                                       ? _rose
                                       : glassBubble
-                                          ? Colors.white.withValues(alpha: 0.78)
+                                          ? Colors.white.withValues(
+                                              alpha: darkMode ? 0.16 : 0.78,
+                                            )
                                           : fromXiaoyou
-                                              ? const Color(0xe8ffffff)
-                                              : Colors.white
-                                                  .withValues(alpha: 0.2),
+                                              ? (darkMode
+                                                  ? const Color(0x1fffffff)
+                                                  : const Color(0xe8ffffff))
+                                              : Colors.white.withValues(
+                                                  alpha: darkMode ? 0.12 : 0.2,
+                                                ),
                               width: widget.selected || _messageMenuVisible
                                   ? 2
                                   : widget.highlighted
@@ -5318,8 +5415,11 @@ class _MessageRowState extends State<_MessageRow>
                                   : Text(
                                       message.text,
                                       style: TextStyle(
-                                        color:
-                                            fromXiaoyou ? _ink : Colors.white,
+                                        color: fromXiaoyou
+                                            ? (darkMode
+                                                ? const Color(0xfff2eef1)
+                                                : _ink)
+                                            : Colors.white,
                                         fontSize: 15.5,
                                         height: 1.45,
                                       ),
@@ -5355,8 +5455,10 @@ class _MessageRowState extends State<_MessageRow>
                       if (widget.showMessageTime)
                         Text(
                           _formatTime(message.timestamp),
-                          style: const TextStyle(
-                            color: Color(0xffaaa0a5),
+                          style: TextStyle(
+                            color: darkMode
+                                ? const Color(0xff777178)
+                                : const Color(0xffaaa0a5),
                             fontSize: 10,
                           ),
                         ),
@@ -5608,21 +5710,30 @@ class _DateDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16),
       child: Center(
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              colors: [Color(0xc9ffffff), Color(0xbff5eaf1)],
+            gradient: LinearGradient(
+              colors: darkMode
+                  ? const [Color(0xc927252a), Color(0xbf1d1b20)]
+                  : const [Color(0xc9ffffff), Color(0xbff5eaf1)],
             ),
             borderRadius: BorderRadius.circular(99),
-            border: Border.all(color: const Color(0xbfffffff)),
+            border: Border.all(
+              color:
+                  darkMode ? const Color(0x1fffffff) : const Color(0xbfffffff),
+            ),
           ),
           child: Text(
             _formatDate(date),
-            style: const TextStyle(color: _muted, fontSize: 11),
+            style: TextStyle(
+              color: darkMode ? const Color(0xff9d969c) : _muted,
+              fontSize: 11,
+            ),
           ),
         ),
       ),
@@ -5652,6 +5763,7 @@ class _TypingIndicatorState extends State<_TypingIndicator>
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
@@ -5661,10 +5773,12 @@ class _TypingIndicatorState extends State<_TypingIndicator>
           height: 42,
           padding: const EdgeInsets.symmetric(horizontal: 15),
           decoration: BoxDecoration(
-            gradient: const LinearGradient(
+            gradient: LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [Color(0xfbffffff), Color(0xf5fff8fb)],
+              colors: darkMode
+                  ? const [Color(0xfb2d2a30), Color(0xf5242228)]
+                  : const [Color(0xfbffffff), Color(0xf5fff8fb)],
             ),
             borderRadius: const BorderRadius.only(
               topLeft: Radius.circular(18),
@@ -5672,12 +5786,17 @@ class _TypingIndicatorState extends State<_TypingIndicator>
               bottomLeft: Radius.circular(6),
               bottomRight: Radius.circular(18),
             ),
-            border: Border.all(color: const Color(0xdfffffff)),
-            boxShadow: const [
+            border: Border.all(
+              color:
+                  darkMode ? const Color(0x1fffffff) : const Color(0xdfffffff),
+            ),
+            boxShadow: [
               BoxShadow(
-                color: Color(0x14572a40),
+                color: darkMode
+                    ? const Color(0x52000000)
+                    : const Color(0x14572a40),
                 blurRadius: 16,
-                offset: Offset(0, 5),
+                offset: const Offset(0, 5),
               ),
             ],
           ),
@@ -6093,25 +6212,25 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
         .toList();
     return Scaffold(
       resizeToAvoidBottomInset: true,
-      backgroundColor: _pearl,
+      backgroundColor: xiaoyouPageSurface(context),
       appBar: AppBar(
-        backgroundColor: _pearl,
+        backgroundColor: xiaoyouPageSurface(context),
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
           tooltip: '返回',
           onPressed: () => Navigator.maybePop(context),
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-          color: const Color(0xff5a424b),
+          color: xiaoyouPrimaryText(context),
         ),
         titleSpacing: 2,
-        title: const Column(
+        title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
               '搜索聊天记录',
               style: TextStyle(
-                color: Color(0xff3f2f35),
+                color: xiaoyouPrimaryText(context),
                 fontSize: 19,
                 fontWeight: FontWeight.w800,
               ),
@@ -6120,7 +6239,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
             Text(
               '你和小悠说过的每一句话',
               style: TextStyle(
-                color: Color(0xffa18e95),
+                color: xiaoyouSecondaryText(context),
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
               ),
@@ -6155,7 +6274,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                           icon: const Icon(Icons.close_rounded),
                         ),
                   filled: true,
-                  fillColor: const Color(0xfaffffff),
+                  fillColor: xiaoyouCardSurface(context),
                   prefixIconColor: _rose,
                   suffixIconColor: _muted,
                   border: OutlineInputBorder(
@@ -6238,7 +6357,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(20),
                           ),
-                          tileColor: const Color(0xfaffffff),
+                          tileColor: xiaoyouCardSurface(context),
                           contentPadding: const EdgeInsets.symmetric(
                             horizontal: 14,
                             vertical: 4,
@@ -6332,10 +6451,13 @@ class _SearchFilterChip extends StatelessWidget {
         onSelected: (_) => onTap(),
         visualDensity: const VisualDensity(horizontal: -2, vertical: -1),
         showCheckmark: false,
-        backgroundColor: const Color(0xdfffffff),
-        selectedColor: _blush,
+        backgroundColor: xiaoyouCardSurface(context),
+        selectedColor:
+            xiaoyouIsDark(context) ? const Color(0xff44313b) : _blush,
         labelStyle: TextStyle(
-          color: selected ? _roseDark : _muted,
+          color: selected
+              ? (xiaoyouIsDark(context) ? const Color(0xffffd7e8) : _roseDark)
+              : xiaoyouSecondaryText(context),
           fontSize: 12.5,
           fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
         ),
@@ -6343,7 +6465,9 @@ class _SearchFilterChip extends StatelessWidget {
           borderRadius: BorderRadius.circular(14),
         ),
         side: BorderSide(
-          color: selected ? _rose : const Color(0xffeadfe4),
+          color: selected
+              ? (xiaoyouIsDark(context) ? const Color(0xff8c5872) : _rose)
+              : xiaoyouHairline(context),
           width: selected ? 1.1 : 0.8,
         ),
       ),
@@ -6491,31 +6615,43 @@ class _Composer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final composerText = darkMode ? const Color(0xfff2eef1) : _ink;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 10),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [
-              Color(0xfcffffff),
-              Color(0xf8f9edf7),
-              Color(0xf5f2effa),
-            ],
+            colors: darkMode
+                ? const [
+                    Color(0xfc242228),
+                    Color(0xf81e1c21),
+                    Color(0xf518171b),
+                  ]
+                : const [
+                    Color(0xfcffffff),
+                    Color(0xf8f9edf7),
+                    Color(0xf5f2effa),
+                  ],
           ),
           borderRadius: BorderRadius.circular(29),
-          border: Border.all(color: _glassBorder),
-          boxShadow: const [
+          border: Border.all(
+            color: darkMode ? const Color(0x24ffffff) : _glassBorder,
+          ),
+          boxShadow: [
             BoxShadow(
-              color: Color(0x24572a40),
+              color:
+                  darkMode ? const Color(0x72000000) : const Color(0x24572a40),
               blurRadius: 24,
-              offset: Offset(0, 9),
+              offset: const Offset(0, 9),
             ),
             BoxShadow(
-              color: Color(0x18a85e85),
+              color:
+                  darkMode ? const Color(0x12000000) : const Color(0x18a85e85),
               blurRadius: 4,
-              offset: Offset(0, 1),
+              offset: const Offset(0, 1),
             ),
           ],
         ),
@@ -6555,14 +6691,22 @@ class _Composer extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: recording
                         ? (recordingCancelling
-                            ? const Color(0xffffe8ec)
-                            : const Color(0xfffff1f7))
-                        : Colors.white.withValues(alpha: 0.9),
+                            ? (darkMode
+                                ? const Color(0xff3a2027)
+                                : const Color(0xffffe8ec))
+                            : (darkMode
+                                ? const Color(0xff33242d)
+                                : const Color(0xfffff1f7)))
+                        : (darkMode
+                            ? const Color(0xff111114).withValues(alpha: 0.92)
+                            : Colors.white.withValues(alpha: 0.9)),
                     borderRadius: BorderRadius.circular(22),
                     border: Border.all(
                       color: recording
                           ? (recordingCancelling ? Colors.redAccent : _rose)
-                          : const Color(0xffeadfe4),
+                          : (darkMode
+                              ? const Color(0xff3b373e)
+                              : const Color(0xffeadfe4)),
                       width: recording ? 1.4 : 1,
                     ),
                   ),
@@ -6597,8 +6741,8 @@ class _Composer extends StatelessWidget {
                                       key: const ValueKey('idle'),
                                       child: Text(
                                         connected ? '按住 说话' : '正在连接小悠…',
-                                        style: const TextStyle(
-                                          color: _ink,
+                                        style: TextStyle(
+                                          color: composerText,
                                           fontSize: 15,
                                           fontWeight: FontWeight.w600,
                                         ),
@@ -6615,11 +6759,14 @@ class _Composer extends StatelessWidget {
                           maxLines: 5,
                           onTap: onComposerTap,
                           textInputAction: TextInputAction.newline,
-                          style: const TextStyle(color: _ink, fontSize: 16),
+                          style: TextStyle(color: composerText, fontSize: 16),
                           decoration: InputDecoration(
                             hintText: connected ? '和小悠说点什么…' : '正在连接小悠…',
-                            hintStyle:
-                                const TextStyle(color: Color(0xffb4a7ad)),
+                            hintStyle: TextStyle(
+                              color: darkMode
+                                  ? const Color(0xff827b82)
+                                  : const Color(0xffb4a7ad),
+                            ),
                             contentPadding:
                                 const EdgeInsets.fromLTRB(15, 10, 11, 9),
                             border: InputBorder.none,
@@ -6650,10 +6797,15 @@ class _Composer extends StatelessWidget {
                                     Color(0xff8f476f),
                                     Color(0xffb477ad),
                                   ]
-                                : const [
-                                    Color(0xfff1e6ee),
-                                    Color(0xffeee9f7),
-                                  ],
+                                : darkMode
+                                    ? const [
+                                        Color(0xff343037),
+                                        Color(0xff28252c),
+                                      ]
+                                    : const [
+                                        Color(0xfff1e6ee),
+                                        Color(0xffeee9f7),
+                                      ],
                           ),
                           shape: BoxShape.circle,
                           border: Border.all(
@@ -6703,7 +6855,9 @@ class _Composer extends StatelessWidget {
                                           key: const ValueKey('accessory'),
                                           color: accessoryPanelOpen
                                               ? Colors.white
-                                              : const Color(0xff8f7d86),
+                                              : (darkMode
+                                                  ? const Color(0xffaaa2a9)
+                                                  : const Color(0xff8f7d86)),
                                           size: 21,
                                         ),
                                       ),
@@ -6739,17 +6893,26 @@ class _ComposerIconButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Tooltip(
       message: tooltip,
       child: DecoratedBox(
         decoration: BoxDecoration(
           gradient: selected
-              ? const LinearGradient(
-                  colors: [Color(0xffffeaf4), Color(0xffeee9f8)],
+              ? LinearGradient(
+                  colors: darkMode
+                      ? const [Color(0xff3a3038), Color(0xff2b2730)]
+                      : const [Color(0xffffeaf4), Color(0xffeee9f8)],
                 )
               : null,
           shape: BoxShape.circle,
-          border: selected ? Border.all(color: const Color(0xffead6e2)) : null,
+          border: selected
+              ? Border.all(
+                  color: darkMode
+                      ? const Color(0x24ffffff)
+                      : const Color(0xffead6e2),
+                )
+              : null,
         ),
         child: Material(
           color: Colors.transparent,
@@ -7219,6 +7382,7 @@ class _EmptyConversation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(36),
@@ -7227,11 +7391,11 @@ class _EmptyConversation extends StatelessWidget {
           children: [
             const _Avatar(size: 86),
             const SizedBox(height: 18),
-            const Text(
+            Text(
               '在这里，也一直是同一个小悠',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: _ink,
+                color: darkMode ? const Color(0xfff2eef1) : _ink,
                 fontSize: 19,
                 fontWeight: FontWeight.w700,
               ),
@@ -7241,7 +7405,8 @@ class _EmptyConversation extends StatelessWidget {
               '记忆、关系和日常都与服务器上的小悠相连',
               textAlign: TextAlign.center,
               style: TextStyle(
-                color: _muted.withValues(alpha: 0.9),
+                color: (darkMode ? const Color(0xff9b949a) : _muted)
+                    .withValues(alpha: 0.9),
                 height: 1.5,
               ),
             ),
@@ -7447,14 +7612,15 @@ class _ProfileSheetState extends State<_ProfileSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final dark = xiaoyouIsDark(context);
     final recentImages = _recentImages();
     final selectedAsset = _moodAssets[_selectedMoodIndex];
     final selectedLabel = _moodLabels[selectedAsset] ?? widget.moodLabel;
     return Scaffold(
-      backgroundColor: const Color(0xfffffcfa),
+      backgroundColor: xiaoyouPageSurface(context),
       body: SafeArea(
         child: Material(
-          color: const Color(0xfffffcfa),
+          color: xiaoyouPageSurface(context),
           child: Column(
             children: [
               Padding(
@@ -7465,7 +7631,7 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                       tooltip: '关闭',
                       onPressed: () => Navigator.maybePop(context),
                       icon: const Icon(Icons.close_rounded),
-                      color: const Color(0xff6f555e),
+                      color: xiaoyouPrimaryText(context),
                       iconSize: 25,
                     ),
                     const SizedBox(width: 4),
@@ -7474,14 +7640,14 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                       child: _Avatar(size: 48),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             '小悠',
                             style: TextStyle(
-                              color: Color(0xff3a292f),
+                              color: xiaoyouPrimaryText(context),
                               fontSize: 21,
                               fontWeight: FontWeight.w800,
                               letterSpacing: 0.2,
@@ -7491,7 +7657,7 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                           Text(
                             '最近的她',
                             style: TextStyle(
-                              color: Color(0xff9a878e),
+                              color: xiaoyouSecondaryText(context),
                               fontSize: 12,
                               fontWeight: FontWeight.w500,
                             ),
@@ -7562,7 +7728,7 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                             child: Row(
                               crossAxisAlignment: CrossAxisAlignment.end,
                               children: [
-                                const Expanded(
+                                Expanded(
                                   child: Column(
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
@@ -7570,7 +7736,7 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                                       Text(
                                         '最近的日常',
                                         style: TextStyle(
-                                          color: Color(0xff443138),
+                                          color: xiaoyouPrimaryText(context),
                                           fontSize: 22,
                                           fontWeight: FontWeight.w800,
                                           letterSpacing: 0.2,
@@ -7580,7 +7746,7 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                                       Text(
                                         '她最近分享给你的照片',
                                         style: TextStyle(
-                                          color: Color(0xffa08d94),
+                                          color: xiaoyouSecondaryText(context),
                                           fontSize: 12,
                                           height: 1.4,
                                         ),
@@ -7590,8 +7756,10 @@ class _ProfileSheetState extends State<_ProfileSheet> {
                                 ),
                                 Text(
                                   '${recentImages.length.clamp(0, 6)} 张',
-                                  style: const TextStyle(
-                                    color: Color(0xffbd5a7c),
+                                  style: TextStyle(
+                                    color: dark
+                                        ? const Color(0xffe0a2be)
+                                        : const Color(0xffbd5a7c),
                                     fontSize: 12,
                                     fontWeight: FontWeight.w700,
                                   ),
@@ -7641,10 +7809,13 @@ class _ProfileAnchorTab extends StatelessWidget {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             border: Border(
-              top: const BorderSide(color: Color(0xffeee6e8)),
+              top: BorderSide(color: xiaoyouHairline(context)),
               bottom: BorderSide(
-                color:
-                    active ? const Color(0xffc85f83) : const Color(0xffeee6e8),
+                color: active
+                    ? (xiaoyouIsDark(context)
+                        ? const Color(0xffd487ad)
+                        : const Color(0xffc85f83))
+                    : xiaoyouHairline(context),
                 width: active ? 2 : 1,
               ),
             ),
@@ -7652,7 +7823,11 @@ class _ProfileAnchorTab extends StatelessWidget {
           child: Text(
             label,
             style: TextStyle(
-              color: active ? const Color(0xffb14e73) : const Color(0xff4c383f),
+              color: active
+                  ? (xiaoyouIsDark(context)
+                      ? const Color(0xffffd8e8)
+                      : const Color(0xffb14e73))
+                  : xiaoyouSecondaryText(context),
               fontSize: 15,
               fontWeight: active ? FontWeight.w700 : FontWeight.w600,
             ),
@@ -7676,76 +7851,84 @@ class _ProfileMoodSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final imageWidth = (constraints.maxWidth * 0.48).clamp(138.0, 190.0);
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            SizedBox(
-              width: imageWidth,
-              height: imageWidth * 1.08,
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 300),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeInCubic,
-                transitionBuilder: (child, animation) => FadeTransition(
-                  opacity: animation,
-                  child: ScaleTransition(
-                    scale:
-                        Tween<double>(begin: 0.97, end: 1).animate(animation),
-                    child: child,
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+      decoration: BoxDecoration(
+        color: xiaoyouCardSurface(context),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: xiaoyouHairline(context)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final imageWidth = (constraints.maxWidth * 0.48).clamp(138.0, 190.0);
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: imageWidth,
+                height: imageWidth * 1.08,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: ScaleTransition(
+                      scale:
+                          Tween<double>(begin: 0.97, end: 1).animate(animation),
+                      child: child,
+                    ),
+                  ),
+                  child: Image.asset(
+                    asset,
+                    key: ValueKey(asset),
+                    fit: BoxFit.contain,
+                    filterQuality: FilterQuality.high,
+                    errorBuilder: (context, error, stackTrace) =>
+                        const SizedBox.shrink(),
                   ),
                 ),
-                child: Image.asset(
-                  asset,
-                  key: ValueKey(asset),
-                  fit: BoxFit.contain,
-                  filterQuality: FilterQuality.high,
-                  errorBuilder: (context, error, stackTrace) =>
-                      const SizedBox.shrink(),
+              ),
+              const SizedBox(width: 14),
+              Container(
+                width: 2,
+                height: 92,
+                color: const Color(0xffd36a8d),
+              ),
+              const SizedBox(width: 18),
+              Expanded(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 260),
+                  child: Column(
+                    key: ValueKey(label),
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '今天 · $label',
+                        style: TextStyle(
+                          color: xiaoyouPrimaryText(context),
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                      const SizedBox(height: 9),
+                      Text(
+                        note,
+                        style: TextStyle(
+                          color: xiaoyouSecondaryText(context),
+                          fontSize: 13,
+                          height: 1.55,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 14),
-            Container(
-              width: 2,
-              height: 92,
-              color: const Color(0xffd36a8d),
-            ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 260),
-                child: Column(
-                  key: ValueKey(label),
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '今天 · $label',
-                      style: const TextStyle(
-                        color: Color(0xff573940),
-                        fontSize: 20,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 9),
-                    Text(
-                      note,
-                      style: const TextStyle(
-                        color: Color(0xff9c858d),
-                        fontSize: 13,
-                        height: 1.55,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        );
-      },
+            ],
+          );
+        },
+      ),
     );
   }
 }
@@ -7787,12 +7970,12 @@ class _MoodContactSheet extends StatelessWidget {
               duration: const Duration(milliseconds: 220),
               curve: Curves.easeOutCubic,
               decoration: BoxDecoration(
-                color: const Color(0xfffffdfc),
+                color: xiaoyouCardSurface(context),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                   color: selected
                       ? const Color(0xffcf6386)
-                      : const Color(0xffeadfe2),
+                      : xiaoyouHairline(context),
                   width: selected ? 1.6 : 1,
                 ),
               ),
@@ -7873,9 +8056,9 @@ class _ProfilePhotoJournal extends StatelessWidget {
   }) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xfffffdfc),
+        color: xiaoyouCardSurface(context),
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(color: const Color(0xfff1e8ea)),
+        border: Border.all(color: xiaoyouHairline(context)),
         boxShadow: const [
           BoxShadow(
             color: Color(0x160d0710),
@@ -7970,8 +8153,10 @@ class _ProfilePhotoJournal extends StatelessWidget {
           icon: const Icon(Icons.arrow_forward_rounded, size: 17),
           label: const Text('查看全部照片'),
           style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xffb95075),
-            side: const BorderSide(color: Color(0xffead9df)),
+            foregroundColor: xiaoyouIsDark(context)
+                ? const Color(0xffe0a2be)
+                : const Color(0xffb95075),
+            side: BorderSide(color: xiaoyouHairline(context)),
             padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
             shape: const StadiumBorder(),
             textStyle: const TextStyle(
@@ -7992,24 +8177,24 @@ class _ProfilePhotoEmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 34, horizontal: 22),
+      padding: EdgeInsets.symmetric(vertical: 34, horizontal: 22),
       decoration: BoxDecoration(
-        color: const Color(0xfffaf5f6),
+        color: xiaoyouSoftSurface(context),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xffeee3e6)),
+        border: Border.all(color: xiaoyouHairline(context)),
       ),
-      child: const Column(
+      child: Column(
         children: [
           Icon(
             Icons.photo_library_outlined,
-            color: Color(0xffb99ba5),
+            color: xiaoyouSecondaryText(context),
             size: 30,
           ),
           SizedBox(height: 10),
           Text(
             '她最近还没有分享照片',
             style: TextStyle(
-              color: Color(0xff806b72),
+              color: xiaoyouSecondaryText(context),
               fontSize: 13,
             ),
           ),
@@ -9265,19 +9450,38 @@ class _ConversationBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = switch (style) {
-      'paper' => [
-          Color.lerp(palette.background.first, Colors.white, 0.7)!,
-          Color.lerp(palette.background[1], Colors.white, 0.6)!,
-          Color.lerp(palette.background.last, Colors.white, 0.52)!,
-        ],
-      'starlight' => [
-          Color.lerp(palette.background.first, Colors.white, 0.3)!,
-          palette.background[1],
-          Color.lerp(palette.background.last, const Color(0xffeeeaff), 0.24)!,
-        ],
-      _ => palette.background,
-    };
+    final darkMode = Theme.of(context).brightness == Brightness.dark;
+    final colors = darkMode
+        ? switch (style) {
+            'paper' => const [
+                Color(0xff171619),
+                Color(0xff121214),
+                Color(0xff0d0d0f),
+              ],
+            'starlight' => const [
+                Color(0xff12131a),
+                Color(0xff17131c),
+                Color(0xff0a0b10),
+              ],
+            _ => palette.background,
+          }
+        : switch (style) {
+            'paper' => [
+                Color.lerp(palette.background.first, Colors.white, 0.7)!,
+                Color.lerp(palette.background[1], Colors.white, 0.6)!,
+                Color.lerp(palette.background.last, Colors.white, 0.52)!,
+              ],
+            'starlight' => [
+                Color.lerp(palette.background.first, Colors.white, 0.3)!,
+                palette.background[1],
+                Color.lerp(
+                  palette.background.last,
+                  const Color(0xffeeeaff),
+                  0.24,
+                )!,
+              ],
+            _ => palette.background,
+          };
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -9292,15 +9496,23 @@ class _ConversationBackdrop extends StatelessWidget {
           ),
         ),
         if (style == 'aurora') ...[
-          const Positioned(
+          Positioned(
             top: 88,
             right: -96,
-            child: _SoftOrb(size: 250, color: Color(0x28e4a7c5)),
+            child: _SoftOrb(
+              size: 250,
+              color:
+                  darkMode ? const Color(0x244f3444) : const Color(0x28e4a7c5),
+            ),
           ),
-          const Positioned(
+          Positioned(
             bottom: 80,
             left: -110,
-            child: _SoftOrb(size: 280, color: Color(0x24c7b9eb)),
+            child: _SoftOrb(
+              size: 280,
+              color:
+                  darkMode ? const Color(0x202f344f) : const Color(0x24c7b9eb),
+            ),
           ),
         ],
         if (style == 'starlight')
@@ -9496,6 +9708,23 @@ class _AppearancePalette {
 
   final List<Color> background;
   final Color userBubble;
+}
+
+_AppearancePalette _darkAppearancePalette(
+  _AppearancePalette lightPalette,
+) {
+  return _AppearancePalette(
+    background: const [
+      Color(0xff101013),
+      Color(0xff171419),
+      Color(0xff0b0b0d),
+    ],
+    userBubble: Color.lerp(
+      lightPalette.userBubble,
+      const Color(0xff171419),
+      0.24,
+    )!,
+  );
 }
 
 _AppearancePalette _appearancePalette(String key) {

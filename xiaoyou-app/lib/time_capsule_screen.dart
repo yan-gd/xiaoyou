@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 
 import 'relationship_models.dart';
 import 'xiaoyou_api.dart';
+import 'theme_controller.dart';
 
 const _capsuleInk = Color(0xff402d38);
 const _capsuleMuted = Color(0xff9c8792);
@@ -213,7 +214,7 @@ class _CapsuleTile extends StatelessWidget {
         final pulse = 0.55 + (glow.value - 0.5).abs() * 0.5;
         return DecoratedBox(
           decoration: BoxDecoration(
-            color: const Color(0xfaffffff),
+            color: xiaoyouCardSurface(context),
             borderRadius: BorderRadius.circular(28),
             border: Border.all(
               color: entry.locked
@@ -372,7 +373,7 @@ class _ComposeCapsuleSheetState extends State<_ComposeCapsuleSheet> {
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
       child: Material(
-        color: const Color(0xfffffbfd),
+        color: xiaoyouElevatedSurface(context),
         borderRadius: const BorderRadius.vertical(top: Radius.circular(34)),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),

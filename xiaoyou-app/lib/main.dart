@@ -33,15 +33,15 @@ class XiaoyouApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: xiaoyouDarkMode,
-      builder: (context, darkMode, _) {
+    return ValueListenableBuilder<ThemeMode>(
+      valueListenable: xiaoyouThemeMode,
+      builder: (context, themeMode, _) {
         return MaterialApp(
           title: '小悠',
           debugShowCheckedModeBanner: false,
           theme: _buildXiaoyouTheme(Brightness.light),
           darkTheme: _buildXiaoyouTheme(Brightness.dark),
-          themeMode: darkMode ? ThemeMode.dark : ThemeMode.light,
+          themeMode: themeMode,
           home: const PrivacyConsentGate(child: ChatScreen()),
         );
       },
@@ -129,15 +129,62 @@ ThemeData _buildXiaoyouTheme(Brightness brightness) {
         ),
       ),
     ),
+    cardTheme: CardThemeData(
+      color: dark ? const Color(0xff1d1b20) : Colors.white,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(22),
+        side: BorderSide(color: border),
+      ),
+    ),
+    listTileTheme: ListTileThemeData(
+      textColor: foreground,
+      iconColor: dark ? const Color(0xffd7d0d5) : const Color(0xff5c4b54),
+      subtitleTextStyle: TextStyle(
+        color: dark ? const Color(0xffaaa3a9) : const Color(0xff87777f),
+        fontSize: 12.5,
+      ),
+    ),
+    dividerTheme: DividerThemeData(
+      color: border,
+      thickness: 0.8,
+      space: 1,
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: dark ? const Color(0xff242127) : const Color(0xfff7f3f6),
+      selectedColor: dark ? const Color(0xff3b3038) : const Color(0xfff3e5ed),
+      side: BorderSide(color: border),
+      labelStyle: TextStyle(color: foreground),
+      secondaryLabelStyle: TextStyle(color: foreground),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    ),
     dialogTheme: DialogThemeData(
       backgroundColor: surface,
+      surfaceTintColor: Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(28),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: dark ? const Color(0xff312b42) : const Color(0xff4c3440),
-      contentTextStyle: const TextStyle(color: Colors.white),
+      behavior: SnackBarBehavior.floating,
+      elevation: 3,
+      backgroundColor: dark ? const Color(0xff242131) : const Color(0xfffffbfd),
+      actionTextColor: dark ? const Color(0xffb9adff) : const Color(0xff7568ef),
+      disabledActionTextColor:
+          dark ? const Color(0xff777184) : const Color(0xffaaa4b0),
+      contentTextStyle: TextStyle(
+        color: foreground,
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        height: 1.35,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(
+          color: dark ? const Color(0xff40394f) : const Color(0xffeee6ee),
+        ),
+      ),
     ),
   );
 }

@@ -10,6 +10,7 @@ import 'chat_models.dart';
 import 'daily_journal_screen.dart';
 import 'relationship_models.dart';
 import 'time_capsule_screen.dart';
+import 'theme_controller.dart';
 import 'xiaoyou_api.dart';
 
 const _orbitInk = Color(0xff3d2b36);
@@ -309,7 +310,7 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xfffbf4fb),
+      backgroundColor: xiaoyouPageSurface(context),
       body: Stack(
         children: [
           Positioned.fill(
@@ -348,9 +349,11 @@ class _RelationshipUniverseScreenState extends State<RelationshipUniverseScreen>
               onPressed: () => Navigator.of(context).pop(),
               icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
               style: IconButton.styleFrom(
-                backgroundColor: const Color(0x9fffffff),
+                backgroundColor: xiaoyouIsDark(context)
+                    ? const Color(0xaa242127)
+                    : const Color(0x9fffffff),
                 foregroundColor: _orbitRose,
-                side: const BorderSide(color: Color(0xcfffffff)),
+                side: BorderSide(color: xiaoyouGlassBorder(context)),
               ),
             ),
           ),
@@ -844,7 +847,11 @@ class _OrbitNode extends StatelessWidget {
                           ],
                         )
                       : null,
-                  color: selected ? null : const Color(0xaaffffff),
+                  color: selected
+                      ? null
+                      : (xiaoyouIsDark(context)
+                          ? const Color(0xaa27242a)
+                          : const Color(0xaaffffff)),
                   boxShadow: [
                     BoxShadow(
                       color:
@@ -894,7 +901,9 @@ class _OrbitNode extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xe8ffffff),
+                  color: xiaoyouIsDark(context)
+                      ? const Color(0xe826242a)
+                      : const Color(0xe8ffffff),
                   borderRadius: BorderRadius.circular(99),
                   border: Border.all(color: const Color(0xccffffff)),
                 ),

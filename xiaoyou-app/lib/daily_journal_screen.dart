@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'relationship_models.dart';
 import 'xiaoyou_api.dart';
+import 'theme_controller.dart';
 
 const _journalInk = Color(0xff402d38);
 const _journalMuted = Color(0xff9d8893);
@@ -357,9 +358,9 @@ class _JournalPaper extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xfaffffff),
+        color: xiaoyouCardSurface(context),
         borderRadius: BorderRadius.circular(32),
-        border: Border.all(color: const Color(0xd9ffffff), width: 1.2),
+        border: Border.all(color: xiaoyouHairline(context), width: 1.2),
         boxShadow: const [
           BoxShadow(
             color: Color(0x174f2f40),
@@ -434,9 +435,9 @@ class _MoodPetal extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xfffff4f8),
+        color: xiaoyouSoftSurface(context),
         borderRadius: BorderRadius.circular(99),
-        border: Border.all(color: const Color(0xffffd9e8)),
+        border: Border.all(color: xiaoyouHairline(context)),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -507,16 +508,14 @@ class _JournalBackground extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const DecoratedBox(
+    return DecoratedBox(
       decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [
-            Color(0xfffffbfd),
-            Color(0xfffff3f8),
-            Color(0xfff2eefb),
-          ],
+          colors: xiaoyouIsDark(context)
+              ? const [Color(0xff0f0f12), Color(0xff171318), Color(0xff13131a)]
+              : const [Color(0xfffffbfd), Color(0xfffff3f8), Color(0xfff2eefb)],
         ),
       ),
     );

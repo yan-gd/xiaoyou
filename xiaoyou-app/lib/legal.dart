@@ -4,6 +4,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'theme_controller.dart';
 
 const xiaoyouPrivacyPolicyUrl = 'https://xiaoyou.yoyoyan.cn/privacy';
 const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
@@ -30,10 +31,10 @@ void releaseXiaoyouFirstFrame() {
 }
 
 const _loginBackgroundAsset = 'assets/login_background.png';
-const _violet = Color(0xff8c82f4);
-const _violetDeep = Color(0xff7568ef);
-const _ink = Color(0xff25243a);
-const _muted = Color(0xff8e8ba2);
+const _violet = Color(0xff111111);
+const _violetDeep = Color(0xff1d1d1f);
+const _ink = Color(0xff1d1d1f);
+const _muted = Color(0xff86868b);
 
 Future<void> openLegalUrl(String url) async {
   final uri = Uri.tryParse(url);
@@ -70,7 +71,7 @@ Future<bool> showPrivacyConsentCard(BuildContext context) async {
     context: context,
     barrierDismissible: false,
     barrierLabel: '隐私声明',
-    barrierColor: const Color(0x4d39364c),
+    barrierColor: const Color(0x52000000),
     transitionDuration: const Duration(milliseconds: 460),
     pageBuilder: (dialogContext, _, __) => const _PrivacyConsentDialog(),
     transitionBuilder: (_, animation, __, child) {
@@ -179,7 +180,7 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
       curve: Curves.easeOutCubic,
     );
     return Scaffold(
-      backgroundColor: const Color(0xfff7f6ff),
+      backgroundColor: xiaoyouPageSurface(context),
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -220,7 +221,7 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
                         const Text(
                           '小悠',
                           style: TextStyle(
-                            color: Color(0xff8b82f1),
+                            color: Color(0xff1d1d1f),
                             fontFamily: 'serif',
                             fontFamilyFallback: [
                               'Noto Serif CJK SC',
@@ -237,7 +238,7 @@ class _PrivacyConsentGateState extends State<PrivacyConsentGate>
                         const Text(
                           '遇见小悠，遇见更从容的自己 ♡',
                           style: TextStyle(
-                            color: Color(0xff7068c8),
+                            color: Color(0xff6e6e73),
                             fontFamily: 'serif',
                             fontFamilyFallback: [
                               'Noto Serif CJK SC',
@@ -301,7 +302,7 @@ class _TinyPrivacyButtonState extends State<_TinyPrivacyButton> {
           child: const Text(
             '查看隐私说明',
             style: TextStyle(
-              color: Color(0xff6f68ae),
+              color: Color(0xff1d1d1f),
               fontSize: 12.5,
               fontWeight: FontWeight.w700,
             ),
@@ -346,7 +347,10 @@ class _PrivacyConsentDialog extends StatelessWidget {
                   color: Colors.transparent,
                   child: Container(
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.955),
+                      color: (xiaoyouIsDark(context)
+                              ? const Color(0xff19191d)
+                              : Colors.white)
+                          .withValues(alpha: 0.955),
                       borderRadius: BorderRadius.circular(34),
                       border: Border.all(
                         color: Colors.white.withValues(alpha: 0.96),
@@ -354,7 +358,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                       ),
                       boxShadow: const [
                         BoxShadow(
-                          color: Color(0x28645c8e),
+                          color: Color(0x24000000),
                           blurRadius: 58,
                           offset: Offset(0, 24),
                         ),
@@ -479,7 +483,7 @@ class _PrivacyConsentDialog extends StatelessWidget {
                               TextButton(
                                 onPressed: () => Navigator.pop(context, false),
                                 style: TextButton.styleFrom(
-                                  foregroundColor: const Color(0xffaaa6b9),
+                                  foregroundColor: const Color(0xff8e8e93),
                                 ),
                                 child: const Text('暂不同意'),
                               ),
@@ -540,7 +544,9 @@ class _PrivacyMarkState extends State<_PrivacyMark>
             height: 46,
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xffa79ff8), Color(0xff8275ef)],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xff3a3a3c), Color(0xff000000)],
               ),
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
@@ -580,9 +586,9 @@ class _PrivacyItem extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 7),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xfff8f7fc),
+        color: xiaoyouSoftSurface(context),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xffece9f5)),
+        border: Border.all(color: xiaoyouHairline(context)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -591,7 +597,7 @@ class _PrivacyItem extends StatelessWidget {
             width: 34,
             height: 34,
             decoration: BoxDecoration(
-              color: const Color(0xffefedff),
+              color: const Color(0xfff2f2f7),
               borderRadius: BorderRadius.circular(11),
             ),
             child: Icon(icon, color: _violetDeep, size: 18),
@@ -603,8 +609,8 @@ class _PrivacyItem extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: _ink,
+                  style: TextStyle(
+                    color: xiaoyouPrimaryText(context),
                     fontSize: 13.2,
                     fontWeight: FontWeight.w700,
                   ),
@@ -612,8 +618,8 @@ class _PrivacyItem extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   detail,
-                  style: const TextStyle(
-                    color: _muted,
+                  style: TextStyle(
+                    color: xiaoyouSecondaryText(context),
                     fontSize: 11.9,
                     height: 1.38,
                   ),
@@ -657,12 +663,14 @@ class _ConsentPrimaryButtonState extends State<_ConsentPrimaryButton> {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [Color(0xff9b91fa), Color(0xff7e70ef)],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xff2c2c2e), Color(0xff000000)],
             ),
             borderRadius: BorderRadius.circular(27),
             boxShadow: const [
               BoxShadow(
-                color: Color(0x2b8174ef),
+                color: Color(0x24000000),
                 blurRadius: 22,
                 offset: Offset(0, 9),
               ),
