@@ -2924,25 +2924,37 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                     ),
                   ),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                    padding: const EdgeInsets.fromLTRB(6, 0, 6, 14),
                     child: SizedBox(
                       width: double.infinity,
                       child: SegmentedButton<ThemeMode>(
                         segments: const [
-                          ButtonSegment(
+                          ButtonSegment<ThemeMode>(
                             value: ThemeMode.system,
-                            icon: Icon(Icons.brightness_auto_rounded, size: 17),
-                            label: Text('跟随系统'),
+                            label: Text(
+                              '跟随系统',
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.visible,
+                            ),
                           ),
-                          ButtonSegment(
+                          ButtonSegment<ThemeMode>(
                             value: ThemeMode.light,
-                            icon: Icon(Icons.light_mode_rounded, size: 17),
-                            label: Text('日间'),
+                            label: Text(
+                              '日间',
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.visible,
+                            ),
                           ),
-                          ButtonSegment(
+                          ButtonSegment<ThemeMode>(
                             value: ThemeMode.dark,
-                            icon: Icon(Icons.dark_mode_rounded, size: 17),
-                            label: Text('夜间'),
+                            label: Text(
+                              '夜间',
+                              maxLines: 1,
+                              softWrap: false,
+                              overflow: TextOverflow.visible,
+                            ),
                           ),
                         ],
                         selected: <ThemeMode>{selectedThemeMode},

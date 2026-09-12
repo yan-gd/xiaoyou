@@ -60,13 +60,15 @@ function PrivacyPolicy() {
         <li>网站备案号：{websiteFiling}</li>
         <li>隐私联系邮箱：<a href={`mailto:${privacyEmail}`}>{privacyEmail}</a></li>
       </ul>
-      <p>在首次使用前，我们会展示本政策与用户协议。只有你主动选择“同意并继续”后，App 才会连接服务器并启用需要联网的功能；不同意时可以退出 App。</p>
+      <p>在首次使用前，我们会展示本政策与用户协议。只有你主动选择“同意并继续”后，App 才会连接服务器，并在需要时初始化第三方 SDK。对于下文列明的软件/应用列表、设备 MAC 地址、RegID 等信息，均在你同意后按照本政策所述目的、方式和范围处理；同意前不会初始化 vivo 推送 SDK。不同意时可以退出 App。</p>
     </PolicySection>
 
     <PolicySection number="02" title="我们处理的信息">
       <DataTable labels={['信息类别', '具体内容', '使用目的']}>
-        <DataRow><strong>账号与登录</strong><span>账号、绑定邮箱、密码不可逆哈希、邮箱验证状态及一次性验证码的不可逆摘要；当你主动选择 GitHub 登录时，我们会接收 GitHub 用户 ID、用户名、显示名称、头像地址，以及你在 GitHub 中已验证且授权读取的邮箱地址</span><span>用于账号密码登录、邮箱验证码登录和 GitHub OAuth 登录；将 GitHub 身份与已有小悠账号关联，或在没有可关联账号时创建新的小悠账号。小悠不保存明文密码</span></DataRow>
+        <DataRow><strong>账号与登录</strong><span>你主动填写的用户名（可使用昵称，不要求真实姓名）、绑定邮箱、密码不可逆哈希、邮箱验证状态及一次性验证码的不可逆摘要；当你主动选择 GitHub 登录时，我们会接收 GitHub 用户 ID、用户名、显示名称、头像地址，以及你在 GitHub 中已验证且授权读取的邮箱地址</span><span>用于创建和识别小悠账号、账号密码登录、邮箱验证码登录、账号找回和 GitHub OAuth 登录；将 GitHub 身份与已有小悠账号关联，或在没有可关联账号时创建新的小悠账号。小悠不要求填写真实姓名，也不保存明文密码</span></DataRow>
+        <DataRow><strong>个人资料与个性化</strong><span>你在首次资料设置或“你的专属资料”页面主动填写或选择的称呼/昵称（不要求真实姓名）、生日（选填）、个性标签及自我描述（选填）。这些信息均由你主动输入或选择；资料设置可以跳过，生日和自我描述可以留空</span><span>用于在聊天中按你喜欢的方式称呼你、记住生日、形成个性化互动与保持关系连续性。不会因为填写昵称而要求或推断你的真实姓名，也不用于广告画像</span></DataRow>
         <DataRow><strong>连接与设备</strong><span>你填写的服务地址、设备名称和设备标识、App 版本、系统类型及必要运行日志</span><span>建立安全连接、设备同步、故障诊断与防止重复投递</span></DataRow>
+        <DataRow><strong>软件列表与设备网络标识</strong><span>在你同意本政策后，vivo 推送 SDK 在初始化、注册推送通道及消息送达过程中，会通过 Android 系统接口自动收集软件/应用列表（已安装应用信息）、设备 MAC 地址，以及与推送相关的 RegID、设备类型、操作系统类型和版本等必要设备信息</span><span>仅用于判断设备的系统推送能力与兼容性、建立和维持 vivo 推送通道、完成消息送达、排查推送故障及统计推送 API 成功率；不用于广告画像。SDK 在同意前不初始化</span></DataRow>
         <DataRow><strong>聊天与媒体</strong><span>主动发送的文字、图片、表情、语音及由小悠生成的回复和媒体</span><span>完成对话、图片理解、语音识别与合成、内容同步和历史记录恢复</span></DataRow>
         <DataRow><strong>记忆与关系状态</strong><span>从对话中形成的短期记忆、长期记忆、提醒、关系状态和心情状态</span><span>保持对话连续性、实现提醒和个性化陪伴；不用于向第三方投放广告</span></DataRow>
         <DataRow><strong>本地偏好</strong><span>主题、字号、通知、App 锁、草稿、收藏及本地缓存设置</span><span>保存你的界面偏好与便捷功能，大部分仅保存在当前设备</span></DataRow>
@@ -94,7 +96,7 @@ function PrivacyPolicy() {
         <DataRow><strong>GitHub, Inc.（GitHub OAuth）</strong><span>当你主动选择 GitHub 登录时，GitHub 会处理授权请求及其必要的网络与安全信息；小悠仅申请 <code>read:user</code> 与 <code>user:email</code> 只读权限，并读取 GitHub 用户 ID、用户名、显示名称、头像地址及已验证邮箱。OAuth state、授权 code 与 access token 仅用于完成本次授权和身份读取</span><span>用于 GitHub 登录、识别同一 GitHub 账号、关联已有小悠账号或创建新账号。我们不申请代码仓库、组织管理或写入权限，GitHub access token 不写入小悠账号数据库长期保存。GitHub 对其平台侧信息的处理以 <a href="https://docs.github.com/zh/site-policy/privacy-policies/github-general-privacy-statement" target="_blank" rel="noreferrer">GitHub 隐私声明</a> 为准；OAuth 权限说明见 <a href="https://docs.github.com/zh/apps/oauth-apps/building-oauth-apps/scopes-for-oauth-apps" target="_blank" rel="noreferrer">GitHub OAuth scopes</a></span></DataRow>
         <DataRow><strong>阿里云模型服务</strong><span>必要的对话文本、用户主动提交的图片或语音、上下文，以及请求日志</span><span>用于对话生成、语音识别、视觉理解、向量检索和工具判断</span></DataRow>
         <DataRow><strong>北京火山引擎科技有限公司</strong><span>需要合成的回复文本、实时语音音频、人物参考图及图片生成描述</span><span>用于语音合成、端到端语音房和生活照生成</span></DataRow>
-        <DataRow><strong>维沃移动通信有限公司（vivo 推送 SDK）</strong><span>应用基础信息、应用内设备标识、设备硬件信息和系统基础信息，包括 AppID/AppKey/包名/版本、Push SDK 版本、RegID、设备类型及操作系统类型和版本</span><span>用于消息推送及推送 API 成功率统计。SDK 在你同意本政策后初始化；详见 <a href="https://developers.vivo.com/doc/d/23807c559e844cbeb06049ee69e71833" target="_blank" rel="noreferrer">vivo 推送 SDK 隐私与安全说明</a> 和 <a href="https://developers.vivo.com/doc/d/dc4bd47dfb974a0a92bc70840527b6b9" target="_blank" rel="noreferrer">vivo 推送隐私政策</a></span></DataRow>
+        <DataRow><strong>维沃移动通信有限公司（vivo 推送 SDK）</strong><span>在你同意本政策后，SDK 在初始化、注册推送通道和消息送达过程中通过系统接口自动收集：软件/应用列表（已安装应用信息）、设备 MAC 地址、AppID/AppKey/包名/版本、Push SDK 版本、RegID、设备类型、操作系统类型和版本等应用及设备基础信息</span><span>处理目的限于判断 vivo 系统推送能力与兼容性、注册并维持推送通道、完成消息送达、故障诊断及推送 API 成功率统计，不用于广告画像。SDK 在你同意本政策前不初始化；详见 <a href="https://developers.vivo.com/doc/d/23807c559e844cbeb06049ee69e71833" target="_blank" rel="noreferrer">vivo 推送 SDK 隐私与安全说明</a> 和 <a href="https://developers.vivo.com/doc/d/dc4bd47dfb974a0a92bc70840527b6b9" target="_blank" rel="noreferrer">vivo 推送隐私政策</a></span></DataRow>
       </DataTable>
       <p>上述服务商可能依其服务协议处理必要的网络地址、设备和安全日志。我们不会向第三方出售你的个人信息，也不会使用聊天内容投放个性化广告。</p>
     </PolicySection>

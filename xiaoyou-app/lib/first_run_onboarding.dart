@@ -449,7 +449,7 @@ class _FirstRunOnboardingScreenState extends State<FirstRunOnboardingScreen>
       key: const ValueKey('name'),
       eyebrow: '01',
       title: '我该怎么叫你？',
-      subtitle: '这个称呼，会自然地出现在之后的聊天里。',
+      subtitle: '称呼可使用昵称，无需填写真实姓名；仅用于之后聊天中的个性化称呼。你也可以跳过资料设置。',
       preview: _LiveConversationPreview(
         prompt: _conversationPrompt,
         reply: _conversationReply,

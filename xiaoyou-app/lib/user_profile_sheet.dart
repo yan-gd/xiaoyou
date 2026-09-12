@@ -122,13 +122,14 @@ class _UserProfileSheetState extends State<UserProfileSheet> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    '你们已相识 ${widget.profile.relationshipDays} 天。这些资料只会进入你的独立资料文档。',
+                    '你们已相识 ${widget.profile.relationshipDays} 天。你主动填写的称呼（可用昵称，无需真实姓名）、生日和自我描述会保存到你的独立资料，用于个性化称呼、生日记忆和陪伴体验；生日和自我描述可以不填。',
                     textAlign: TextAlign.center,
                     style:
                         const TextStyle(color: Color(0xff89757f), height: 1.5),
                   ),
                   const SizedBox(height: 28),
-                  _field(_name, '希望小悠怎么称呼你', Icons.favorite_border_rounded),
+                  _field(
+                      _name, '希望小悠怎么称呼你（可用昵称）', Icons.favorite_border_rounded),
                   const SizedBox(height: 14),
                   InkWell(
                     onTap: _pickBirthday,

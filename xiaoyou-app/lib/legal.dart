@@ -11,7 +11,7 @@ const xiaoyouUserAgreementUrl = 'https://xiaoyou.yoyoyan.cn/terms';
 const xiaoyouIcpQueryUrl = 'https://beian.miit.gov.cn/';
 const xiaoyouAppFilingNumber = '渝ICP备2026017342号-2A';
 
-const _privacyConsentVersion = '2026-08-12-github-oauth';
+const _privacyConsentVersion = '2026-09-12-compliance-v3-profile';
 const _privacyConsentPreference = 'xiaoyou_privacy_consent_version';
 const _systemChannel = MethodChannel('com.yoyo.xiaoyou/system');
 
@@ -412,7 +412,8 @@ class _PrivacyConsentDialog extends StatelessWidget {
                                 _PrivacyItem(
                                   icon: Icons.person_outline_rounded,
                                   title: '账号与安全',
-                                  detail: '账号、绑定邮箱、登录状态与必要的安全验证信息。密码不会以明文形式保存。',
+                                  detail:
+                                      '注册时会收集你主动填写的邮箱和用户名，用于创建账号、身份验证与账号找回；用户名可使用昵称，无需填写真实姓名。首次资料设置或资料页还会处理你主动填写的称呼（可用昵称、不要求真实姓名）、生日（选填）和个性标签/自我描述（选填），用于聊天中的个性化称呼、生日记忆和陪伴体验。资料设置可以跳过。密码不会以明文形式保存。',
                                 ),
                                 _PrivacyItem(
                                   icon: Icons.forum_outlined,
@@ -428,7 +429,8 @@ class _PrivacyConsentDialog extends StatelessWidget {
                                 _PrivacyItem(
                                   icon: Icons.notifications_none_rounded,
                                   title: '设备与通知',
-                                  detail: '必要的设备登录信息与通知标识，用于安全登录、消息同步和系统提醒。',
+                                  detail:
+                                      '在你同意隐私政策后，为提供 vivo 系统推送，vivo 推送 SDK 会在初始化、注册推送通道和消息送达过程中通过系统接口自动收集软件/应用列表、设备 MAC 地址、RegID、设备与系统基础信息，用于判断推送能力、建立推送通道、消息送达及故障/成功率统计；同意前不初始化该 SDK。',
                                 ),
                                 _PrivacyItem(
                                   icon: Icons.lock_outline_rounded,

@@ -634,8 +634,9 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         _AccountMode.emailLogin => _codeSent
             ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效'
             : '使用绑定邮箱获取验证码，无需输入密码',
-        _AccountMode.register =>
-          _codeSent ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效' : '邮箱只用于验证与找回密码',
+        _AccountMode.register => _codeSent
+            ? '验证码已发送到 ${_email.text.trim()}，10 分钟内有效'
+            : '注册会收集邮箱与用户名；用户名可用昵称，无需真实姓名',
         _AccountMode.reset => _codeSent ? '输入验证码并设置新密码' : '验证绑定邮箱后即可重置密码',
       };
 
@@ -913,10 +914,15 @@ class _AccountAccessSheetState extends State<AccountAccessSheet>
         const SizedBox(height: 10),
         _field(
           controller: _username,
-          label: '账号名字',
+          label: '用户名（无需真实姓名）',
           icon: Icons.person_outline_rounded,
           textInputAction: TextInputAction.next,
           inputFormatters: [LengthLimitingTextInputFormatter(32)],
+        ),
+        const SizedBox(height: 8),
+        const _InlineNotice(
+          text:
+              '注册会收集你主动填写的邮箱和用户名，用于创建账号、身份验证和账号找回；用户名可使用昵称，不要求填写真实姓名。提交注册即按你已勾选同意的《隐私政策》处理上述信息。',
         ),
         const SizedBox(height: 10),
         _passwordField(label: '密码'),
