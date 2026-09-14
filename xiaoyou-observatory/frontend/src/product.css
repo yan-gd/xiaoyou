@@ -369,3 +369,3310 @@ body.xy-product-body {
     margin-right: 10px;
   }
 }
+
+
+/* ===== Real Xiaoyou product showcase assets ===== */
+.xy-hero-real-device {
+  position: relative;
+  z-index: 4;
+  width: min(390px, 74vw);
+  transform: rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg)) rotateZ(1.4deg);
+  transform-style: preserve-3d;
+  transition: transform 120ms linear;
+  will-change: transform;
+}
+
+.xy-hero-real-device img {
+  display: block;
+  width: 100%;
+  height: auto;
+  filter: drop-shadow(0 44px 55px rgba(0, 0, 0, .18));
+}
+
+.xy-showcase {
+  padding: 128px max(6vw, 36px) 140px;
+  background: #f4f4f2;
+}
+
+.xy-showcase-heading {
+  max-width: 980px;
+  margin-bottom: 76px;
+}
+
+.xy-showcase-heading h2 {
+  margin: 22px 0 0;
+  font-size: clamp(48px, 6vw, 92px);
+  line-height: 1.02;
+  letter-spacing: -.058em;
+}
+
+.xy-showcase-heading p {
+  max-width: 720px;
+  margin: 28px 0 0;
+  color: #707075;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.xy-showcase-film {
+  min-height: 760px;
+  padding: clamp(44px, 6vw, 86px);
+  border-radius: 46px;
+  background: #090909;
+  color: #fff;
+  display: grid;
+  grid-template-columns: minmax(0, .82fr) minmax(340px, .78fr);
+  align-items: center;
+  gap: clamp(40px, 6vw, 96px);
+  overflow: hidden;
+}
+
+.xy-showcase-film-copy span,
+.xy-showcase-panel-copy span {
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: .18em;
+}
+
+.xy-showcase-film-copy h3,
+.xy-showcase-panel-copy h3 {
+  margin: 22px 0 0;
+  font-family: var(--xy-serif);
+  font-weight: 520;
+  letter-spacing: -.045em;
+}
+
+.xy-showcase-film-copy h3 {
+  font-size: clamp(44px, 5vw, 78px);
+  line-height: 1.05;
+}
+
+.xy-showcase-film-copy p,
+.xy-showcase-panel-copy p {
+  color: #aaa;
+  line-height: 1.8;
+}
+
+.xy-showcase-film-copy p {
+  max-width: 570px;
+  margin: 26px 0 0;
+  font-size: 15px;
+}
+
+.xy-showcase-video-shell {
+  justify-self: center;
+  width: min(390px, 70vw);
+  border-radius: 58px;
+  overflow: hidden;
+  background: #000;
+  box-shadow: 0 42px 90px rgba(0,0,0,.45);
+  transform: rotate(1.2deg);
+}
+
+.xy-showcase-video-shell video {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.xy-showcase-pair {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.xy-showcase-panel {
+  min-height: 760px;
+  padding: 42px 42px 0;
+  border-radius: 40px;
+  overflow: hidden;
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.xy-showcase-panel.is-dark { background: #0b0b0b; color: #fff; }
+.xy-showcase-panel.is-pink { background: #f7edf2; color: #251b20; }
+.xy-showcase-panel.is-soft { background: #fff; color: #111; }
+.xy-showcase-panel.is-warm { background: #eee7df; color: #1c1815; }
+
+.xy-showcase-panel-copy {
+  position: relative;
+  z-index: 2;
+  max-width: 560px;
+}
+
+.xy-showcase-panel-copy h3 {
+  font-size: clamp(34px, 3.1vw, 56px);
+  line-height: 1.08;
+}
+
+.xy-showcase-panel-copy p {
+  margin: 18px 0 0;
+  max-width: 520px;
+  color: #77777d;
+  font-size: 13px;
+}
+
+.xy-showcase-panel.is-dark .xy-showcase-panel-copy p { color: #aaa; }
+
+.xy-showcase-panel > img {
+  align-self: end;
+  justify-self: center;
+  width: min(380px, 78%);
+  height: auto;
+  margin-top: 28px;
+  filter: drop-shadow(0 30px 34px rgba(0,0,0,.12));
+  transition: transform 420ms cubic-bezier(.2,.8,.2,1);
+}
+
+.xy-showcase-panel:hover > img {
+  transform: translateY(-12px) scale(1.015);
+}
+
+.xy-showcase-compact {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.xy-showcase-compact article {
+  min-height: 530px;
+  padding: 24px 20px 0;
+  border-radius: 30px;
+  background: #fff;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.xy-showcase-compact article > div {
+  display: grid;
+  gap: 6px;
+}
+
+.xy-showcase-compact span {
+  color: #aaa;
+  font-size: 9px;
+  letter-spacing: .16em;
+}
+
+.xy-showcase-compact b {
+  font-family: var(--xy-serif);
+  font-size: 21px;
+  font-weight: 560;
+}
+
+.xy-showcase-compact small {
+  min-height: 38px;
+  color: #85858a;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.xy-showcase-compact img {
+  align-self: end;
+  justify-self: center;
+  width: min(230px, 94%);
+  height: auto;
+  margin-top: 18px;
+  filter: drop-shadow(0 22px 24px rgba(0,0,0,.10));
+}
+
+@media (max-width: 1020px) {
+  .xy-showcase-film {
+    grid-template-columns: 1fr 360px;
+  }
+
+  .xy-showcase-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .xy-showcase-compact {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .xy-showcase {
+    padding: 92px 20px 100px;
+  }
+
+  .xy-showcase-heading {
+    margin-bottom: 44px;
+  }
+
+  .xy-showcase-heading h2 {
+    font-size: clamp(42px, 12vw, 62px);
+  }
+
+  .xy-showcase-heading p {
+    font-size: 14px;
+  }
+
+  .xy-showcase-film {
+    min-height: 0;
+    padding: 34px 22px 0;
+    border-radius: 30px;
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .xy-showcase-film-copy h3 {
+    font-size: 39px;
+  }
+
+  .xy-showcase-video-shell {
+    width: min(340px, 88vw);
+    border-radius: 42px 42px 0 0;
+  }
+
+  .xy-showcase-panel {
+    min-height: 650px;
+    padding: 28px 22px 0;
+    border-radius: 28px;
+  }
+
+  .xy-showcase-panel-copy h3 {
+    font-size: 36px;
+  }
+
+  .xy-showcase-panel > img {
+    width: min(330px, 86%);
+  }
+
+  .xy-showcase-compact {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .xy-showcase-compact article {
+    min-height: 410px;
+    padding: 18px 12px 0;
+    border-radius: 22px;
+  }
+
+  .xy-showcase-compact b { font-size: 17px; }
+  .xy-showcase-compact small { font-size: 9px; }
+  .xy-showcase-compact img { width: 92%; }
+
+  .xy-hero-real-device {
+    width: min(330px, 78vw);
+  }
+}
+
+
+
+/* ===== Compact one-screen chapters + editorial screenshot staging ===== */
+
+/* Hero: use the real phone screenshot as the device itself, not another mock shell. */
+.xy-hero {
+  min-height: 100svh;
+  height: 100svh;
+  overflow: hidden;
+  padding: 92px max(5.4vw, 34px) 28px;
+  grid-template-columns: minmax(0, 1fr) minmax(330px, .68fr);
+  gap: clamp(28px, 4vw, 68px);
+}
+
+.xy-hero h1 {
+  font-size: clamp(46px, 4.35vw, 74px);
+  line-height: .96;
+}
+
+.xy-hero-copy > p {
+  max-width: 670px;
+  margin-top: 20px;
+  font-size: clamp(13px, .92vw, 16px);
+  line-height: 1.68;
+}
+
+.xy-hero-actions {
+  margin-top: 21px;
+}
+
+.xy-primary-cta,
+.xy-secondary-cta {
+  min-height: 44px;
+  padding: 0 17px;
+}
+
+.xy-hero-meta {
+  margin-top: 19px;
+  gap: 13px;
+  font-size: 10px;
+}
+
+.xy-hero-device-stage {
+  min-height: 0;
+  height: calc(100svh - 126px);
+  max-height: 650px;
+}
+
+.xy-phone {
+  width: min(252px, 17.5vw);
+  max-height: calc(100svh - 150px);
+  aspect-ratio: .482;
+}
+
+.xy-phone-shell {
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.xy-phone-shell > img {
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  object-fit: contain;
+  background: transparent;
+  filter: drop-shadow(0 28px 44px rgba(0,0,0,.18));
+}
+
+.xy-phone-island,
+.xy-phone-fallback {
+  display: none;
+}
+
+.xy-float {
+  min-width: 154px;
+  padding: 10px 12px;
+}
+
+.xy-float-memory {
+  top: 18%;
+  left: 2%;
+}
+
+.xy-float-voice {
+  right: 0;
+  bottom: 18%;
+}
+
+.xy-orbit-a {
+  width: min(430px, 31vw);
+  height: min(430px, 31vw);
+}
+
+.xy-orbit-b {
+  width: min(560px, 40vw);
+  height: min(300px, 22vw);
+}
+
+/* Desktop chapters should read as individual screens, not giant vertical posters. */
+@media (min-width: 981px) {
+  .xy-statement,
+  .xy-features,
+  .xy-memory-story,
+  .xy-voice-section,
+  .xy-showcase,
+  .xy-journey-showcase,
+  .xy-day,
+  .xy-observatory-portal,
+  .xy-final {
+    min-height: 100svh;
+    height: 100svh;
+    max-height: 100svh;
+    overflow: hidden;
+  }
+
+  .xy-statement {
+    padding-top: clamp(72px, 9vh, 100px);
+    padding-bottom: clamp(52px, 7vh, 82px);
+  }
+
+  .xy-statement > p {
+    font-size: clamp(34px, 4.2vw, 67px);
+    line-height: 1.16;
+  }
+
+  .xy-features {
+    padding-top: clamp(76px, 8vh, 98px);
+    padding-bottom: 28px;
+  }
+
+  .xy-section-heading {
+    margin-bottom: 30px;
+  }
+
+  .xy-section-heading h2,
+  .xy-day-heading h2 {
+    font-size: clamp(36px, 3.7vw, 58px);
+  }
+
+  .xy-feature-grid {
+    height: min(66svh, 610px);
+  }
+
+  .xy-feature-card {
+    min-height: 0;
+    padding: 24px;
+  }
+
+  .xy-feature-card h3 {
+    margin-top: clamp(30px, 4.2vh, 56px);
+    font-size: clamp(27px, 2.35vw, 41px);
+  }
+
+  .xy-feature-card p {
+    margin-top: 13px;
+    font-size: 12px;
+    line-height: 1.62;
+  }
+
+  .xy-memory-story {
+    padding-top: 88px;
+    padding-bottom: 32px;
+  }
+
+  .xy-memory-copy h2 {
+    font-size: clamp(38px, 4vw, 62px);
+  }
+
+  .xy-memory-copy > p {
+    font-size: 14px;
+    line-height: 1.7;
+  }
+
+  .xy-memory-copy ul {
+    margin-top: 26px;
+  }
+
+  .xy-memory-copy li {
+    padding: 12px 0;
+  }
+
+  .xy-memory-map {
+    min-height: 0;
+    height: min(66svh, 590px);
+  }
+
+  .xy-voice-section {
+    padding-top: 88px;
+    padding-bottom: 30px;
+  }
+
+  .xy-voice-copy h2 {
+    font-size: clamp(42px, 4.7vw, 74px);
+  }
+
+  .xy-voice-copy p {
+    font-size: 14px;
+  }
+
+  .xy-voice-visual {
+    height: min(67svh, 610px);
+  }
+
+  .xy-day {
+    padding-top: 88px;
+    padding-bottom: 30px;
+  }
+
+  .xy-day-heading {
+    margin-bottom: 38px;
+  }
+
+  .xy-day-list article {
+    min-height: min(12.5svh, 102px);
+  }
+
+  .xy-observatory-portal {
+    padding-top: 86px;
+    padding-bottom: 28px;
+  }
+
+  .xy-portal-visual {
+    min-height: 0;
+    height: min(65svh, 590px);
+  }
+
+  .xy-portal-copy h2 {
+    font-size: clamp(40px, 4vw, 64px);
+  }
+
+  .xy-final-copy h2 {
+    font-size: clamp(44px, 5vw, 78px);
+  }
+}
+
+/* Main product showcase: screenshots behave like objects in space. */
+.xy-showcase {
+  padding: 90px max(5.5vw, 38px) 34px;
+  background: #f4f4f2;
+  display: grid;
+  grid-template-columns: minmax(290px, .66fr) minmax(620px, 1.34fr);
+  align-items: center;
+  gap: clamp(28px, 4vw, 72px);
+}
+
+.xy-showcase-copy {
+  position: relative;
+  z-index: 10;
+  max-width: 560px;
+}
+
+.xy-showcase-copy h2,
+.xy-journey-copy h2 {
+  margin: 20px 0 0;
+  font-size: clamp(39px, 4vw, 64px);
+  line-height: 1.02;
+  letter-spacing: -.055em;
+}
+
+.xy-showcase-copy > p,
+.xy-journey-copy > p {
+  max-width: 560px;
+  margin: 22px 0 0;
+  color: #707075;
+  font-size: 14px;
+  line-height: 1.78;
+}
+
+.xy-showcase-tags {
+  margin-top: 28px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.xy-showcase-tags span {
+  padding: 8px 11px;
+  border: 1px solid rgba(0,0,0,.09);
+  border-radius: 999px;
+  background: rgba(255,255,255,.72);
+  color: #666;
+  font-size: 10px;
+}
+
+.xy-showcase-stage {
+  position: relative;
+  height: min(75svh, 680px);
+  min-height: 520px;
+}
+
+.xy-showcase-phone {
+  position: absolute;
+  margin: 0;
+  transition:
+    transform 420ms cubic-bezier(.2,.8,.2,1),
+    filter 420ms ease,
+    z-index 0s;
+  transform-origin: center bottom;
+}
+
+.xy-showcase-phone img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  filter: drop-shadow(0 24px 34px rgba(0,0,0,.12));
+}
+
+.xy-showcase-phone figcaption {
+  position: absolute;
+  left: 50%;
+  bottom: -25px;
+  transform: translateX(-50%);
+  width: max-content;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  color: #85858a;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.xy-showcase-phone figcaption b {
+  color: #111;
+  font-size: 9px;
+  letter-spacing: .13em;
+}
+
+.xy-showcase-phone.is-chat {
+  z-index: 4;
+  left: 40%;
+  bottom: 1%;
+  width: min(236px, 16vw);
+  transform: translateX(-50%) rotate(-2.2deg);
+}
+
+.xy-showcase-phone.is-voice {
+  z-index: 3;
+  right: 4%;
+  top: 3%;
+  width: min(176px, 12vw);
+  transform: rotate(5.5deg);
+}
+
+.xy-showcase-phone.is-mood {
+  z-index: 2;
+  left: 1%;
+  bottom: 7%;
+  width: min(168px, 11.4vw);
+  transform: rotate(-6.5deg);
+}
+
+.xy-showcase-phone.is-picture {
+  z-index: 1;
+  right: 11%;
+  bottom: 1%;
+  width: min(166px, 11.2vw);
+  transform: rotate(3.8deg);
+}
+
+.xy-showcase-phone:hover {
+  z-index: 9;
+  transform: translateY(-10px) rotate(0deg) scale(1.055);
+}
+
+.xy-showcase-phone.is-chat:hover {
+  transform: translateX(-50%) translateY(-10px) rotate(0deg) scale(1.045);
+}
+
+/* First-meet journey: one moving video + four smaller app states. */
+.xy-journey-showcase {
+  padding: 86px max(5.5vw, 38px) 34px;
+  background: #fff;
+  display: grid;
+  grid-template-columns: minmax(620px, 1.28fr) minmax(300px, .72fr);
+  align-items: center;
+  gap: clamp(34px, 5vw, 80px);
+}
+
+.xy-journey-stage {
+  position: relative;
+  height: min(73svh, 665px);
+  min-height: 520px;
+}
+
+.xy-journey-video {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  top: 50%;
+  width: min(238px, 16vw);
+  transform: translate(-50%, -50%) rotate(-1.5deg);
+}
+
+.xy-journey-video video {
+  display: block;
+  width: 100%;
+  border-radius: 28px;
+  filter: drop-shadow(0 30px 46px rgba(0,0,0,.14));
+}
+
+.xy-journey-video > span {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  padding: 7px 9px;
+  border-radius: 999px;
+  background: rgba(0,0,0,.78);
+  color: #fff;
+  font-size: 8px;
+  letter-spacing: .12em;
+}
+
+.xy-journey-mini {
+  position: absolute;
+  margin: 0;
+  width: min(136px, 9.4vw);
+  transition: transform 320ms ease;
+}
+
+.xy-journey-mini img {
+  display: block;
+  width: 100%;
+  filter: drop-shadow(0 18px 28px rgba(0,0,0,.1));
+}
+
+.xy-journey-mini figcaption {
+  margin-top: 7px;
+  color: #777;
+  text-align: center;
+  font-size: 9px;
+}
+
+.xy-journey-mini.is-login {
+  left: 5%;
+  top: 4%;
+  transform: rotate(-6deg);
+}
+
+.xy-journey-mini.is-signin {
+  right: 4%;
+  top: 5%;
+  transform: rotate(5deg);
+}
+
+.xy-journey-mini.is-guide {
+  left: 8%;
+  bottom: 2%;
+  transform: rotate(4.5deg);
+}
+
+.xy-journey-mini.is-diy {
+  right: 7%;
+  bottom: 2%;
+  transform: rotate(-5deg);
+}
+
+.xy-journey-mini:hover {
+  transform: translateY(-8px) rotate(0deg) scale(1.04);
+  z-index: 12;
+}
+
+/* Laptop / short-height desktop: fit the whole chapter at 100% zoom. */
+@media (min-width: 981px) and (max-height: 820px) {
+  .xy-hero {
+    padding-top: 82px;
+    padding-bottom: 18px;
+  }
+
+  .xy-hero h1 {
+    font-size: clamp(43px, 4vw, 65px);
+  }
+
+  .xy-hero-copy > p {
+    margin-top: 15px;
+    font-size: 13px;
+  }
+
+  .xy-hero-actions {
+    margin-top: 16px;
+  }
+
+  .xy-hero-meta {
+    margin-top: 14px;
+  }
+
+  .xy-hero-device-stage {
+    height: calc(100svh - 108px);
+  }
+
+  .xy-phone {
+    width: min(224px, 15vw);
+    max-height: calc(100svh - 128px);
+  }
+
+  .xy-float {
+    transform: scale(.88);
+  }
+
+  .xy-showcase,
+  .xy-journey-showcase {
+    padding-top: 74px;
+    padding-bottom: 22px;
+  }
+
+  .xy-showcase-stage,
+  .xy-journey-stage {
+    height: min(69svh, 560px);
+    min-height: 430px;
+  }
+
+  .xy-showcase-phone.is-chat {
+    width: min(208px, 14vw);
+  }
+
+  .xy-showcase-phone.is-voice,
+  .xy-showcase-phone.is-mood,
+  .xy-showcase-phone.is-picture {
+    width: min(148px, 10vw);
+  }
+
+  .xy-journey-video {
+    width: min(208px, 14vw);
+  }
+
+  .xy-journey-mini {
+    width: min(118px, 8vw);
+  }
+}
+
+@media (max-width: 980px) {
+  .xy-hero {
+    height: auto;
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .xy-showcase,
+  .xy-journey-showcase {
+    min-height: auto;
+    padding: 92px 24px 74px;
+    grid-template-columns: 1fr;
+    gap: 34px;
+  }
+
+  .xy-showcase-stage,
+  .xy-journey-stage {
+    width: min(760px, 100%);
+    height: 660px;
+    margin: 0 auto;
+  }
+
+  .xy-showcase-phone.is-chat {
+    width: 235px;
+  }
+
+  .xy-showcase-phone.is-voice,
+  .xy-showcase-phone.is-mood,
+  .xy-showcase-phone.is-picture {
+    width: 165px;
+  }
+
+  .xy-journey-video {
+    width: 235px;
+  }
+
+  .xy-journey-mini {
+    width: 132px;
+  }
+}
+
+@media (max-width: 640px) {
+  .xy-showcase,
+  .xy-journey-showcase {
+    padding: 78px 18px 58px;
+  }
+
+  .xy-showcase-copy h2,
+  .xy-journey-copy h2 {
+    font-size: clamp(34px, 10vw, 48px);
+  }
+
+  .xy-showcase-stage,
+  .xy-journey-stage {
+    height: 540px;
+  }
+
+  .xy-showcase-phone.is-chat {
+    left: 50%;
+    width: 190px;
+  }
+
+  .xy-showcase-phone.is-voice {
+    right: -1%;
+    width: 128px;
+  }
+
+  .xy-showcase-phone.is-mood {
+    left: -2%;
+    width: 124px;
+  }
+
+  .xy-showcase-phone.is-picture {
+    right: 3%;
+    width: 122px;
+  }
+
+  .xy-journey-video {
+    width: 188px;
+  }
+
+  .xy-journey-mini {
+    width: 105px;
+  }
+}
+
+
+/* ===== Narrative consolidation + clipping fixes ===== */
+
+/* Do not force every section into a hard 100svh box.
+   Pages should feel like chapters, but content must never be clipped. */
+.xy-statement {
+  display: none !important;
+}
+
+.xy-hero {
+  min-height: 100svh;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  padding-top: 116px !important;
+  padding-bottom: 52px !important;
+  align-items: center;
+}
+
+.xy-hero-copy {
+  align-self: center;
+}
+
+.xy-hero h1 {
+  font-size: clamp(44px, 4.05vw, 70px) !important;
+  line-height: .98 !important;
+}
+
+.xy-hero-copy > p {
+  margin-top: 18px !important;
+  font-size: clamp(13px, .9vw, 15.5px) !important;
+  line-height: 1.68 !important;
+}
+
+.xy-hero-actions {
+  margin-top: 20px !important;
+}
+
+.xy-hero-meta {
+  margin-top: 18px !important;
+}
+
+.xy-hero-device-stage {
+  min-height: 0 !important;
+  height: min(68svh, 610px) !important;
+  max-height: 610px !important;
+}
+
+.xy-phone {
+  width: min(224px, 15.5vw) !important;
+  max-height: min(66svh, 590px) !important;
+}
+
+.xy-hero-philosophy {
+  margin-top: 24px;
+  max-width: 680px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(17,17,17,.1);
+  display: grid;
+  grid-template-columns: 112px 1fr;
+  align-items: start;
+  gap: 18px;
+}
+
+.xy-hero-philosophy > span {
+  padding-top: 3px;
+  color: #8a8a8f;
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .16em;
+}
+
+.xy-hero-philosophy > p {
+  margin: 0;
+  font-family: var(--xy-serif);
+  font-size: clamp(18px, 1.55vw, 26px);
+  line-height: 1.45;
+  letter-spacing: -.025em;
+}
+
+.xy-hero-philosophy strong {
+  font-weight: 650;
+}
+
+/* Core experience: compact, complete, no clipped bottom row. */
+.xy-features {
+  min-height: 0 !important;
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+  padding-top: 96px !important;
+  padding-bottom: 78px !important;
+}
+
+.xy-section-heading {
+  margin-bottom: 34px !important;
+}
+
+.xy-section-heading h2 {
+  font-size: clamp(36px, 3.6vw, 58px) !important;
+  line-height: 1.04 !important;
+}
+
+.xy-section-heading p {
+  margin-top: 14px !important;
+  font-size: 14px !important;
+}
+
+.xy-feature-grid {
+  height: auto !important;
+  grid-template-rows: none !important;
+  align-items: stretch;
+}
+
+.xy-feature-card {
+  min-height: 300px !important;
+  height: auto !important;
+  padding: 26px !important;
+}
+
+.xy-feature-card h3 {
+  margin-top: 52px !important;
+  font-size: clamp(28px, 2.45vw, 42px) !important;
+  line-height: 1.12 !important;
+}
+
+.xy-feature-card p {
+  margin-top: 16px !important;
+  padding-right: 62px;
+  font-size: 12.5px !important;
+  line-height: 1.68 !important;
+}
+
+.xy-feature-number {
+  right: 22px !important;
+  bottom: 14px !important;
+  font-size: 42px !important;
+}
+
+/* All remaining chapters may use viewport rhythm, but never clip. */
+.xy-memory-story,
+.xy-voice-section,
+.xy-showcase,
+.xy-journey-showcase,
+.xy-day,
+.xy-observatory-portal,
+.xy-final {
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.xy-memory-story,
+.xy-voice-section,
+.xy-showcase,
+.xy-journey-showcase,
+.xy-day,
+.xy-observatory-portal {
+  min-height: min(100svh, 900px) !important;
+}
+
+/* Keep visual-heavy chapters balanced instead of oversized. */
+.xy-memory-story {
+  padding-top: 94px !important;
+  padding-bottom: 70px !important;
+}
+
+.xy-memory-map {
+  height: min(62svh, 560px) !important;
+}
+
+.xy-voice-section {
+  padding-top: 94px !important;
+  padding-bottom: 64px !important;
+}
+
+.xy-voice-visual {
+  height: min(62svh, 560px) !important;
+}
+
+.xy-showcase,
+.xy-journey-showcase {
+  padding-top: 92px !important;
+  padding-bottom: 66px !important;
+}
+
+.xy-showcase-stage,
+.xy-journey-stage {
+  height: min(66svh, 590px) !important;
+  min-height: 470px !important;
+}
+
+.xy-day {
+  padding-top: 92px !important;
+  padding-bottom: 64px !important;
+}
+
+.xy-day-heading {
+  margin-bottom: 42px !important;
+}
+
+.xy-day-list article {
+  min-height: 96px !important;
+}
+
+.xy-observatory-portal {
+  padding-top: 92px !important;
+  padding-bottom: 64px !important;
+}
+
+.xy-portal-visual {
+  height: min(60svh, 540px) !important;
+}
+
+.xy-final {
+  min-height: 86svh !important;
+}
+
+/* Short laptop screens need additional compression. */
+@media (min-width: 981px) and (max-height: 820px) {
+  .xy-hero {
+    padding-top: 94px !important;
+    padding-bottom: 32px !important;
+  }
+
+  .xy-hero h1 {
+    font-size: clamp(41px, 3.65vw, 61px) !important;
+  }
+
+  .xy-hero-copy > p {
+    margin-top: 13px !important;
+    font-size: 12.5px !important;
+  }
+
+  .xy-hero-actions {
+    margin-top: 14px !important;
+  }
+
+  .xy-hero-meta {
+    margin-top: 13px !important;
+  }
+
+  .xy-hero-philosophy {
+    margin-top: 16px;
+    padding-top: 12px;
+  }
+
+  .xy-hero-philosophy > p {
+    font-size: clamp(16px, 1.3vw, 21px);
+  }
+
+  .xy-hero-device-stage {
+    height: min(63svh, 520px) !important;
+  }
+
+  .xy-phone {
+    width: min(196px, 13.2vw) !important;
+    max-height: min(61svh, 500px) !important;
+  }
+
+  .xy-features {
+    padding-top: 80px !important;
+    padding-bottom: 52px !important;
+  }
+
+  .xy-feature-card {
+    min-height: 258px !important;
+  }
+
+  .xy-feature-card h3 {
+    margin-top: 34px !important;
+    font-size: clamp(24px, 2.15vw, 36px) !important;
+  }
+
+  .xy-feature-card p {
+    font-size: 11.5px !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .xy-hero-philosophy {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .xy-feature-card {
+    min-height: 320px !important;
+  }
+
+  .xy-memory-story,
+  .xy-voice-section,
+  .xy-showcase,
+  .xy-journey-showcase,
+  .xy-day,
+  .xy-observatory-portal {
+    min-height: auto !important;
+  }
+}
+
+
+/* ===== Hero chat phone final size fix ===== */
+.xy-hero {
+  min-height: 100svh !important;
+  height: 100svh !important;
+  overflow: hidden !important;
+}
+
+.xy-hero-device-stage {
+  height: min(56svh, 500px) !important;
+  max-height: 500px !important;
+  min-height: 0 !important;
+  align-self: center !important;
+  transform: translateY(-6px);
+}
+
+.xy-phone {
+  width: min(178px, 12.2vw) !important;
+  max-width: 178px !important;
+  max-height: min(54svh, 485px) !important;
+}
+
+.xy-phone-shell,
+.xy-phone-shell > img {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.xy-phone-shell > img {
+  object-fit: contain !important;
+}
+
+.xy-float {
+  transform: scale(.82);
+}
+
+.xy-float-memory {
+  top: 15% !important;
+  left: 3% !important;
+}
+
+.xy-float-voice {
+  right: 0 !important;
+  bottom: 13% !important;
+}
+
+.xy-orbit-a {
+  width: min(360px, 26vw) !important;
+  height: min(360px, 26vw) !important;
+}
+
+.xy-orbit-b {
+  width: min(470px, 34vw) !important;
+  height: min(250px, 19vw) !important;
+}
+
+/* Taller desktop screens can afford a slightly larger phone. */
+@media (min-width: 981px) and (min-height: 900px) {
+  .xy-hero-device-stage {
+    height: min(61svh, 560px) !important;
+    max-height: 560px !important;
+  }
+
+  .xy-phone {
+    width: min(195px, 13vw) !important;
+    max-width: 195px !important;
+    max-height: min(59svh, 540px) !important;
+  }
+}
+
+/* Short laptop screens: keep the whole device safely inside page one. */
+@media (min-width: 981px) and (max-height: 820px) {
+  .xy-hero-device-stage {
+    height: min(51svh, 430px) !important;
+    max-height: 430px !important;
+  }
+
+  .xy-phone {
+    width: min(158px, 10.8vw) !important;
+    max-width: 158px !important;
+    max-height: min(49svh, 415px) !important;
+  }
+
+  .xy-float {
+    transform: scale(.74);
+  }
+}
+
+
+/* ===== Hero phone hard clamp ===== */
+
+/* Keep the first screen a true one-screen composition. */
+.xy-hero {
+  min-height: 100svh !important;
+  height: 100svh !important;
+  max-height: 100svh !important;
+  overflow: hidden !important;
+  padding-top: 92px !important;
+  padding-bottom: 28px !important;
+}
+
+/* The right visual area stays centered, but its content is explicitly capped. */
+.xy-hero-device-stage {
+  position: relative !important;
+  min-height: 0 !important;
+  height: calc(100svh - 150px) !important;
+  max-height: 620px !important;
+  display: grid !important;
+  place-items: center !important;
+  overflow: visible !important;
+  transform: none !important;
+}
+
+/* Hard-size the device by HEIGHT rather than width.
+   This makes the full phone fit even on 768/820/900px-tall screens. */
+.xy-hero-device-stage .xy-phone {
+  width: auto !important;
+  max-width: none !important;
+  height: min(56svh, 500px) !important;
+  max-height: min(56svh, 500px) !important;
+  aspect-ratio: 0.482 !important;
+  transform:
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(1.2deg) ;
+  transform-origin: center center !important;
+}
+
+/* Let the real uploaded screenshot fill the compact device box exactly. */
+.xy-hero-device-stage .xy-phone-shell {
+  position: relative !important;
+  width: 100% !important;
+  height: 100% !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.xy-hero-device-stage .xy-phone-shell > img {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  filter: drop-shadow(0 22px 34px rgba(0,0,0,.14)) !important;
+}
+
+.xy-hero-device-stage .xy-phone-island,
+.xy-hero-device-stage .xy-phone-fallback {
+  display: none !important;
+}
+
+/* Decorative elements should never make the device feel oversized. */
+.xy-hero-device-stage .xy-float {
+  transform: scale(.72) !important;
+}
+
+.xy-hero-device-stage .xy-float-memory {
+  top: 16% !important;
+  left: 7% !important;
+}
+
+.xy-hero-device-stage .xy-float-voice {
+  right: 4% !important;
+  bottom: 17% !important;
+}
+
+.xy-hero-device-stage .xy-orbit-a {
+  width: min(330px, 23vw) !important;
+  height: min(330px, 23vw) !important;
+}
+
+.xy-hero-device-stage .xy-orbit-b {
+  width: min(430px, 30vw) !important;
+  height: min(220px, 16vw) !important;
+}
+
+/* Typical 1366x768 / 1440x810 laptop windows. */
+@media (min-width: 981px) and (max-height: 840px) {
+  .xy-hero {
+    padding-top: 82px !important;
+    padding-bottom: 20px !important;
+  }
+
+  .xy-hero-device-stage {
+    height: calc(100svh - 124px) !important;
+  }
+
+  .xy-hero-device-stage .xy-phone {
+    height: min(49svh, 390px) !important;
+    max-height: min(49svh, 390px) !important;
+  }
+
+  .xy-hero-device-stage .xy-float {
+    transform: scale(.64) !important;
+  }
+
+  .xy-hero-device-stage .xy-orbit-a {
+    width: min(285px, 21vw) !important;
+    height: min(285px, 21vw) !important;
+  }
+
+  .xy-hero-device-stage .xy-orbit-b {
+    width: min(370px, 27vw) !important;
+    height: min(190px, 14vw) !important;
+  }
+}
+
+/* 1080p+ desktop can be slightly more generous, while still fully visible. */
+@media (min-width: 981px) and (min-height: 950px) {
+  .xy-hero-device-stage .xy-phone {
+    height: min(59svh, 570px) !important;
+    max-height: min(59svh, 570px) !important;
+  }
+}
+
+@media (max-width: 980px) {
+  .xy-hero {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+
+  .xy-hero-device-stage {
+    height: 560px !important;
+  }
+
+  .xy-hero-device-stage .xy-phone {
+    height: min(520px, 72vw) !important;
+    max-height: min(520px, 72vw) !important;
+  }
+}
+
+
+/* ===== FINAL hero visual scale override ===== */
+
+/*
+  Previous patches changed the phone's box size, but the composed visual
+  (phone + floating labels + orbit rings) could still extend beyond hero.
+  This override scales the ENTIRE right-side visual as one object.
+*/
+.xy-hero {
+  position: relative !important;
+  overflow: hidden !important;
+}
+
+.xy-hero-device-stage {
+  /* Keep its layout slot, but shrink everything painted inside it. */
+  transform: translateY(-2%) scale(.68) !important;
+  transform-origin: center center !important;
+  will-change: transform !important;
+}
+
+/* Neutralize older "make phone large" rules. The stage above owns final size. */
+.xy-hero-device-stage .xy-phone {
+  width: min(320px, 22vw) !important;
+  max-width: 320px !important;
+  height: auto !important;
+  max-height: none !important;
+  aspect-ratio: .482 !important;
+}
+
+.xy-hero-device-stage .xy-phone-shell {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.xy-hero-device-stage .xy-phone-shell > img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+}
+
+/* The whole composition is already scaled, so remove accumulated child scaling. */
+.xy-hero-device-stage .xy-float {
+  transform: none !important;
+}
+
+/* Common laptop-size browser windows. */
+@media (min-width: 981px) and (max-height: 900px) {
+  .xy-hero-device-stage {
+    transform: translateY(-3%) scale(.60) !important;
+  }
+}
+
+/* Very short desktop viewport. */
+@media (min-width: 981px) and (max-height: 760px) {
+  .xy-hero-device-stage {
+    transform: translateY(-4%) scale(.53) !important;
+  }
+}
+
+/* Large 1080p / 1200p desktop screens. */
+@media (min-width: 981px) and (min-height: 1000px) {
+  .xy-hero-device-stage {
+    transform: translateY(-1%) scale(.76) !important;
+  }
+}
+
+/* Mobile/tablet keeps the existing responsive presentation. */
+@media (max-width: 980px) {
+  .xy-hero-device-stage {
+    transform: none !important;
+  }
+}
+
+
+/* ===== Hero screenshot fan ===== */
+.xy-hero-device-stage {
+  isolation: isolate;
+}
+
+.xy-hero-fan {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.xy-hero-fan-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(250px, 17vw);
+  margin: 0;
+  transform-origin: 50% 84%;
+  opacity: .94;
+  filter: drop-shadow(0 24px 34px rgba(0,0,0,.11));
+  transition:
+    transform 520ms cubic-bezier(.2,.8,.2,1),
+    opacity 420ms ease,
+    filter 420ms ease;
+}
+
+.xy-hero-fan-card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.xy-hero-fan-card.is-left {
+  z-index: 1;
+  transform: translate(-92%, -47%) rotate(-13deg) scale(.88);
+}
+
+.xy-hero-fan-card.is-mid {
+  z-index: 2;
+  transform: translate(-68%, -51%) rotate(-6deg) scale(.94);
+}
+
+.xy-hero-fan-card.is-right {
+  z-index: 1;
+  transform: translate(-8%, -45%) rotate(12deg) scale(.86);
+}
+
+.xy-hero-device-stage .xy-phone {
+  position: relative;
+  z-index: 5;
+  transform:
+    translateX(13%)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(1.5deg) ;
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-left {
+  transform: translate(-104%, -49%) rotate(-16deg) scale(.89);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-mid {
+  transform: translate(-76%, -53%) rotate(-7.5deg) scale(.95);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-right {
+  transform: translate(2%, -47%) rotate(15deg) scale(.87);
+}
+
+.xy-hero-device-stage:hover .xy-phone {
+  transform:
+    translateX(16%)
+    translateY(-4px)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(2deg) ;
+}
+
+.xy-hero-device-stage .xy-float {
+  z-index: 10 !important;
+}
+
+.xy-hero-device-stage .xy-orbit {
+  z-index: -1;
+}
+
+@media (min-width: 981px) and (max-height: 900px) {
+  .xy-hero-fan-card {
+    width: min(226px, 15.6vw);
+  }
+
+  .xy-hero-fan-card.is-left {
+    transform: translate(-92%, -47%) rotate(-12deg) scale(.84);
+  }
+
+  .xy-hero-fan-card.is-mid {
+    transform: translate(-67%, -51%) rotate(-5deg) scale(.89);
+  }
+
+  .xy-hero-fan-card.is-right {
+    transform: translate(-6%, -45%) rotate(11deg) scale(.82);
+  }
+}
+
+@media (min-width: 981px) and (max-height: 760px) {
+  .xy-hero-fan-card {
+    width: min(205px, 14vw);
+  }
+}
+
+@media (max-width: 980px) {
+  .xy-hero-fan-card {
+    width: min(210px, 38vw);
+  }
+
+  .xy-hero-fan-card.is-left {
+    transform: translate(-93%, -47%) rotate(-12deg) scale(.78);
+  }
+
+  .xy-hero-fan-card.is-mid {
+    transform: translate(-68%, -51%) rotate(-5deg) scale(.83);
+  }
+
+  .xy-hero-fan-card.is-right {
+    transform: translate(-7%, -45%) rotate(11deg) scale(.76);
+  }
+
+  .xy-hero-device-stage .xy-phone {
+    transform: translateX(10%) rotateZ(1deg) ;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-hero-fan-card,
+  .xy-hero-device-stage .xy-phone {
+    transition: none !important;
+  }
+}
+
+
+/* ===== Fan reveal + product image entrance animations ===== */
+
+/* ---------- Hero fan: make every phone visible ---------- */
+.xy-hero-device-stage {
+  overflow: visible !important;
+}
+
+.xy-hero-fan {
+  overflow: visible !important;
+}
+
+.xy-hero-fan-card {
+  opacity: 0;
+  will-change: transform, opacity, filter;
+}
+
+.xy-hero-fan-card.is-left {
+  z-index: 2;
+  transform: translate(-142%, -46%) rotate(-17deg) scale(.86);
+  animation: xyHeroFanLeftIn 820ms cubic-bezier(.16,.84,.24,1) 180ms both;
+}
+
+.xy-hero-fan-card.is-mid {
+  z-index: 3;
+  transform: translate(-88%, -54%) rotate(-8deg) scale(.94);
+  animation: xyHeroFanMidIn 860ms cubic-bezier(.16,.84,.24,1) 270ms both;
+}
+
+.xy-hero-fan-card.is-right {
+  z-index: 2;
+  transform: translate(34%, -45%) rotate(16deg) scale(.84);
+  animation: xyHeroFanRightIn 860ms cubic-bezier(.16,.84,.24,1) 360ms both;
+}
+
+/* Main chat phone pops out last and sits in front. */
+.xy-hero-device-stage .xy-phone {
+  opacity: 0;
+  transform:
+    translateX(18%)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(1.5deg) ;
+  animation: xyHeroMainPhoneIn 920ms cubic-bezier(.16,.84,.24,1) 440ms both;
+}
+
+/* Floating labels also join the entrance instead of appearing immediately. */
+.xy-hero-device-stage .xy-float-memory {
+  opacity: 0;
+  animation: xyHeroFloatLeftIn 620ms cubic-bezier(.2,.8,.2,1) 720ms both;
+}
+
+.xy-hero-device-stage .xy-float-voice {
+  opacity: 0;
+  animation: xyHeroFloatRightIn 620ms cubic-bezier(.2,.8,.2,1) 820ms both;
+}
+
+/* After opening, hovering lets the fan breathe a little wider. */
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-left {
+  transform: translate(-151%, -48%) rotate(-20deg) scale(.88);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-mid {
+  transform: translate(-94%, -56%) rotate(-9deg) scale(.96);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-right {
+  transform: translate(44%, -47%) rotate(19deg) scale(.86);
+}
+
+.xy-hero-device-stage:hover .xy-phone {
+  transform:
+    translateX(21%)
+    translateY(-5px)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(2deg) ;
+}
+
+/* ---------- Product showcase entrances ---------- */
+
+/* Main APP showcase phones */
+.xy-showcase-phone {
+  opacity: 0;
+}
+
+.xy-showcase.is-visible .xy-showcase-phone.is-chat,
+.xy-showcase[data-product-reveal].is-visible .xy-showcase-phone.is-chat {
+  animation: xyShowcaseChatIn 760ms cubic-bezier(.16,.84,.24,1) 80ms both;
+}
+
+.xy-showcase.is-visible .xy-showcase-phone.is-mood,
+.xy-showcase[data-product-reveal].is-visible .xy-showcase-phone.is-mood {
+  animation: xyShowcaseMoodIn 720ms cubic-bezier(.16,.84,.24,1) 180ms both;
+}
+
+.xy-showcase.is-visible .xy-showcase-phone.is-voice,
+.xy-showcase[data-product-reveal].is-visible .xy-showcase-phone.is-voice {
+  animation: xyShowcaseVoiceIn 720ms cubic-bezier(.16,.84,.24,1) 260ms both;
+}
+
+.xy-showcase.is-visible .xy-showcase-phone.is-picture,
+.xy-showcase[data-product-reveal].is-visible .xy-showcase-phone.is-picture {
+  animation: xyShowcasePictureIn 720ms cubic-bezier(.16,.84,.24,1) 340ms both;
+}
+
+/* First-meet video + mini screens */
+.xy-journey-video,
+.xy-journey-mini {
+  opacity: 0;
+}
+
+.xy-journey-showcase.is-visible .xy-journey-video,
+.xy-journey-showcase[data-product-reveal].is-visible .xy-journey-video {
+  animation: xyJourneyVideoIn 760ms cubic-bezier(.16,.84,.24,1) 80ms both;
+}
+
+.xy-journey-showcase.is-visible .xy-journey-mini.is-login,
+.xy-journey-showcase[data-product-reveal].is-visible .xy-journey-mini.is-login {
+  animation: xyJourneyLoginIn 660ms cubic-bezier(.16,.84,.24,1) 180ms both;
+}
+
+.xy-journey-showcase.is-visible .xy-journey-mini.is-signin,
+.xy-journey-showcase[data-product-reveal].is-visible .xy-journey-mini.is-signin {
+  animation: xyJourneySigninIn 660ms cubic-bezier(.16,.84,.24,1) 250ms both;
+}
+
+.xy-journey-showcase.is-visible .xy-journey-mini.is-guide,
+.xy-journey-showcase[data-product-reveal].is-visible .xy-journey-mini.is-guide {
+  animation: xyJourneyGuideIn 660ms cubic-bezier(.16,.84,.24,1) 320ms both;
+}
+
+.xy-journey-showcase.is-visible .xy-journey-mini.is-diy,
+.xy-journey-showcase[data-product-reveal].is-visible .xy-journey-mini.is-diy {
+  animation: xyJourneyDiyIn 660ms cubic-bezier(.16,.84,.24,1) 390ms both;
+}
+
+/* Generic gallery/image fallback: if older image cards remain anywhere,
+   give them a clean staggered reveal as their parent becomes visible. */
+[data-product-reveal].is-visible .xy-shot:nth-child(1),
+[data-product-reveal].is-visible figure:nth-child(1) img {
+  animation-delay: 80ms;
+}
+
+[data-product-reveal].is-visible .xy-shot:nth-child(2),
+[data-product-reveal].is-visible figure:nth-child(2) img {
+  animation-delay: 150ms;
+}
+
+[data-product-reveal].is-visible .xy-shot:nth-child(3),
+[data-product-reveal].is-visible figure:nth-child(3) img {
+  animation-delay: 220ms;
+}
+
+[data-product-reveal].is-visible .xy-shot:nth-child(4),
+[data-product-reveal].is-visible figure:nth-child(4) img {
+  animation-delay: 290ms;
+}
+
+/* ---------- Keyframes ---------- */
+
+@keyframes xyHeroFanLeftIn {
+  0% {
+    opacity: 0;
+    transform: translate(-58%, -48%) rotate(-2deg) scale(.72);
+    filter: blur(8px) drop-shadow(0 10px 18px rgba(0,0,0,.05));
+  }
+  65% {
+    opacity: 1;
+    transform: translate(-149%, -47%) rotate(-19deg) scale(.89);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(-142%, -46%) rotate(-17deg) scale(.86);
+    filter: blur(0) drop-shadow(0 24px 34px rgba(0,0,0,.11));
+  }
+}
+
+@keyframes xyHeroFanMidIn {
+  0% {
+    opacity: 0;
+    transform: translate(-51%, -50%) rotate(0deg) scale(.74);
+    filter: blur(8px) drop-shadow(0 10px 18px rgba(0,0,0,.05));
+  }
+  65% {
+    opacity: 1;
+    transform: translate(-92%, -56%) rotate(-9deg) scale(.97);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(-88%, -54%) rotate(-8deg) scale(.94);
+    filter: blur(0) drop-shadow(0 24px 34px rgba(0,0,0,.11));
+  }
+}
+
+@keyframes xyHeroFanRightIn {
+  0% {
+    opacity: 0;
+    transform: translate(-48%, -49%) rotate(1deg) scale(.72);
+    filter: blur(8px) drop-shadow(0 10px 18px rgba(0,0,0,.05));
+  }
+  65% {
+    opacity: 1;
+    transform: translate(42%, -47%) rotate(18deg) scale(.87);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(34%, -45%) rotate(16deg) scale(.84);
+    filter: blur(0) drop-shadow(0 24px 34px rgba(0,0,0,.11));
+  }
+}
+
+@keyframes xyHeroMainPhoneIn {
+  0% {
+    opacity: 0;
+    transform:
+      translateX(18%)
+      translateY(34px)
+      rotateX(0deg)
+      rotateY(0deg)
+      rotateZ(0deg)
+      scale(.76);
+    filter: blur(7px);
+  }
+  70% {
+    opacity: 1;
+    transform:
+      translateX(18%)
+      translateY(-5px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(2deg)
+      scale(1.025);
+  }
+  100% {
+    opacity: 1;
+    transform:
+      translateX(18%)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.5deg)
+      scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes xyHeroFloatLeftIn {
+  from { opacity: 0; transform: translate(-18px, 8px) scale(.88); }
+  to   { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes xyHeroFloatRightIn {
+  from { opacity: 0; transform: translate(18px, 8px) scale(.88); }
+  to   { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+
+@keyframes xyShowcaseChatIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(46px) rotate(0deg) scale(.78); filter: blur(7px); }
+  to   { opacity: 1; transform: translateX(-50%) rotate(-2.2deg) scale(1); filter: blur(0); }
+}
+
+@keyframes xyShowcaseMoodIn {
+  from { opacity: 0; transform: translate(54px, 34px) rotate(-1deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(-6.5deg) scale(1); }
+}
+
+@keyframes xyShowcaseVoiceIn {
+  from { opacity: 0; transform: translate(-48px, 36px) rotate(1deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(5.5deg) scale(1); }
+}
+
+@keyframes xyShowcasePictureIn {
+  from { opacity: 0; transform: translate(-30px, 44px) rotate(0deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(3.8deg) scale(1); }
+}
+
+@keyframes xyJourneyVideoIn {
+  from { opacity: 0; transform: translate(-50%, -46%) rotate(0deg) scale(.78); filter: blur(7px); }
+  to   { opacity: 1; transform: translate(-50%, -50%) rotate(-1.5deg) scale(1); filter: blur(0); }
+}
+
+@keyframes xyJourneyLoginIn {
+  from { opacity: 0; transform: translate(42px, 34px) rotate(0deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(-6deg) scale(1); }
+}
+
+@keyframes xyJourneySigninIn {
+  from { opacity: 0; transform: translate(-42px, 34px) rotate(0deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(5deg) scale(1); }
+}
+
+@keyframes xyJourneyGuideIn {
+  from { opacity: 0; transform: translate(42px, -28px) rotate(0deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(4.5deg) scale(1); }
+}
+
+@keyframes xyJourneyDiyIn {
+  from { opacity: 0; transform: translate(-42px, -28px) rotate(0deg) scale(.72); }
+  to   { opacity: 1; transform: rotate(-5deg) scale(1); }
+}
+
+/* Reduced motion: show everything directly. */
+@media (prefers-reduced-motion: reduce) {
+  .xy-hero-fan-card,
+  .xy-hero-device-stage .xy-phone,
+  .xy-hero-device-stage .xy-float,
+  .xy-showcase-phone,
+  .xy-journey-video,
+  .xy-journey-mini {
+    animation: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+  }
+}
+
+
+/* ===== Fix reveal visibility + wider hero fan ===== */
+
+/* ---------- Hero fan: bigger cards, more content exposed ---------- */
+.xy-hero-fan-card {
+  width: min(335px, 23vw) !important;
+  opacity: 0;
+}
+
+.xy-hero-fan-card.is-left {
+  z-index: 2 !important;
+  transform: translate(-154%, -48%) rotate(-16deg) scale(.96) ;
+  animation: xyHeroFanLeftWideIn 860ms cubic-bezier(.16,.84,.24,1) 140ms both !important;
+}
+
+.xy-hero-fan-card.is-mid {
+  z-index: 3 !important;
+  width: min(350px, 24vw) !important;
+  transform: translate(-92%, -56%) rotate(-7deg) scale(1) ;
+  animation: xyHeroFanMidWideIn 900ms cubic-bezier(.16,.84,.24,1) 230ms both !important;
+}
+
+.xy-hero-fan-card.is-right {
+  z-index: 2 !important;
+  transform: translate(45%, -47%) rotate(15deg) scale(.95) ;
+  animation: xyHeroFanRightWideIn 900ms cubic-bezier(.16,.84,.24,1) 320ms both !important;
+}
+
+.xy-hero-device-stage .xy-phone {
+  z-index: 6 !important;
+  animation: xyHeroMainPhoneWideIn 920ms cubic-bezier(.16,.84,.24,1) 400ms both !important;
+}
+
+/* Expand a bit more on hover, without hiding the side screens. */
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-left {
+  transform: translate(-163%, -49%) rotate(-19deg) scale(.98) ;
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-mid {
+  transform: translate(-99%, -57%) rotate(-8deg) scale(1.02) ;
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-right {
+  transform: translate(55%, -48%) rotate(18deg) scale(.97) ;
+}
+
+/* ---------- Fix disappeared showcase / journey media ---------- */
+/*
+  Each media item now gets its own data-product-reveal observer.
+  This avoids depending on the parent section receiving .is-visible.
+*/
+.xy-showcase-phone,
+.xy-journey-video,
+.xy-journey-mini {
+  opacity: 1;
+}
+
+/* Before its own observer fires, keep it hidden. */
+.xy-showcase-phone[data-product-reveal]:not(.is-visible),
+.xy-journey-video[data-product-reveal]:not(.is-visible),
+.xy-journey-mini[data-product-reveal]:not(.is-visible) {
+  opacity: 0 !important;
+}
+
+/* Main product screenshots: staggered, but each always becomes visible. */
+.xy-showcase-phone.is-chat.is-visible {
+  animation: xyShowcaseChatSafeIn 760ms cubic-bezier(.16,.84,.24,1) 40ms both !important;
+}
+
+.xy-showcase-phone.is-mood.is-visible {
+  animation: xyShowcaseMoodSafeIn 720ms cubic-bezier(.16,.84,.24,1) 100ms both !important;
+}
+
+.xy-showcase-phone.is-voice.is-visible {
+  animation: xyShowcaseVoiceSafeIn 720ms cubic-bezier(.16,.84,.24,1) 160ms both !important;
+}
+
+.xy-showcase-phone.is-picture.is-visible {
+  animation: xyShowcasePictureSafeIn 720ms cubic-bezier(.16,.84,.24,1) 220ms both !important;
+}
+
+/* First-meet media: same idea. */
+.xy-journey-video.is-visible {
+  animation: xyJourneyVideoSafeIn 760ms cubic-bezier(.16,.84,.24,1) 40ms both !important;
+}
+
+.xy-journey-mini.is-login.is-visible {
+  animation: xyJourneyLoginSafeIn 660ms cubic-bezier(.16,.84,.24,1) 110ms both !important;
+}
+
+.xy-journey-mini.is-signin.is-visible {
+  animation: xyJourneySigninSafeIn 660ms cubic-bezier(.16,.84,.24,1) 170ms both !important;
+}
+
+.xy-journey-mini.is-guide.is-visible {
+  animation: xyJourneyGuideSafeIn 660ms cubic-bezier(.16,.84,.24,1) 230ms both !important;
+}
+
+.xy-journey-mini.is-diy.is-visible {
+  animation: xyJourneyDiySafeIn 660ms cubic-bezier(.16,.84,.24,1) 290ms both !important;
+}
+
+/* ---------- Keyframes ---------- */
+
+@keyframes xyHeroFanLeftWideIn {
+  0% {
+    opacity: 0;
+    transform: translate(-58%, -48%) rotate(-2deg) scale(.68);
+    filter: blur(10px) drop-shadow(0 10px 18px rgba(0,0,0,.04));
+  }
+  72% {
+    opacity: 1;
+    transform: translate(-160%, -49%) rotate(-18deg) scale(.99);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(-154%, -48%) rotate(-16deg) scale(.96);
+    filter: blur(0) drop-shadow(0 24px 36px rgba(0,0,0,.12));
+  }
+}
+
+@keyframes xyHeroFanMidWideIn {
+  0% {
+    opacity: 0;
+    transform: translate(-48%, -50%) rotate(0deg) scale(.68);
+    filter: blur(10px) drop-shadow(0 10px 18px rgba(0,0,0,.04));
+  }
+  72% {
+    opacity: 1;
+    transform: translate(-98%, -57%) rotate(-8deg) scale(1.03);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(-92%, -56%) rotate(-7deg) scale(1);
+    filter: blur(0) drop-shadow(0 24px 36px rgba(0,0,0,.12));
+  }
+}
+
+@keyframes xyHeroFanRightWideIn {
+  0% {
+    opacity: 0;
+    transform: translate(-45%, -49%) rotate(1deg) scale(.68);
+    filter: blur(10px) drop-shadow(0 10px 18px rgba(0,0,0,.04));
+  }
+  72% {
+    opacity: 1;
+    transform: translate(52%, -48%) rotate(17deg) scale(.98);
+  }
+  100% {
+    opacity: .98;
+    transform: translate(45%, -47%) rotate(15deg) scale(.95);
+    filter: blur(0) drop-shadow(0 24px 36px rgba(0,0,0,.12));
+  }
+}
+
+@keyframes xyHeroMainPhoneWideIn {
+  0% {
+    opacity: 0;
+    transform:
+      translateX(18%)
+      translateY(38px)
+      rotateZ(0deg)
+      scale(.72);
+    filter: blur(8px);
+  }
+  72% {
+    opacity: 1;
+    transform:
+      translateX(18%)
+      translateY(-5px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(2deg)
+      scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform:
+      translateX(18%)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.5deg)
+      scale(1);
+    filter: blur(0);
+  }
+}
+
+@keyframes xyShowcaseChatSafeIn {
+  from { opacity:0; transform:translateX(-50%) translateY(40px) rotate(0deg) scale(.82); filter:blur(7px); }
+  to   { opacity:1; transform:translateX(-50%) rotate(-2.2deg) scale(1); filter:blur(0); }
+}
+
+@keyframes xyShowcaseMoodSafeIn {
+  from { opacity:0; transform:translate(42px, 30px) rotate(-1deg) scale(.78); }
+  to   { opacity:1; transform:rotate(-6.5deg) scale(1); }
+}
+
+@keyframes xyShowcaseVoiceSafeIn {
+  from { opacity:0; transform:translate(-42px, 30px) rotate(1deg) scale(.78); }
+  to   { opacity:1; transform:rotate(5.5deg) scale(1); }
+}
+
+@keyframes xyShowcasePictureSafeIn {
+  from { opacity:0; transform:translate(-28px, 38px) rotate(0deg) scale(.78); }
+  to   { opacity:1; transform:rotate(3.8deg) scale(1); }
+}
+
+@keyframes xyJourneyVideoSafeIn {
+  from { opacity:0; transform:translate(-50%,-46%) rotate(0deg) scale(.80); filter:blur(7px); }
+  to   { opacity:1; transform:translate(-50%,-50%) rotate(-1.5deg) scale(1); filter:blur(0); }
+}
+
+@keyframes xyJourneyLoginSafeIn {
+  from { opacity:0; transform:translate(34px,28px) rotate(0deg) scale(.78); }
+  to   { opacity:1; transform:rotate(-6deg) scale(1); }
+}
+
+@keyframes xyJourneySigninSafeIn {
+  from { opacity:0; transform:translate(-34px,28px) rotate(0deg) scale(.78); }
+  to   { opacity:1; transform:rotate(5deg) scale(1); }
+}
+
+@keyframes xyJourneyGuideSafeIn {
+  from { opacity:0; transform:translate(34px,-24px) rotate(0deg) scale(.78); }
+  to   { opacity:1; transform:rotate(4.5deg) scale(1); }
+}
+
+@keyframes xyJourneyDiySafeIn {
+  from { opacity:0; transform:translate(-34px,-24px) rotate(0deg) scale(.78); }
+  to   { opacity:1; transform:rotate(-5deg) scale(1); }
+}
+
+/* Compact the larger fan on shorter desktop screens. */
+@media (min-width: 981px) and (max-height: 900px) {
+  .xy-hero-fan-card {
+    width: min(310px, 21vw) !important;
+  }
+
+  .xy-hero-fan-card.is-mid {
+    width: min(325px, 22vw) !important;
+  }
+}
+
+@media (min-width: 981px) and (max-height: 760px) {
+  .xy-hero-fan-card {
+    width: min(280px, 19vw) !important;
+  }
+
+  .xy-hero-fan-card.is-mid {
+    width: min(295px, 20vw) !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-hero-fan-card,
+  .xy-hero-device-stage .xy-phone,
+  .xy-showcase-phone,
+  .xy-journey-video,
+  .xy-journey-mini {
+    animation: none !important;
+    opacity: 1 !important;
+    filter: none !important;
+  }
+}
+
+
+/* ===== Hero fan spring-pop animation ===== */
+
+/*
+  First screen should POP, not fade.
+  All phones are visible from frame 1; animation is driven by
+  position + scale + rotation with overshoot / rebound.
+*/
+.xy-hero-fan-card,
+.xy-hero-device-stage .xy-phone,
+.xy-hero-device-stage .xy-float {
+  opacity: 1 !important;
+  filter: none !important;
+}
+
+/* Fan cards start stacked behind the main phone, then spring outward. */
+.xy-hero-fan-card.is-left {
+  animation: xyHeroFanLeftPop 760ms cubic-bezier(.18,.89,.32,1.28) 80ms both !important;
+}
+
+.xy-hero-fan-card.is-mid {
+  animation: xyHeroFanMidPop 820ms cubic-bezier(.18,.89,.32,1.28) 150ms both !important;
+}
+
+.xy-hero-fan-card.is-right {
+  animation: xyHeroFanRightPop 780ms cubic-bezier(.18,.89,.32,1.28) 220ms both !important;
+}
+
+/* Main phone punches forward after the fan starts opening. */
+.xy-hero-device-stage .xy-phone {
+  animation: xyHeroMainPhonePop 700ms cubic-bezier(.18,.89,.32,1.28) 250ms both !important;
+}
+
+/* The two chips use a short scale bounce, no fading. */
+.xy-hero-device-stage .xy-float-memory {
+  animation: xyHeroChipPopLeft 460ms cubic-bezier(.18,.89,.32,1.28) 520ms both !important;
+}
+
+.xy-hero-device-stage .xy-float-voice {
+  animation: xyHeroChipPopRight 460ms cubic-bezier(.18,.89,.32,1.28) 590ms both !important;
+}
+
+@keyframes xyHeroFanLeftPop {
+  0% {
+    transform: translate(-54%, -48%) rotate(-1deg) scale(.54);
+  }
+  54% {
+    transform: translate(-166%, -49%) rotate(-20deg) scale(1.03);
+  }
+  72% {
+    transform: translate(-148%, -47%) rotate(-15deg) scale(.93);
+  }
+  88% {
+    transform: translate(-158%, -48%) rotate(-17deg) scale(.985);
+  }
+  100% {
+    transform: translate(-154%, -48%) rotate(-16deg) scale(.96);
+  }
+}
+
+@keyframes xyHeroFanMidPop {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(.54);
+  }
+  54% {
+    transform: translate(-102%, -58%) rotate(-9deg) scale(1.07);
+  }
+  72% {
+    transform: translate(-88%, -54%) rotate(-6deg) scale(.96);
+  }
+  88% {
+    transform: translate(-95%, -57%) rotate(-7.5deg) scale(1.02);
+  }
+  100% {
+    transform: translate(-92%, -56%) rotate(-7deg) scale(1);
+  }
+}
+
+@keyframes xyHeroFanRightPop {
+  0% {
+    transform: translate(-46%, -49%) rotate(1deg) scale(.54);
+  }
+  54% {
+    transform: translate(58%, -49%) rotate(19deg) scale(1.03);
+  }
+  72% {
+    transform: translate(38%, -46%) rotate(14deg) scale(.92);
+  }
+  88% {
+    transform: translate(49%, -48%) rotate(16deg) scale(.99);
+  }
+  100% {
+    transform: translate(45%, -47%) rotate(15deg) scale(.95);
+  }
+}
+
+@keyframes xyHeroMainPhonePop {
+  0% {
+    transform:
+      translateX(18%)
+      translateY(20px)
+      rotateX(0deg)
+      rotateY(0deg)
+      rotateZ(0deg)
+      scale(.78);
+  }
+  58% {
+    transform:
+      translateX(18%)
+      translateY(-10px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(2.4deg)
+      scale(1.075);
+  }
+  76% {
+    transform:
+      translateX(18%)
+      translateY(3px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.2deg)
+      scale(.975);
+  }
+  90% {
+    transform:
+      translateX(18%)
+      translateY(-2px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.7deg)
+      scale(1.015);
+  }
+  100% {
+    transform:
+      translateX(18%)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.5deg)
+      scale(1);
+  }
+}
+
+@keyframes xyHeroChipPopLeft {
+  0%   { transform: translate(-18px, 8px) scale(.55); }
+  62%  { transform: translate(3px, -2px) scale(1.12); }
+  82%  { transform: translate(-1px, 1px) scale(.96); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+@keyframes xyHeroChipPopRight {
+  0%   { transform: translate(18px, 8px) scale(.55); }
+  62%  { transform: translate(-3px, -2px) scale(1.12); }
+  82%  { transform: translate(1px, 1px) scale(.96); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+/* Hover keeps the fan alive, but does not replay the intro. */
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-left {
+  transform: translate(-163%, -49%) rotate(-19deg) scale(.98) ;
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-mid {
+  transform: translate(-99%, -57%) rotate(-8deg) scale(1.02) ;
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-right {
+  transform: translate(55%, -48%) rotate(18deg) scale(.97) ;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-hero-fan-card,
+  .xy-hero-device-stage .xy-phone,
+  .xy-hero-device-stage .xy-float {
+    animation: none !important;
+  }
+}
+
+
+/* ===== Hero fan animation compatibility fix ===== */
+
+/*
+  Important:
+  CSS keyframes cannot override transform declarations marked !important.
+  Earlier layout patches used !important on the hero transforms, which made
+  the fan look completely static. This block supplies non-important final
+  transforms and lets keyframes own the motion.
+*/
+
+.xy-hero-fan-card.is-left {
+  transform: translate(-154%, -48%) rotate(-16deg) scale(.96);
+  animation: xyHeroFanLeftPopFixed 760ms cubic-bezier(.18,.89,.32,1.28) 90ms both;
+}
+
+.xy-hero-fan-card.is-mid {
+  transform: translate(-92%, -56%) rotate(-7deg) scale(1);
+  animation: xyHeroFanMidPopFixed 820ms cubic-bezier(.18,.89,.32,1.28) 170ms both;
+}
+
+.xy-hero-fan-card.is-right {
+  transform: translate(45%, -47%) rotate(15deg) scale(.95);
+  animation: xyHeroFanRightPopFixed 800ms cubic-bezier(.18,.89,.32,1.28) 250ms both;
+}
+
+.xy-hero-device-stage .xy-phone {
+  transform:
+    translateX(18%)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(1.5deg);
+  animation: xyHeroMainPhonePopFixed 720ms cubic-bezier(.18,.89,.32,1.28) 330ms both;
+}
+
+.xy-hero-device-stage .xy-float-memory {
+  animation: xyHeroChipLeftPopFixed 480ms cubic-bezier(.18,.89,.32,1.28) 610ms both;
+}
+
+.xy-hero-device-stage .xy-float-voice {
+  animation: xyHeroChipRightPopFixed 480ms cubic-bezier(.18,.89,.32,1.28) 690ms both;
+}
+
+/* Keep hover lively after the intro animation completes. */
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-left {
+  transform: translate(-163%, -49%) rotate(-19deg) scale(.98);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-mid {
+  transform: translate(-99%, -57%) rotate(-8deg) scale(1.02);
+}
+
+.xy-hero-device-stage:hover .xy-hero-fan-card.is-right {
+  transform: translate(55%, -48%) rotate(18deg) scale(.97);
+}
+
+.xy-hero-device-stage:hover .xy-phone {
+  transform:
+    translateX(21%)
+    translateY(-5px)
+    rotateX(var(--tilt-x, 0deg))
+    rotateY(var(--tilt-y, 0deg))
+    rotateZ(2deg);
+}
+
+@keyframes xyHeroFanLeftPopFixed {
+  0% {
+    transform: translate(-52%, -48%) rotate(0deg) scale(.50);
+  }
+  55% {
+    transform: translate(-168%, -50%) rotate(-21deg) scale(1.04);
+  }
+  74% {
+    transform: translate(-147%, -47%) rotate(-14deg) scale(.92);
+  }
+  89% {
+    transform: translate(-158%, -49%) rotate(-17.5deg) scale(.99);
+  }
+  100% {
+    transform: translate(-154%, -48%) rotate(-16deg) scale(.96);
+  }
+}
+
+@keyframes xyHeroFanMidPopFixed {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(.50);
+  }
+  55% {
+    transform: translate(-104%, -59%) rotate(-10deg) scale(1.08);
+  }
+  74% {
+    transform: translate(-87%, -54%) rotate(-5deg) scale(.95);
+  }
+  89% {
+    transform: translate(-96%, -57%) rotate(-8deg) scale(1.025);
+  }
+  100% {
+    transform: translate(-92%, -56%) rotate(-7deg) scale(1);
+  }
+}
+
+@keyframes xyHeroFanRightPopFixed {
+  0% {
+    transform: translate(-48%, -49%) rotate(0deg) scale(.50);
+  }
+  55% {
+    transform: translate(60%, -50%) rotate(20deg) scale(1.04);
+  }
+  74% {
+    transform: translate(37%, -46%) rotate(13deg) scale(.91);
+  }
+  89% {
+    transform: translate(50%, -48%) rotate(16.5deg) scale(.99);
+  }
+  100% {
+    transform: translate(45%, -47%) rotate(15deg) scale(.95);
+  }
+}
+
+@keyframes xyHeroMainPhonePopFixed {
+  0% {
+    transform:
+      translateX(18%)
+      translateY(24px)
+      rotateZ(0deg)
+      scale(.72);
+  }
+  58% {
+    transform:
+      translateX(18%)
+      translateY(-11px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(2.6deg)
+      scale(1.085);
+  }
+  77% {
+    transform:
+      translateX(18%)
+      translateY(4px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.1deg)
+      scale(.97);
+  }
+  91% {
+    transform:
+      translateX(18%)
+      translateY(-2px)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.8deg)
+      scale(1.015);
+  }
+  100% {
+    transform:
+      translateX(18%)
+      rotateX(var(--tilt-x, 0deg))
+      rotateY(var(--tilt-y, 0deg))
+      rotateZ(1.5deg)
+      scale(1);
+  }
+}
+
+@keyframes xyHeroChipLeftPopFixed {
+  0%   { transform: translate(-22px, 10px) scale(.48); }
+  62%  { transform: translate(4px, -3px) scale(1.15); }
+  82%  { transform: translate(-2px, 1px) scale(.95); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+@keyframes xyHeroChipRightPopFixed {
+  0%   { transform: translate(22px, 10px) scale(.48); }
+  62%  { transform: translate(-4px, -3px) scale(1.15); }
+  82%  { transform: translate(2px, 1px) scale(.95); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-hero-fan-card,
+  .xy-hero-device-stage .xy-phone,
+  .xy-hero-device-stage .xy-float {
+    animation: none !important;
+  }
+}
+
+
+/* ===== Voice sphere animation ===== */
+.xy-voice-visual {
+  perspective: 1200px;
+  transform-style: preserve-3d;
+}
+
+.xy-voice-sphere {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(560px, 36vw);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  transform-style: preserve-3d;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.xy-sphere-ring {
+  position: absolute;
+  inset: 7%;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 28px rgba(255,255,255,.015),
+    0 0 18px rgba(255,255,255,.018);
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+.xy-sphere-ring.r1 {
+  transform: rotateX(72deg);
+  animation: xySphereSpin1 13s linear infinite;
+}
+
+.xy-sphere-ring.r2 {
+  transform: rotateY(68deg);
+  animation: xySphereSpin2 17s linear infinite reverse;
+}
+
+.xy-sphere-ring.r3 {
+  transform: rotateX(57deg) rotateZ(38deg);
+  animation: xySphereSpin3 19s linear infinite;
+}
+
+.xy-sphere-ring.r4 {
+  transform: rotateY(58deg) rotateZ(-42deg);
+  animation: xySphereSpin4 23s linear infinite reverse;
+}
+
+.xy-sphere-ring.r5 {
+  inset: 18%;
+  border-color: rgba(255,255,255,.10);
+  transform: rotateX(64deg) rotateZ(8deg);
+  animation: xySphereSpin5 10s linear infinite;
+}
+
+.xy-sphere-ring.r6 {
+  inset: 27%;
+  border-color: rgba(255,255,255,.08);
+  transform: rotateY(70deg) rotateZ(20deg);
+  animation: xySphereSpin6 8s linear infinite reverse;
+}
+
+.xy-voice-sphere::before,
+.xy-voice-sphere::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+.xy-voice-sphere::before {
+  inset: 0;
+  border: 1px solid rgba(255,255,255,.055);
+  box-shadow:
+    0 0 80px rgba(255,255,255,.025),
+    inset 0 0 80px rgba(255,255,255,.015);
+  animation: xySpherePulse 4.8s ease-in-out infinite;
+}
+
+.xy-voice-sphere::after {
+  inset: 11%;
+  background:
+    radial-gradient(circle at 50% 50%,
+      rgba(255,255,255,.045) 0%,
+      rgba(255,255,255,.015) 34%,
+      transparent 67%);
+  filter: blur(2px);
+}
+
+.xy-sphere-dot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.95);
+  box-shadow:
+    0 0 10px rgba(255,255,255,.8),
+    0 0 22px rgba(255,255,255,.28);
+  transform-origin: 0 0;
+}
+
+.xy-sphere-dot.d1 { animation: xySphereDot1 7s linear infinite; }
+.xy-sphere-dot.d2 {
+  width: 3px;
+  height: 3px;
+  margin: -1.5px;
+  opacity: .72;
+  animation: xySphereDot2 9s linear infinite reverse;
+}
+.xy-sphere-dot.d3 {
+  width: 4px;
+  height: 4px;
+  margin: -2px;
+  opacity: .82;
+  animation: xySphereDot3 11s linear infinite;
+}
+.xy-sphere-dot.d4 {
+  width: 3px;
+  height: 3px;
+  margin: -1.5px;
+  opacity: .58;
+  animation: xySphereDot4 13s linear infinite reverse;
+}
+.xy-sphere-dot.d5 {
+  width: 4px;
+  height: 4px;
+  margin: -2px;
+  opacity: .7;
+  animation: xySphereDot5 15s linear infinite;
+}
+
+.xy-voice-core {
+  position: relative;
+  z-index: 4;
+}
+
+.xy-voice-halo {
+  z-index: 2;
+}
+
+@keyframes xySphereSpin1 {
+  from { transform: rotateX(72deg) rotateZ(0deg); }
+  to   { transform: rotateX(72deg) rotateZ(360deg); }
+}
+
+@keyframes xySphereSpin2 {
+  from { transform: rotateY(68deg) rotateZ(0deg); }
+  to   { transform: rotateY(68deg) rotateZ(360deg); }
+}
+
+@keyframes xySphereSpin3 {
+  from { transform: rotateX(57deg) rotateZ(38deg) rotateY(0deg); }
+  to   { transform: rotateX(57deg) rotateZ(38deg) rotateY(360deg); }
+}
+
+@keyframes xySphereSpin4 {
+  from { transform: rotateY(58deg) rotateZ(-42deg) rotateX(0deg); }
+  to   { transform: rotateY(58deg) rotateZ(-42deg) rotateX(360deg); }
+}
+
+@keyframes xySphereSpin5 {
+  from { transform: rotateX(64deg) rotateZ(8deg) rotateY(0deg); }
+  to   { transform: rotateX(64deg) rotateZ(8deg) rotateY(360deg); }
+}
+
+@keyframes xySphereSpin6 {
+  from { transform: rotateY(70deg) rotateZ(20deg) rotateX(0deg); }
+  to   { transform: rotateY(70deg) rotateZ(20deg) rotateX(360deg); }
+}
+
+@keyframes xySpherePulse {
+  0%,100% { transform: scale(.97); opacity: .54; }
+  50% { transform: scale(1.025); opacity: .9; }
+}
+
+@keyframes xySphereDot1 {
+  from { transform: rotate(0deg) translateX(245px) rotate(0deg); }
+  to   { transform: rotate(360deg) translateX(245px) rotate(-360deg); }
+}
+@keyframes xySphereDot2 {
+  from { transform: rotate(35deg) translateX(196px) scaleY(.58); }
+  to   { transform: rotate(395deg) translateX(196px) scaleY(.58); }
+}
+@keyframes xySphereDot3 {
+  from { transform: rotate(-65deg) translateX(220px) scaleY(.72); }
+  to   { transform: rotate(295deg) translateX(220px) scaleY(.72); }
+}
+@keyframes xySphereDot4 {
+  from { transform: rotate(115deg) translateX(155px) scaleY(.48); }
+  to   { transform: rotate(475deg) translateX(155px) scaleY(.48); }
+}
+@keyframes xySphereDot5 {
+  from { transform: rotate(210deg) translateX(182px) scaleY(.82); }
+  to   { transform: rotate(570deg) translateX(182px) scaleY(.82); }
+}
+
+@media (max-width: 980px) {
+  .xy-voice-sphere { width: min(500px, 72vw); }
+}
+
+@media (max-width: 640px) {
+  .xy-voice-sphere { width: min(430px, 92vw); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-sphere-ring,
+  .xy-sphere-dot,
+  .xy-voice-sphere::before {
+    animation: none !important;
+  }
+}
+
+
+/* ===== Lean product page: only essential chapters ===== */
+.xy-features,
+.xy-voice-section,
+.xy-showcase,
+.xy-observatory-portal {
+  scroll-margin-top: 92px;
+}
+
+.xy-features {
+  padding-top: 92px !important;
+  padding-bottom: 72px !important;
+}
+
+.xy-voice-section {
+  min-height: 88svh !important;
+  padding-top: 92px !important;
+  padding-bottom: 58px !important;
+}
+
+.xy-showcase {
+  min-height: 92svh !important;
+  padding-top: 92px !important;
+  padding-bottom: 64px !important;
+}
+
+.xy-observatory-portal {
+  min-height: 78svh !important;
+  padding-top: 88px !important;
+  padding-bottom: 58px !important;
+}
+
+.xy-product-footer {
+  margin-top: 0 !important;
+}
+
+@media (max-width: 980px) {
+  .xy-features,
+  .xy-voice-section,
+  .xy-showcase,
+  .xy-observatory-portal {
+    min-height: auto !important;
+  }
+}
+
+
+/* ===== Siri-inspired fluid voice orb ===== */
+.xy-voice-visual.xy-siri-visual {
+  position: relative !important;
+  height: min(68svh, 620px) !important;
+  min-height: 500px;
+  display: grid !important;
+  place-items: center !important;
+  perspective: none !important;
+  overflow: visible;
+  isolation: isolate;
+}
+
+.xy-siri-visual .xy-voice-sphere,
+.xy-siri-visual .xy-wave-ring,
+.xy-siri-visual .xy-voice-halo,
+.xy-siri-visual .xy-voice-core {
+  display: none !important;
+}
+
+.xy-siri-orb {
+  position: relative;
+  width: min(390px, 27vw);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  overflow: hidden;
+  isolation: isolate;
+  transform: translateZ(0);
+  background:
+    radial-gradient(circle at 50% 46%, rgba(255,255,255,.96) 0 3%, rgba(255,255,255,.12) 18%, transparent 43%),
+    radial-gradient(circle at 50% 50%, rgba(255,255,255,.09), rgba(255,255,255,.015) 58%, transparent 72%);
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.07),
+    0 0 44px rgba(255,255,255,.08),
+    0 0 110px rgba(180,100,255,.10);
+  animation: xySiriOrbBreathe 4.8s ease-in-out infinite;
+}
+
+.xy-siri-aurora {
+  position: absolute;
+  width: 74%;
+  height: 74%;
+  border-radius: 46% 54% 58% 42% / 52% 38% 62% 48%;
+  filter: blur(25px) saturate(125%);
+  opacity: .84;
+  mix-blend-mode: screen;
+  will-change: transform, border-radius;
+}
+
+.xy-siri-aurora.aurora-a {
+  left: -10%;
+  top: 0%;
+  background: radial-gradient(circle at 60% 55%, rgba(255,111,187,.92), rgba(255,111,187,.12) 58%, transparent 74%);
+  animation: xySiriBlobA 6.4s ease-in-out infinite alternate;
+}
+
+.xy-siri-aurora.aurora-b {
+  right: -8%;
+  top: 5%;
+  background: radial-gradient(circle at 42% 58%, rgba(150,102,255,.88), rgba(150,102,255,.10) 60%, transparent 75%);
+  animation: xySiriBlobB 7.1s ease-in-out infinite alternate;
+}
+
+.xy-siri-aurora.aurora-c {
+  left: 7%;
+  bottom: -12%;
+  background: radial-gradient(circle at 54% 36%, rgba(58,207,255,.80), rgba(58,207,255,.09) 62%, transparent 76%);
+  animation: xySiriBlobC 6.8s ease-in-out infinite alternate;
+}
+
+.xy-siri-aurora.aurora-d {
+  right: 10%;
+  bottom: 2%;
+  width: 58%;
+  height: 58%;
+  background: radial-gradient(circle at 48% 44%, rgba(255,191,92,.52), rgba(255,191,92,.06) 62%, transparent 78%);
+  animation: xySiriBlobD 7.6s ease-in-out infinite alternate;
+}
+
+.xy-siri-mesh {
+  position: absolute;
+  inset: 9%;
+  border-radius: 50%;
+  opacity: .72;
+  mix-blend-mode: screen;
+  filter: blur(7px);
+  will-change: transform;
+}
+
+.xy-siri-mesh.mesh-a {
+  background:
+    conic-gradient(
+      from 12deg,
+      transparent 0 8%,
+      rgba(255,255,255,.24) 14%,
+      transparent 25% 42%,
+      rgba(255,255,255,.18) 48%,
+      transparent 60% 78%,
+      rgba(255,255,255,.20) 84%,
+      transparent 96%
+    );
+  animation: xySiriMeshA 8s linear infinite;
+}
+
+.xy-siri-mesh.mesh-b {
+  inset: 14%;
+  background:
+    conic-gradient(
+      from 110deg,
+      transparent,
+      rgba(255,158,216,.25),
+      transparent 24%,
+      rgba(130,172,255,.18),
+      transparent 52%,
+      rgba(182,135,255,.20),
+      transparent 82%
+    );
+  animation: xySiriMeshB 10s linear infinite reverse;
+}
+
+.xy-siri-mesh.mesh-c {
+  inset: 21%;
+  opacity: .5;
+  background:
+    radial-gradient(ellipse at center, rgba(255,255,255,.35) 0 3%, transparent 36%),
+    conic-gradient(from 240deg, transparent, rgba(255,255,255,.18), transparent 35%, rgba(255,255,255,.10), transparent 70%);
+  animation: xySiriMeshC 5.2s ease-in-out infinite;
+}
+
+.xy-siri-glass {
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 22%, rgba(255,255,255,.26), transparent 23%),
+    radial-gradient(circle at 66% 74%, rgba(255,255,255,.06), transparent 31%),
+    radial-gradient(circle at center, transparent 46%, rgba(0,0,0,.18) 100%);
+  box-shadow:
+    inset 0 0 34px rgba(255,255,255,.08),
+    inset 0 -22px 40px rgba(0,0,0,.14);
+  z-index: 4;
+}
+
+.xy-siri-highlight {
+  position: absolute;
+  z-index: 6;
+  left: 22%;
+  top: 14%;
+  width: 40%;
+  height: 17%;
+  border-radius: 50%;
+  background: linear-gradient(180deg, rgba(255,255,255,.26), rgba(255,255,255,0));
+  filter: blur(8px);
+  transform: rotate(-12deg);
+  animation: xySiriHighlight 5s ease-in-out infinite alternate;
+}
+
+.xy-siri-core {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  top: 50%;
+  width: 32%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(255,255,255,.98) 0 5%, rgba(255,255,255,.25) 23%, rgba(255,255,255,.03) 62%, transparent 72%);
+  filter: blur(.2px);
+  animation: xySiriCorePulse 2.2s ease-in-out infinite;
+}
+
+.xy-siri-ripple {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%) scale(.84);
+  border-radius: 50%;
+  border: 1px solid rgba(255,255,255,.08);
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.xy-siri-ripple.ripple-a { animation: xySiriRipple 3.6s ease-out infinite; }
+.xy-siri-ripple.ripple-b { animation: xySiriRipple 3.6s ease-out 1.2s infinite; }
+.xy-siri-ripple.ripple-c { animation: xySiriRipple 3.6s ease-out 2.4s infinite; }
+
+.xy-siri-status {
+  position: absolute;
+  left: 50%;
+  bottom: 5%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 13px;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 999px;
+  color: rgba(255,255,255,.74);
+  background: rgba(255,255,255,.035);
+  backdrop-filter: blur(16px);
+  font-size: 10px;
+  letter-spacing: .08em;
+}
+
+.xy-siri-status svg {
+  animation: xySiriWaveIcon 1.2s ease-in-out infinite alternate;
+}
+
+.xy-voice-section:hover .xy-siri-orb {
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,.08),
+    0 0 54px rgba(255,255,255,.10),
+    0 0 140px rgba(146,96,255,.14);
+}
+
+@keyframes xySiriOrbBreathe {
+  0%,100% { transform: scale(.965); }
+  50% { transform: scale(1.025); }
+}
+
+@keyframes xySiriBlobA {
+  0%   { transform: translate(2%, 1%) rotate(-12deg) scale(.98); border-radius: 46% 54% 58% 42% / 52% 38% 62% 48%; }
+  100% { transform: translate(16%, 11%) rotate(24deg) scale(1.12); border-radius: 58% 42% 45% 55% / 38% 57% 43% 62%; }
+}
+
+@keyframes xySiriBlobB {
+  0%   { transform: translate(-1%, 4%) rotate(18deg) scale(.96); border-radius: 53% 47% 42% 58% / 46% 61% 39% 54%; }
+  100% { transform: translate(-16%, 15%) rotate(-30deg) scale(1.10); border-radius: 41% 59% 55% 45% / 62% 43% 57% 38%; }
+}
+
+@keyframes xySiriBlobC {
+  0%   { transform: translate(0, -3%) rotate(-8deg) scale(1); border-radius: 61% 39% 48% 52% / 45% 55% 45% 55%; }
+  100% { transform: translate(13%, -17%) rotate(27deg) scale(1.08); border-radius: 43% 57% 62% 38% / 58% 41% 59% 42%; }
+}
+
+@keyframes xySiriBlobD {
+  0%   { transform: translate(-8%, -1%) rotate(0deg) scale(.95); }
+  100% { transform: translate(7%, -15%) rotate(35deg) scale(1.16); }
+}
+
+@keyframes xySiriMeshA { to { transform: rotate(360deg) scale(1.02); } }
+@keyframes xySiriMeshB { to { transform: rotate(360deg) scale(.98); } }
+
+@keyframes xySiriMeshC {
+  0%,100% { transform: rotate(-8deg) scale(.94); opacity: .42; }
+  50% { transform: rotate(16deg) scale(1.08); opacity: .68; }
+}
+
+@keyframes xySiriHighlight {
+  0% { transform: translate(-4%, 0) rotate(-12deg) scale(.94); opacity: .55; }
+  100% { transform: translate(12%, 10%) rotate(-4deg) scale(1.08); opacity: .86; }
+}
+
+@keyframes xySiriCorePulse {
+  0%,100% { transform: translate(-50%, -50%) scale(.82); opacity: .52; }
+  50% { transform: translate(-50%, -50%) scale(1.16); opacity: .92; }
+}
+
+@keyframes xySiriRipple {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.78); }
+  18% { opacity: .22; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.62); }
+}
+
+@keyframes xySiriWaveIcon {
+  from { transform: scaleY(.78); opacity: .6; }
+  to { transform: scaleY(1.18); opacity: 1; }
+}
+
+@media (min-width: 981px) and (max-height: 820px) {
+  .xy-voice-visual.xy-siri-visual {
+    height: min(62svh, 520px) !important;
+    min-height: 430px;
+  }
+
+  .xy-siri-orb {
+    width: min(330px, 24vw);
+  }
+}
+
+@media (max-width: 980px) {
+  .xy-voice-visual.xy-siri-visual { min-height: 520px; }
+  .xy-siri-orb { width: min(360px, 72vw); }
+}
+
+@media (max-width: 640px) {
+  .xy-siri-orb { width: min(320px, 82vw); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-siri-orb,
+  .xy-siri-aurora,
+  .xy-siri-mesh,
+  .xy-siri-highlight,
+  .xy-siri-core,
+  .xy-siri-ripple,
+  .xy-siri-status svg {
+    animation: none !important;
+  }
+}
+
+
+
+
+/* ===== Footer compliance + contact alignment ===== */
+
+.xy-product-footer {
+  display: block !important;
+  padding: 42px max(5.5vw, 38px) 34px !important;
+}
+
+.xy-footer-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 30px;
+}
+
+.xy-footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.xy-footer-top nav {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+
+.xy-footer-bottom {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(17,17,17,.09);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.xy-footer-records {
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px !important;
+  width: 100%;
+  color: #8a8a8f;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.xy-footer-records a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.xy-footer-records a:hover {
+  color: #111;
+}
+
+.xy-footer-separator {
+  color: rgba(17,17,17,.22);
+  user-select: none;
+}
+
+.xy-footer-police img {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  object-fit: contain;
+}
+
+.xy-footer-contact {
+  white-space: nowrap;
+}
+
+.xy-footer-copyright {
+  margin: 20px 0 0 !important;
+  width: 100%;
+  color: #9a9a9f !important;
+  font-size: 10px !important;
+  line-height: 1.4;
+  text-align: center !important;
+}
+
+@media (max-width: 760px) {
+  .xy-product-footer {
+    padding: 34px 22px 28px !important;
+  }
+
+  .xy-footer-top {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .xy-footer-top nav {
+    flex-wrap: wrap;
+    gap: 14px 22px;
+  }
+
+  .xy-footer-bottom {
+    margin-top: 24px;
+  }
+
+  .xy-footer-records {
+    gap: 8px 9px !important;
+    font-size: 10px;
+  }
+
+  .xy-footer-separator {
+    display: none;
+  }
+
+  .xy-footer-police,
+  .xy-footer-contact,
+  .xy-footer-records > a:first-child {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .xy-footer-copyright {
+    margin-top: 16px !important;
+  }
+}
