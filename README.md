@@ -1,610 +1,859 @@
-# 小悠 Xiaoyou v1.4 + 命轨观测台
+<div align="center">
 
-<p align="center">
-  <img src="assets/xiaoyou-sad.png" alt="小悠生活照：难过" width="31%" />
-  <img src="assets/xiaoyou-speechless.png" alt="小悠生活照：无语" width="31%" />
-  <img src="assets/xiaoyou-angry.png" alt="小悠生活照：生气" width="31%" />
+<img src="assets/applogo-transparent.png" alt="Xiaoyou" width="112" />
+
+# 小悠 · Xiaoyou
+
+### A long-horizon multimodal AI companion Agent
+
+**让 AI 不只回答这一句话，而是理解现在、记得过去，并在合适的时候主动出现。**
+
+[产品主页](https://xiaoyou.yoyoyan.cn/) ·
+[Agent 架构](#agent-architecture) ·
+[核心技术](#engineering-highlights) ·
+[移动端](#mobile-app) ·
+[评测体系](#evaluation--observability)
+
+<p>
+  <img src="https://img.shields.io/badge/Python-Agent_Runtime-3776AB?logo=python&logoColor=white" />
+  <img src="https://img.shields.io/badge/Flutter-Mobile_App-02569B?logo=flutter&logoColor=white" />
+  <img src="https://img.shields.io/badge/LLM-OpenAI_Compatible-111111" />
+  <img src="https://img.shields.io/badge/MCP-Tool_Use-6E56CF" />
+  <img src="https://img.shields.io/badge/Docker-Deployment-2496ED?logo=docker&logoColor=white" />
+  <img src="https://img.shields.io/badge/SQLite-Memory_&_State-003B57?logo=sqlite&logoColor=white" />
 </p>
 
-> 基于个人微信、chatgpt-on-wechat、Qwen、阿里云百炼和火山方舟构建的长期陪伴型微信 AI。
+</div>
 
-小悠不是公众号机器人或企业微信客服。项目通过个人微信小号运行，目标是让她在日常聊天中拥有稳定人格、连续记忆、主动性、时间感、图片理解和生活表达，同时保持工程链路可追踪、可恢复、可维护。
+<p align="center">
+  <img src="xiaoyou-observatory/frontend/public/product/showcase/chat.webp" width="21%" alt="Xiaoyou Chat" />
+  <img src="xiaoyou-observatory/frontend/public/product/showcase/voice.webp" width="21%" alt="Xiaoyou Voice" />
+  <img src="xiaoyou-observatory/frontend/public/product/showcase/mood.webp" width="21%" alt="Xiaoyou Mood" />
+  <img src="xiaoyou-observatory/frontend/public/product/showcase/picture.webp" width="21%" alt="Xiaoyou Moments" />
+</p>
 
-当前版本在统一模型、发送、状态、上下文、协调和 Trace 中枢之上，完成了面向长期微信聊天的上下文工程：近期原话使用 API 原生角色，当前状态、情节与长期记忆分层注入，供应商内容审查失败时保留对话连续性，并使用精简人格避免固定反应压过真实理解。
+---
 
-## 当前状态
+## Overview
 
-```text
-版本：v1.4 + Fatebound Observatory
-基础镜像：zhayujie/chatgpt-on-wechat:1.7.3
-微信通道：个人微信 wx / itchat
-主聊天模型：qwen3.7-max
-分类与摘要模型：qwen3.7-plus
-视觉模型：qwen3.7-max-2026-06-08
-图片生成：doubao-seedream-5-0-lite-260128
-部署方式：Docker Compose
-观测台：React + FastAPI + Nginx + systemd
-在线入口：https://xiaoyou.yoyoyan.cn
-```
+**小悠不是一个“套了聊天 UI 的大模型 API”。**
 
-## 核心能力
+它是一个围绕 **长期关系、上下文连续性、可信记忆、主动行为、多模态交互与实时语音** 构建的 AI Agent 应用工程项目。
 
-- 个人微信文字聊天与自然多气泡回复
-- 稳定人格与现实时间感知
-- 连续短消息合并，新输入自动废弃旧回复
-- 本地 SQLite 长期记忆与模型语义检索
-- 带主备份、摘要和隔离机制的短期记忆
-- API 原生 `user/assistant` 近期多轮、自动过期的 RecentState 与高风险选择性审查
-- 按现实时间取窗的本地终身原文归档、后台情节切分与带原始证据的跨时段召回
-- 内容审查失败时保留近期原文、按指代相关性渐进恢复，不再整批破坏工作记忆
-- 精简且非模板化的小悠人格：日常自然简短，复杂问题允许完整思考和展开
-- 图片理解与“图片 + 后续补话”联合处理
-- 主动联系、断聊追问、提醒和模型中断重连
-- 搜索、天气、地点和路线 MCP 工具
-- 小悠生活照规划、人物一致性参考和主动分享
-- 稳定身份映射，微信临时 UserName 变化后仍使用固定会话 `yoyo`
-- 不记录正文和密钥的全链路 Trace
-- 命轨观测台：实时健康状态、脱敏日志、扫码重连与固定容器启停
-- 管理员密码 + TOTP 双因素认证，以及后端强制只读的游客模式
+项目的重点不是让每一轮对话都运行一个复杂的 Planner → Executor → Critic 多 Agent 流水线，而是把真正影响用户体验的能力拆成可治理、可评测、可追踪的工程模块：
 
-## 六个统一中枢
+- 用 **Context Planner + Context Compiler** 决定“这一轮模型究竟应该知道什么”
+- 用 **Conversation Archive + Episodic Memory + Long-term Memory** 解决跨时间连续性
+- 用 **Evidence-governed Memory** 防止助手猜测污染用户事实
+- 用 **Selective Critic** 只审查高风险回复，而不是给每轮聊天增加额外模型延迟
+- 用 **MCP + Semantic Routing** 在真正需要实时信息时调用搜索、天气和地图工具
+- 用 **ASR / TTS / Realtime Voice** 把 Agent 从文本聊天扩展到可打断的实时语音交互
+- 用 **Proactive Decision Engine** 让 Agent 可以选择保持安静、主动发消息或分享生活照
+- 用 **Trace + Eval + Runtime Analysis** 把“感觉聊天不错”变成可以回归测试和分析的工程指标
 
-### ModelGateway
+> **Channel status**
+>
+> 当前面向用户的主链路是 **Flutter App → AppChannel → Xiaoyou Agent Runtime**。  
+> 仓库中仍存在部分历史通道兼容代码与旧文档，但它们不再代表当前产品架构。
 
-路径：`plugins/xiaoyou_common/model_gateway.py`
+---
 
-统一 OpenAI 兼容模型调用、模型和密钥解析、thinking 参数兼容、超时、异常分类、内容审查识别及 `model_call_id` Trace。能力插件只负责业务决策，不再各自实现 HTTP 请求。
+<a id="engineering-highlights"></a>
+## Engineering Highlights
 
-### OutboundDispatcher
+| Area | Implementation | AI Agent Engineering Signal |
+| --- | --- | --- |
+| **LLM Orchestration** | `ModelGateway` 统一 OpenAI-compatible 请求、thinking 兼容、超时与错误分类 | 多模型接入、Provider abstraction、容错 |
+| **Context Engineering** | `ContextPlanner` + `ContextCompiler` + token budget | 上下文编排、Prompt/Context engineering |
+| **RAG / Memory Retrieval** | ActiveWindow、Episodic retrieval、Long-term memory | 语义召回、时间衰减、分层记忆 |
+| **Memory Governance** | 逐字证据、subject boundary、correction/update、审计账本 | 防幻觉写入、知识治理 |
+| **Agent Routing** | 本地 fast-path + LLM semantic router | 意图路由、低延迟 Agent orchestration |
+| **Tool Use** | MCP search / weather / map / POI | Tool calling、MCP、外部实时信息 |
+| **Multimodal** | 图片理解、图片追问、生活照生成 | Vision-Language、语义路由 |
+| **Realtime Voice** | Streaming ASR + dialog + TTS + barge-in | WebSocket、流式音频、实时 Agent |
+| **Autonomy** | Proactive Decision + reminder / follow-up coordination | 主动 Agent、状态驱动决策 |
+| **Reliability** | FIFO、input version、idempotent message ID、delivery state | 并发控制、幂等、消息一致性 |
+| **Observability** | Trace ID / model call / action / memory record linkage | Agent 可观测性、问题定位 |
+| **Evaluation** | Offline context eval + model replay judge + runtime analyzer | Agent Evals、回归测试 |
+| **Application** | Flutter + Android/iOS + REST/SSE + system push | AI 应用产品化与端云协同 |
 
-路径：`plugins/xiaoyou_common/outbound_dispatcher.py`
+---
 
-统一微信文字和图片发送，包括稳定收件人解析、同会话串行发送、输入版本检查、多气泡延迟、中途取消、发送回执以及 ShortMemory 写回。
+<a id="agent-architecture"></a>
+## Agent Architecture
 
-### JsonStateStore
+小悠的主回复链路遵循一个原则：
 
-路径：`plugins/xiaoyou_common/state_store.py`
+> **主回复尽量只做一次核心模型生成，把摘要、记忆治理、状态更新和评测放到后台。**
 
-统一本地 JSON 的主文件/备份、临时文件原子替换、`flush + fsync`、最后良好状态恢复，以及损坏时禁止用空状态覆盖。
-
-### ConversationCoordinator
-
-路径：`plugins/xiaoyou_common/conversation_coordinator.py`
-
-统一自主动作竞争与抢占：
-
-```text
-Reminder     100
-Reconnect     90
-Followup      70
-Proactive     40
-```
-
-高优先级动作可以抢占低优先级动作；用户新输入会取消旧动作；发送前再次检查租约。
-
-### ContextService
-
-路径：`plugins/xiaoyou_common/context_service.py`
-
-统一读取 `CHARACTER_DESC`、现实时间、最近真实聊天原话、ShortMemory 和 LongTermMemory，减少各能力之间的人格和时间认知差异。
-
-### ContextCompiler / ContextPack
-
-路径：`plugins/xiaoyou_common/context_compiler.py`
-
-普通聊天不再依赖“长期记忆包一层、短期记忆再包一层、最后盲目截前 5000 字”的嵌套文本。ConversationArchive ActiveWindow 的近期原话通过 API 原生 `user/assistant` 角色发送；RecentState、短摘要、相关历史情节与 LongTermMemory 作为独立结构化分区交给 ContextCompiler。编译器同时执行字符安全阈值和 token 硬预算：先从模型窗口扣除系统人格、回复输出和可选思考预留，再按本轮意图给当前输入、短时状态、短摘要、历史情节、长期记忆和兼容区分配 token。本轮输入尽量完整保留且放在最后；历史情节和长期记忆优先保留检索排名靠前项；未升级插件的文本只能进入最低权威的兼容分区。
-
-ContextPack 明确声明冲突顺序：本轮用户明确表达 > API原生近期对话 > RecentState > 短摘要 > 情节原始片段 > 情节摘要/长期记忆 > 兼容上下文。它同时生成不含聊天正文的 manifest，只记录各分区字符数、token 数、是否截断、权威级别和短哈希，便于排查“为什么这轮没想起来”，但不会把私密原话写入日志元数据。
-
-`ContextPlanner` 是不调用模型的本地查询规划器。它把本轮分为纠正、明确回忆、偏好、项目、情绪承接、短句续聊或一般聊天，并分别决定本地情节和长期记忆的候选数。情绪承接只使用眼前上下文；短句最多用一个相关本地情节兜底但不查长期记忆；回忆、项目和纠正才扩大相关历史。这样不会为了“显得有记忆”而每轮固定塞满记忆。
-
-### TraceService
-
-路径：`plugins/xiaoyou_common/trace_service.py`
-
-```text
-trace_id
-→ input_id
-→ model_call_id
-→ lease_id
-→ action_id
-→ memory_record_id
-```
-
-Trace 只记录组件、状态、耗时、错误分类和匿名化 ID，不记录提示词、聊天正文、图片内容或密钥。
-
-## 消息链路
+这样可以避免普通聊天被多 Agent 串行调用拖慢，同时保留长期 Agent 所需要的状态与记忆能力。
 
 ```mermaid
 flowchart LR
-    A[微信输入] --> B[稳定身份映射]
-    B --> C[输入合并与版本控制]
-    C --> D[插件能力判断]
-    D --> E[ContextService]
-    E --> P[ContextCompiler]
-    P --> F[ModelGateway]
-    F --> G[ConversationCoordinator]
-    G --> H[OutboundDispatcher]
-    H --> I[微信发送]
-    I --> J[ShortMemory 回执]
-    B -.-> K[TraceService]
-    F -.-> K
-    G -.-> K
-    H -.-> K
-    J -.-> K
+    APP["Flutter App<br/>Text · Image · Voice"] --> INGRESS["AppChannel<br/>REST · SSE · Idempotency"]
+    INGRESS --> COORD["Conversation Coordinator<br/>FIFO · Input Version · Cancellation"]
+
+    COORD --> ROUTE["Intent / Route Layer<br/>Fast-path + Semantic Routing"]
+
+    ROUTE --> PLAN["Context Planner<br/>Intent-aware Retrieval Plan"]
+
+    PLAN --> ACTIVE["ActiveWindow<br/>Recent Raw Messages"]
+    PLAN --> STATE["RecentState<br/>Temporary State"]
+    PLAN --> EPISODE["Episodic Memory<br/>Relevant Episodes"]
+    PLAN --> LONG["Long-term Memory<br/>Governed Facts"]
+
+    ACTIVE --> COMPILE["Context Compiler<br/>Authority + Token Budget"]
+    STATE --> COMPILE
+    EPISODE --> COMPILE
+    LONG --> COMPILE
+
+    COMPILE --> MODEL["ModelGateway<br/>Main LLM Generation"]
+    MODEL --> CRITIC{"Selective Critic<br/>Risk Hit?"}
+
+    CRITIC -- "No" --> DELIVERY["Delivery Pipeline"]
+    CRITIC -- "Yes" --> FIX["Accept / Minimal Revision"]
+    FIX --> DELIVERY
+
+    DELIVERY --> APP
+    DELIVERY --> ARCHIVE["Conversation Archive<br/>SQLite Raw Evidence"]
+
+    ARCHIVE -. async .-> EPBUILD["Episode Builder"]
+    ARCHIVE -. async .-> MEMGOV["Memory Governance"]
+    ARCHIVE -. async .-> STATEUP["RecentState / InnerState"]
+    MEMGOV -.-> LONG
+    EPBUILD -.-> EPISODE
+
+    ROUTE -. external info .-> MCP["MCP Tools<br/>Search · Weather · Map"]
+    MCP -. result .-> COORD
 ```
 
-## 人格与记忆
+### Why this architecture?
 
-### 人格来源
+很多聊天 Agent 的问题不是“模型不够大”，而是：
 
-核心人格来自 `docker-compose.yml` 中的 `CHARACTER_DESC`。
+1. 把所有历史全部塞进 Prompt，token 越来越长
+2. 每轮都检索长期记忆，导致无关旧事实污染当前语境
+3. 摘要覆盖原文后，模型只能基于压缩信息猜细节
+4. 助手自己说过的话被错误写成“用户事实”
+5. Planner / Critic / Memory Writer 全部同步串行，首 token 延迟不断增加
 
-当前人格只定义小悠与YoYo的关系、核心气质、独立判断、现实事实边界和自适应微信表达，不再规定“偷懒就制裁”、固定傲娇反击、强制行数、每行字数或技术问题转移话题。主聊天只额外声明输出协议与上下文事实优先级；日常回复通常保持一两句话，分析、解释和解决问题时允许在 700 token 输出预算内自然展开。人格负责“她是谁”，连续性、冲突处理和内容审查恢复由代码负责。
+小悠把这些问题拆到了 **上下文权威、检索计划、证据治理、异步后台任务和选择性审查** 中解决。
 
-`plugins/xiaoyou_life_photo/assets/xiaoyou_body_profile.json` 服务于小悠生活照人物一致性，不会覆盖核心人格。年龄不再写死为22岁，而是通过出生日期按现实时间动态计算。
+---
 
-### 私密人物与关系档案
+## Core Agent Loop
 
-实际档案位于 `/app/data/xiaoyou_profile/relationship_profile.json`，YoYo人脸参考位于同目录的 `yoyo_face_reference.jpg`。宿主机对应 `data/xiaoyou_profile/`，整个 `data/` 已被 `.gitignore` 排除，真实自拍、出生日期和居住信息不会随代码推送到公开仓库。可提交的脱敏结构模板位于 `plugins/xiaoyou_common/assets/relationship_profile.example.json`。
+### 1. Input Coordination
 
-档案记录出生日期、身高、共同居住城市和首次相见日期；运行时按重庆时区实时计算双方当前年龄、相识天数、相识第几天及完整周年数。YoYo体重只记录为保密状态，不保存或猜测具体数值。小悠的稳定外貌和身份自我认知也由该档案进入统一上下文，使普通聊天、主动意识和图片理解都知道她自己的基础外貌与关系身份；生活照的精确人脸、体态和画风仍以专用视觉档案及四张参考图为最高标准，避免多处设定互相覆盖。
+每次输入进入统一协调层：
 
-固定公历节日、双方生日和首次相见纪念日会进入统一时间上下文。内置的离线农历换算还会逐年识别除夕、春节、元宵、龙抬头、端午、七夕、中元、中秋、重阳、腊八、南方小年，以及按节气识别清明和冬至。除夕通过下一天是否进入正月初一判断，兼容腊月二十九或三十结束的年份，不依赖联网节日API。
+- 消息 ID 保证重试幂等
+- 同一会话使用 FIFO / version 控制顺序
+- 新输入可以让已经过时的生成结果失效
+- 图片、语音等异步结果带输入版本，避免“旧视觉结果回复到新问题”
+- 发送状态与持久化事件分离，网络失败不会自动等价于消息丢失
 
-重要日期当天只会给统一主动中枢一次额外“感知机会”，最终保持安静、发文字或分享照片仍由模型结合当前语境和动态内在状态决定，不使用固定祝福模板。中元节会进入时间认知，但默认不单独触发主动联系。
+这部分解决的是 AI 应用中很容易被忽略的 **并发、时序与一致性问题**。
 
-农历换算内置 `lunar-python 1.4.8`，以MIT许可证随项目分发，许可证原文位于 `plugins/xiaoyou_common/vendor/LUNAR_PYTHON_LICENSE.txt`。
+### 2. Context Planning
 
-### 短期记忆
+`ContextPlanner` 不调用模型，在本地根据当前意图规划上下文。
 
-插件：`plugins/short_memory`
+它会区分：
+
+- correction
+- explicit recall
+- preference
+- project
+- emotional continuation
+- short continuation
+- general conversation
+
+不同类型拥有不同的：
+
+- episodic candidate count
+- long-memory switch
+- allowed memory schema
+- retrieval mode
+- token budget
+
+例如：
+
+- 情绪承接优先看眼前对话，不为了“显得有记忆”强行检索旧历史
+- “继续吧”这类低信息短句只允许非常有限的近期情节兜底
+- 明确回忆、项目或纠正场景才扩大历史检索范围
+
+### 3. Authority-aware Context Compilation
+
+`ContextCompiler` 将不同来源编译为一个有明确权威顺序的 `ContextPack`：
 
 ```text
-data/short_memory/short_memory.json
-data/short_memory/short_memory.json.backup
+Current User Input
+        ↓
+Native user/assistant ActiveWindow
+        ↓
+RecentState / Short Summary
+        ↓
+Relevant Episode Raw Evidence
+        ↓
+Episode Summary / Long-term Memory
+        ↓
+Compatibility Context
 ```
 
-当前使用 schema v2，包含 UUID、source、最近原话、异步摘要、待归档消息、内容审查隔离以及主备份容灾。只有确认当前单条消息本身仍被供应商拒绝时才隔离对应原文；组合上下文被拒绝不再证明整批历史有问题，也不会永久排除整批近期聊天。
+编译过程同时执行：
 
-`ShortMemory v1.1` 保留兼容摘要与恢复职责，并把同一 UUID 的真实消息写入 ConversationArchive。主聊天不再解析“YoYo：/小悠：”显示文本来猜测角色，而是优先读取按现实时间生成的 ActiveWindow。后台旧式短摘要仍会忽略小悠的重复口头禅、玩笑威胁和调情修辞，避免把它们固化成关系规则。
+- token hard budget
+- section-level token caps
+- current-input preservation
+- recent-message tail preservation
+- top-ranked memory preservation
+- conflict precedence
+- truncation manifest
 
-RecentState 位于 `/app/data/xiaoyou_recent_state/state.json`，只保存带逐字证据和过期时间的当前话题、YoYo临时状态、小悠承接立场、未完事项、指代及当前时段事实。它在回复完成后后台串行更新，不阻塞当前发送，也不进入长期记忆。如果状态更新被内容审查拒绝，旧派生状态会暂时停止注入，避免过期场景压过准确的原生近期消息；下一次成功更新后自动恢复。
+不是简单 `history[-N:]`，也不是把所有检索结果拼接后粗暴截断。
 
-普通回复草稿由本地风险门控检查。只有用户纠正、依赖指代、具体事实声称、长期记忆绝对化或明显近重复时才调用 SelectiveCritic；普通闲聊不新增调用。审查失败或越界改写时保留原草稿。
+---
 
-### 终身原文与情节记忆
+## Memory System
 
-ConversationArchive 位于 `/app/data/xiaoyou_conversation/conversation.db`。它保存每一条真实用户和小悠消息，不受 ShortMemory 的 60 条即时窗口、1 天原话 TTL 或 7 天摘要 TTL 影响；当前没有自动删除策略。默认最近 6 小时的原话按原生角色进入模型，数据库与原生消息均以 400 条作为异常高频安全阈值，实际请求主要由 4500 token 上限约束，避免短消息先撞上很小的条数窗口。
+小悠把“记忆”拆成不同时间尺度，而不是把所有聊天文本都写进一个向量库。
 
-当前用户消息会在最终 `user` 提示中发送，因此 ActiveWindow 会去掉同一条末尾用户记录，避免重复加权。旧版本曾把一次组合审查失败涉及的全部 ActiveWindow 原文标记为不可注入；v1.4 启动时会自动恢复理由为 `chat_data_inspection_failed` 的过宽历史隔离，同时保留真正的单条消息隔离。
+### Conversation Archive
 
-首次部署会把 ShortMemory 当时仍保留的原文单向迁入 SQLite；过去已经被旧版裁掉、仅剩摘要或仅存在于阿里云记忆库中的内容无法恢复成逐字原文。因此“终身原文”从本版本第一次在服务器启动时开始完整积累。
+本地 SQLite 保存真实 `user / assistant` 原文、角色、时间、来源和消息 UUID。
 
-密码、API Key、验证码等敏感内容可以保留在本地原文档案中，但后续 ActiveWindow 与情节召回只会给模型发送隐藏标记，不会反复上传秘密。`data/xiaoyou_conversation/` 因此仍属于高度私密数据，备份时应按真实聊天记录保护。
+它承担的是 **证据层**：
 
-连续 45 分钟没有新消息、单段超过 160 条、持续超过 6 小时或跨日时会结束一个后台情节。EpisodeBuilder 为结束的情节生成带角色证据的摘要；EpisodicMemory 在需要时按语义、时间、未完事项和重要度检索，并展开命中点前后原始消息。摘要失败不会影响原文保存，重试耗尽后会生成确定性兜底摘要。
+- 不因为摘要更新而删除原始消息
+- ActiveWindow 按现实时间读取近期真实对话
+- 敏感信息可在本地留档，但再次注入模型时进行隐藏
+- 原文归档和模型上下文召回彼此解耦
 
-数据库每天在线备份并轮换 3 代：`conversation.db.backup`、`.backup.1`、`.backup.2`。这些文件都在现有 `./data:/app/data` 挂载内。服务器迁移或备份时必须连同 `data/xiaoyou_conversation/` 一起保存；上传代码时不要用本地空 `data/` 覆盖服务器数据。
+### Episodic Memory
 
-### 长期记忆
+对已经结束的聊天情节进行后台构建：
 
-插件：`plugins/long_memory`
+- 空闲时间 / 消息数量 / 持续时长 / 跨日触发隐藏情节边界
+- 摘要必须受到原始证据约束
+- 按语义相关度、明确时间、时间衰减、重要度与未完事项排序
+- 命中情节后重新展开邻近原始消息，而不是只把摘要交给模型
 
-长期记忆正文、主体、类型、稳定 `memory_key`、来源顺序、事件时间和语义向量全部保存在 `/app/data/long_memory/memories.db`。数据库使用 SQLite WAL 模式，随现有 `./data:/app/data` 挂载持久化，不再连接阿里云记忆库。主体分为 `user`（YoYo）、`xiaoyou`（小悠）和 `relationship`（双方共同关系与经历），避免把小悠的判断误写成 YoYo 的事实。
+这是一种针对长期对话的 **RAG-style episodic retrieval**。
 
-受治理记忆分为情节记忆、语义记忆、关系记忆、项目记忆、未完事项和纠正记录；当前轮与近期原话属于工作记忆，不写成永久事实。检索时使用 `text-embedding-v4` 计算查询向量，再在本机完成余弦相似度排序；长期记忆候选的相关性排序不使用关键词、正则或固定语义规则代替模型语义。
+### Long-term Memory
 
-Embedding 接口只负责把文本转换为向量，复用现有模型账号 `KEY`；本项目不再调用远程记忆库，记忆数据库和向量索引只保存在本机。计算向量时，对应的记忆文本或查询文本仍会发送给配置的 Embedding 服务；如果需要完全离线，可以把兼容接口改为本地向量模型。向量请求失败时，新事实仍会保存到 SQLite 并等待后续补建索引；查询向量失败时，该轮不注入长期记忆，避免用关键词或时间顺序强行猜测相关性。旧事实的向量补建在独立后台线程进行，不占用微信回复链路；因此刚启动后的短时间内，尚未完成索引的旧事实可能暂时检索不到，但不会拖慢聊天。
+长期记忆不是“模型说值得记就直接写”。
 
-长期记忆写入采用两条受治理的事实来源。连续输入完成合并后，YoYo 原话立即进入每会话 FIFO 后台队列，不依赖小悠是否成功生成或发送回复；微信发送动作进入终态后，小悠实际送达的文字再进入同一队列。完整送达使用全部 `sent_text`，部分送达只使用成功发出的气泡，发送失败且零送达不写。不同会话仍可并行，同一会话严格按提交顺序处理。
-
-后台模型结合女友 AI 的关系连续性自行判断本轮是 0 条还是多条长期事实，不再使用“最多提取 4 条”的业务限制。`MEMORY_GOVERNANCE_SAFETY_MAX_CANDIDATES=12` 只防止异常模型输出无限候选，不参与语义判断。代码只校验主体与来源角色不能越权、证据必须逐字存在于对应真实原话、分数范围、敏感信息、结构和顺序；不使用关键词、正则或固定称呼表决定某句话是否具有关系意义。一般聊天的“最多召回 4 条”仍只是提示词预算，数据库并没有 4 条上限，明确回忆或项目场景可以召回更多。
-
-每条记忆同时保存数据库记录时间 `created_at` / `updated_at`，以及模型从来源原话解析出的事情发生时间 `occurred_at`、精度 `temporal_precision`、有效区间 `valid_from` / `valid_until`、时区和逐字 `time_evidence`。没有时间证据时事件时间保持为空，绝不拿入库时间冒充“那件事发生的时间”。
-
-提醒的执行、查询和取消仍由 ReminderLove 的生命周期状态负责；长期记忆模型可以独立判断某个提醒背后的共同约定是否值得长期承接，代码不会用“提醒词”或亲昵称呼做硬编码拦截。
-
-治理账本位于 `/app/data/xiaoyou_memory/memory_governance.json`，包含候选状态、分角色证据摘要、数据库记录 ID、覆盖关系、失败原因和最近 500 条决策。首次切换到 LongTermMemory 时，会自动把账本中仍为 `written` 的有效事实导入 SQLite；只存在于旧阿里云记忆库、但不在本地治理账本中的历史节点不会自动迁入。旧版 SQLite 会在启动时原地增加主体和时间列，已有内容不丢失。提取模型或账本不可用时写入会失败关闭。服务器备份应在容器停止后复制整个 `data/`，以同时保留 SQLite 主文件和 WAL 状态。
+每个候选都需要经过治理：
 
 ```text
-YoYo提交原话 ───────────────┐
-                            ├→ 后台候选提取
-小悠实际送达文字（可为部分）─┘
-  → 分主体、分角色证据/阈值/敏感信息校验
-  → 事件时间与有效区间结构化
-  → memory_key 去重或覆盖
-  → 本地审计账本
-  → data/long_memory/memories.db 新增或原地更新
+Candidate
+   ↓
+Role-separated Verbatim Evidence
+   ↓
+Subject Boundary
+   ↓
+Schema / Confidence / Importance Validation
+   ↓
+Audit Ledger
+   ↓
+Insert / Update
 ```
 
-### 稳定身份
+核心约束包括：
 
-插件：`plugins/xiaoyou_identity`
+- 用户来源只能形成 `subject=user`
+- 小悠来源只能形成 `subject=xiaoyou` 或 `subject=relationship`
+- 助手对用户的推测不能升级为用户事实
+- correction 可以更新已有语义节点
+- 同键同内容只确认，不重复堆积
+- 事件发生时间与数据库写入时间分离
 
-内部会话固定使用 `yoyo`，微信登录期产生的 `@...` UserName 只作为临时收件人。插件可以通过 Alias、备注名、昵称或旧 UserName 学习当前联系人，并把历史状态迁移到稳定会话。
-
-单用户部署建议保持：
-
-```yaml
-XIAOYOU_IDENTITY_PRUNE_SHORT_MEMORY: 'true'
-```
-
-多人部署必须设为 `false`，并重新设计会话、记忆和收件人隔离。
-
-## 插件
-
-| 插件 | 作用 | 优先级 |
-|---|---|---:|
-| XiaoyouIdentity | 稳定身份和收件人映射 | 10000 |
-| PatPatReply | 拍一拍自然回应 | 9999 |
-| ConversationFollowup | 高优先级会话观察与统一主动中枢兼容入口 | 9998 |
-| LongTermMemory | 本地长期记忆读取与写入 | 900 |
-| SplitReply | 微信语义分段和延迟发送 | 99 |
-| QwenVision | 图片理解与补充文字合并 | 80 |
-| ShortMemory | 短期原话、摘要和隔离 | 40 |
-| ReminderLove | 提醒识别、触发和后续衔接 | 35 |
-| XiaoyouLifePhoto | 生活照规划、生成和主动分享 | 31 |
-| XiaoyouMCP | 搜索、天气、地点和路线 | 30 |
-| ProactiveLove | 动态内在状态驱动的统一主动决策与执行 | 10 |
-| XiaoyouChat | 主聊天与模型中断重连 | -10000 |
-
-插件启用状态与顺序位于 `plugins/plugins.json`。
-
-## 主要功能
-
-### 连续输入合并
-
-用户短时间连续发送多条消息时，`patches/chat_channel.py` 会等待输入稳定并合并为同一轮。模型思考期间如果出现新输入，旧回复会在装饰或发送前被废弃。
-
-### 模型中断重连
-
-模型因上下文截断或临时错误未能完成回复时，`XiaoyouChat` 会受控重试，并通过 Coordinator 避免与提醒、追问冲突。供应商拒绝整份上下文时，主聊天依次尝试最近原生对话、与当前省略表达存在词义重合的YoYo原话、紧凑近期窗口和当前消息；第一份成功的连续上下文直接用于回答，不删除持久原文。只有当前消息本身仍被拒绝时才隔离该条并安排稍后接回。
-
-恢复路径不会落回旧 ChatGPTBot 的预设错误回复，因此不会向微信发送 `[ERROR] 我现在有点累了，等会再来吧`。普通成功轮不增加恢复调用；渐进请求只在供应商已经拒绝本轮时发生。
-
-### 图片理解
-
-`QwenVision v1.2` 会等待图片后的补充文字，把多条补话合并后再理解，默认输出联系当前对话的自然反应，而不是孤立的识别报告。
-
-- 视觉提示会同时接入人格、现实时间、图片之前的近期原话、相关长期记忆、图片后的补话以及小悠的外貌档案。
-- 用户回传近期生成过的小悠照片时，优先通过原图 SHA-256 和压缩缩放后仍可识别的感知指纹确认；未命中近期记录时，在同一次视觉请求中附带小悠与YoYo各自标注身份的人脸参考图进行比较。
-- 一旦近期照片指纹匹配，视觉模型会得到“图中主体就是小悠本人”的强事实，因此小悠能够以第一人称认识自己的样子，而不是把自己描述成陌生女生。
-- YoYo真实自拍只作为私密人脸比对参考。模型综合脸型与五官比例确认身份，不会仅凭眼镜或发型硬认，也不会把YoYo与小悠的参考图融合。
-- 这里只读取长期记忆作为理解语境，不改变 LongTermMemory 的提取、筛选或写入逻辑。
-
-### 生活照
-
-`XiaoyouLifePhoto v0.9` 使用 Qwen 结合人格、时间、记忆和完整近期语境一次性规划画面，再通过 Seedream 生成人物一致的生活照。参考图和身体设定只影响视觉理解与图片生成，不覆盖普通聊天人格。
-
-- `QwenVision` 与 `XiaoyouLifePhoto` 共享统一照片语义路由，由模型区分“现在生成小悠照片”“对已有图片补话”和“独立文字话题”；不使用关键词或正则决定是否生图。
-- 照片路由会检查每个单聊文本并读取最近对话，因此“嗯嗯好”之类省略照片对象的自然承接，也能延续小悠刚刚答应立即拍照的动作。代价是普通单聊会增加一次关闭思考的轻量路由请求；相比关键词快速跳过，通常增加约一次模型往返的延迟与费用。
-- 路由同时判断现在、未来、过去和假设语义。未来约定只进入普通对话，不会因为出现“拍照”等字样而立刻生成图片；路由失败时也不会冒险生图。
-- 普通文字模型没有媒体发送能力，不能输出画面提示词或内部媒体记录来冒充附件。只有 Seedream 生成成功且 `send_image` 返回 `image_sent=true` 后，系统才会把照片记为已经送达。
-- 四张中性参考图分别约束正面脸、左右四分之三脸和全身体态；旧婚纱图不再作为主动参考，避免继承固定服装和表情。
-- “自己拍照报备”不预设镜头。模型可根据具体语境自主选择前置自拍、镜子自拍、定时拍摄、第三人称拍摄或第一视角场景。
-- 镜头方式、拍摄者、是否需要双手空闲和物理约束均由模型输出结构化字段；本地只校验枚举并修正真实的物理冲突，不扫描用户话语中的“自拍、第三人称、全身、双手”等词语。
-- 情绪、眉眼嘴型、视线、动作和随图文字由同一次语义规划共同决定，并参考近期记录减少固定卖萌表情和姿势重复。
-- 不增加生成后的视觉质检、第二次视觉调用或 Seedream 超时自动重试，避免额外延迟和重复计费。
-- 情侣同框由规划模型输出结构化 `include_yoyo`；只有语境确实要求YoYo出现在成片时才附带他的私密人脸参考，普通小悠独照不会额外生成男性人物。
-
-### 主动行为
-
-- `ConversationFollowup v0.9`：在统一模式下只负责从高优先级事件观察用户活动和完整回复，确保图片、生活照等提前截断的链路也不会漏掉，然后移交给唯一主动中枢；旧独立4分钟跟进状态机不再运行。
-- `ProactiveLove v2.0`：统一原来的分钟级续聊、长周期联系和主动照片。模型每次自主选择保持安静、发送文字或生成真实生活照，并自主给出下一次值得重新考虑的时间。
-- `ReminderLove`：用户明确要求的提醒
-- `XiaoyouChat`：模型异常后的重连接话
-
-每轮完整对话结束后，`qwen3.7-max` 会以受限中度思考在后台更新小悠的短期动态内在状态，包括愉悦、精力、安全感、惦念、调皮、敏感、表达欲、分享欲和打扰谨慎度；更新不阻塞当前回复。状态会随时间向人格基线自然演化，统一主动决策再结合完整近期聊天、相关长期记忆、现实时间和近期主动记录选择行为。
-
-动态状态保存在 `/app/data/xiaoyou_inner_state/state.json` 及其备份中。它不是人格文件、ShortMemory 或 LongTermMemory，不改变长期记忆的提取、筛选和写入逻辑。
-
-系统不再使用固定4分钟、2小时、4小时或6小时作为主动行为规则。后台每30秒只检查模型预约的时间是否到期；实际何时重新判断由模型按语境决定。工程层仅保留防调用风暴、异常连续发送、目标会话、最新输入取消和 Coordinator 冲突保护等故障保险。
-
-当统一中枢选择照片时，必须真正经过 `XiaoyouLifePhoto → Seedream → OutboundDispatcher`。生成或发送失败时不会把 `[图片：……]` 占位描述当作微信文字发送，也不会声称图片已经发出。
-
-## 小悠 · 命轨观测台
-
-`xiaoyou-observatory/` 是独立于小悠本体运行的私有观测站。它不编辑小悠的人格、记忆、提示词、模型、提醒或主动行为，只读取固定容器 `cow-legacy` 的状态与脱敏日志，并只允许对该容器执行启动、停止和重启。
-
-观测台提供：
-
-- 容器运行状态、启动时间、CPU、内存和重启次数
-- 微信连接、思维回路、记忆星海与生活映像的实时健康脉冲
-- 已加载插件版本、最近输入输出时间和经过脱敏的后台日志
-- 容器重启后从最新日志中提取微信登录二维码
-- 管理员登录、容器操作审计和二次确认
-- 星空、命轨粒子、光晕与全屏角色电影背景组成的小悠个性化展示页面
-- PC端使用“角色画面 + 固定命轨侧翼”双区结构，移动端使用“视频上屏 + 信息舱”响应式布局
-- 桌面与手机分别使用横版、竖版视频，双缓冲播放器会提前解码下一层并在运动中交叉衔接
-- 页面底部提供循环命轨声场，使用 Web Audio 实时频谱驱动长条氛围动画；浏览器阻止有声自动播放时会在首次页面交互后启动
-- 视频可通过公开的独立媒体域名接入CDN；CDN错误或连续停滞时自动回退源站本地文件
-
-权限边界：
-
-| 能力 | 游客 | 管理员 |
-|---|:---:|:---:|
-| 查看公开运行状态与视觉展示 | ✓ | ✓ |
-| 查看二维码、脱敏日志和操作审计 | — | ✓ |
-| 启动、停止、重启 `cow-legacy` | — | ✓ |
-| 修改人格、记忆、模型或插件配置 | — | — |
-
-游客无需输入信息即可进入，但权限限制同时在前端和后端执行。管理员需要密码、TOTP 动态验证码、有效安全会话、CSRF 凭证和危险操作二次确认。后端仅监听 `127.0.0.1:8765`，通过宝塔 Nginx 反向代理；不会把 Docker Socket 暴露给网页服务。
-
-CDN只承载两段公开背景视频，不承载登录、状态、二维码、日志、审计或容器控制API。运行时通过公开的 `observatory-config.js` 选择媒体域名与版本号，替换视频无需重新构建前端；该文件禁止存放任何密码、密钥或Token。
-
-完整的宝塔 Linux、HTTPS、systemd、sudo 最小权限和前端部署说明见 [命轨观测台部署指南](xiaoyou-observatory/README.md)。
-
-## 项目结构
+当前 Memory Schema：
 
 ```text
-cow-legacy/
-├─ assets/
-├─ data/                         # 登录状态与运行数据，不提交
-├─ docs/                         # 对话质量架构与设计说明
-├─ evals/                        # 脱敏对话质量样本和可选模型评测脚本
-├─ patches/
-│  ├─ chat_channel.py
-│  ├─ chat_gpt_bot.py
-│  └─ patch_app_imports.py
-├─ plugins/
-│  ├─ long_memory/
-│  ├─ conversation_followup/
-│  ├─ patpat_reply/
-│  ├─ proactive_love/
-│  ├─ qwen_vision/
-│  ├─ reminder_love/
-│  ├─ short_memory/
-│  ├─ split_reply/
-│  ├─ xiaoyou_chat/
-│  ├─ xiaoyou_common/            # 统一上下文、状态、模型、发送与追踪服务
-│  ├─ xiaoyou_identity/
-│  ├─ xiaoyou_life_photo/
-│  └─ xiaoyou_mcp/
-├─ tests/                        # 核心策略回归测试
-├─ xiaoyou-observatory/         # 命轨观测台前后端与部署文件
-├─ .env.example
-├─ Dockerfile
-└─ docker-compose.yml
+working
+episodic
+semantic
+relationship
+project
+pending
+correction
+legacy
 ```
 
-## 部署
+---
 
-以下步骤部署小悠本体。命轨观测台是独立服务，不影响小悠运行；本体启动后如需部署网站，请继续阅读 [`xiaoyou-observatory/README.md`](xiaoyou-observatory/README.md)。
+## Selective Critic
 
-### 手机 App 通道
+小悠没有为普通闲聊默认增加第二次“审稿模型”。
 
-仓库包含一个默认关闭的 App 通道和 Flutter 客户端源码：
+本地风险门控只在这些场景触发 Critic：
 
-- [`plugins/app_channel`](plugins/app_channel) 在现有进程中复用同一个 `ChatChannel`、插件链和固定会话 `yoyo`
-- [`xiaoyou-app`](xiaoyou-app) 是 Android/iOS Flutter 客户端
-- 所有设备、输入幂等、输出事件和送达回执保存在 `data/app_channel/app.db`
-- App 支持文字、语音、拍照、相册图片和表情包；用户图片复用小悠现有视觉理解链路
-- App 语音房使用火山 O2.0 端到端实时语音模型；每个房间独立存档，逐句内容
-  不显示在主聊天页，完整问答会异步同步到同一套短期和长期记忆
-- App 回复只有在客户端提交不可变终态回执后，才会写入助手短期/长期记忆
-- 独立的 `docker-compose.app.yml` 只把 App API 映射到 `127.0.0.1:8787`；主 Compose 不新增端口
+- 用户明确纠正
+- 依赖复杂指代
+- 回复声称具体事实
+- 回复强声称长期记忆
+- 近期明显重复
 
-完整开启方式、接口协议、Nginx 示例和影响说明见 [`docs/app-channel.md`](docs/app-channel.md)。
+Critic 的权限也被限制为：
 
-### 1. 克隆与配置
+```text
+accept original
+       or
+minimal revision
+```
+
+超时、非法 JSON、越界改写或调用失败时保留主模型草稿。
+
+**目标不是让 Agent 每轮“想更多”，而是把额外计算放在真正值得花延迟的地方。**
+
+---
+
+## Semantic Routing & MCP Tools
+
+小悠通过 `XiaoyouMCP` 接入外部实时能力：
+
+```text
+Search
+Weather
+Map Route
+POI / Map Search
+```
+
+工具调用采用两级路由：
+
+```text
+Local Fast-path
+      ↓ possibly needed
+LLM Semantic Router
+      ↓ confidence threshold
+MCP Tool
+```
+
+它不会因为一句话里出现“附近”“几点”“天气”之类的单个词就机械触发工具。
+
+只有模型判断用户真的在请求实时事实、地点、路线、天气或联网搜索时，才进入 MCP。
+
+这让工具使用更接近日常对话里的真实 Agent 行为，而不是关键词触发器。
+
+---
+
+## Multimodal Agent
+
+### Vision
+
+图片消息进入统一视觉理解链路，并支持：
+
+- image / sticker
+- 图片 + 后续补话联合理解
+- 用户继续追问图片内容
+- 视觉结果与当前输入版本绑定
+- 身份与关系上下文参与视觉理解
+
+### Life Photo Agent
+
+小悠也可以生成并主动分享自己的“生活照”。
+
+生成链路将：
+
+- proactive semantic intent
+- current inner state
+- relationship context
+- scene planning
+- identity-consistent visual references
+
+组合后交给图像生成能力。
+
+这里的重点不是“调用一次文生图 API”，而是让图片成为 Agent 行为的一种媒介。
+
+---
+
+## Realtime Voice Agent
+
+小悠提供两套语音路径。
+
+### Voice Message
+
+```text
+Audio
+  ↓
+Qwen ASR
+  ↓
+Agent Context / Main Reply
+  ↓
+Text or Seed-TTS
+```
+
+文字输入是否转换成语音回复由语义模型判断，而不是关键词规则。
+
+### Realtime Voice Room
+
+实时语音房使用持续 WebSocket 会话：
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as Flutter App
+    participant V as Voice Runtime
+    participant M as Realtime Model
+
+    U->>A: PCM16 microphone stream
+    A->>V: 16kHz / mono / 20ms frames
+    V->>M: streaming audio
+    M-->>V: ASR + Dialog + 24kHz audio
+    V-->>A: streaming assistant audio
+
+    U->>A: interrupts while Xiaoyou is speaking
+    A->>V: stop playback + actual played_ms
+    V->>M: ConversationTruncate
+    Note over V,M: Next context keeps only what the user actually heard
+```
+
+关键点是 **barge-in aware memory projection**：
+
+当用户在小悠说话过程中插嘴，系统不会把“模型原本生成但用户根本没听到的后半段”当成已经发生的对话历史。
+
+只将真实播放完成的内容投影到后续记忆与上下文。
+
+---
+
+## Proactive Agent
+
+小悠并不要求用户每次先发送消息。
+
+`ProactiveDecisionService` 会结合：
+
+- 核心人格
+- 最近真实聊天
+- 相关长期记忆
+- 现实时间
+- 动态内在状态
+- 最近主动表达
+- 用户免打扰偏好
+- 最近活动事实
+
+自主选择：
+
+```json
+{
+  "action": "none | text | photo",
+  "next_evaluation_seconds": "...",
+  "confidence": "..."
+}
+```
+
+`none` 是正常决策。
+
+系统不使用固定“每两小时问候一次”的计划，也不因为用户多久没回复就机械发送关心话术。
+
+**主动性被设计成 Agent 决策，而不是 cron + 模板。**
+
+---
+
+## Model Runtime
+
+### ModelGateway
+
+所有 OpenAI-compatible 模型调用通过统一 `ModelGateway`：
+
+- API key / endpoint resolution
+- provider-independent result object
+- timeout handling
+- rate-limit / auth / network / provider error classification
+- content-inspection detection
+- thinking parameter compatibility
+- retry once without unsupported thinking payload
+- token usage logging
+- safe error detail redaction
+- `model_call_id` trace linkage
+
+业务插件只关心“为什么调用模型”和“失败后做什么”，不重复实现 HTTP transport。
+
+### Default Model Roles
+
+模型均可通过环境变量替换。当前工程中主要角色包括：
+
+| Role | Default / Current Use |
+| --- | --- |
+| Main conversation | Qwen family |
+| Routing / lightweight semantic decisions | Qwen3.7 Plus |
+| Vision | Qwen Vision / multimodal model |
+| Speech recognition | `qwen3-asr-flash` |
+| Voice message TTS | Volcengine Seed-TTS 2.0 |
+| Realtime voice | Volcengine O2.0 |
+| Life photo generation | Seedream image generation |
+
+---
+
+<a id="mobile-app"></a>
+## Mobile App
+
+`xiaoyou-app/` 是 Flutter 构建的移动端产品层。
+
+```text
+Flutter
+├── Account / Auth
+├── Chat UI
+├── Text / Image / Sticker / Voice
+├── SSE Event Stream
+├── Media Cache
+├── Realtime Voice Room
+├── Notifications
+├── Relationship Universe
+├── Time Capsule
+├── Daily Journal
+├── Achievements
+├── Theme / UI DIY
+└── Android / iOS Native Integration
+```
+
+客户端不保存模型密钥，也不复制一套独立人格与记忆逻辑。
+
+**Agent 的人格、记忆、状态与决策以服务器为事实源。**
+
+### Delivery Engineering
+
+移动链路实现：
+
+- Bearer authentication
+- device registration
+- idempotent `message_id`
+- durable event/history API
+- SSE stream
+- media persistence
+- delivery acknowledgement
+- local notification fallback
+- vivo system push
+- Android background service
+- secure local session storage
+
+Push 只负责唤醒；完整消息仍由服务端持久化保存。
+
+---
+
+## Agent State & Relationship Modeling
+
+除了聊天文本，小悠还维护短时的动态状态。
+
+`RecentState` 用于保存：
+
+- current topic
+- temporary user state
+- assistant stance
+- pending items
+- references
+- time-sensitive facts
+
+每一项必须带：
+
+- verbatim evidence
+- source
+- expiry
+
+它不会被直接写入永久长期记忆。
+
+项目还包含独立的：
+
+- `InnerStateService`
+- `RelationshipProfileService`
+- `RelationshipUniverseService`
+
+使“Agent 当前状态”和“稳定关系事实”保持分离。
+
+---
+
+## Concurrency & Reliability
+
+长期运行的 Agent 必须处理的不只是 Prompt。
+
+小悠在运行时还关注：
+
+- per-session FIFO
+- input version
+- stale result rejection
+- autonomous action lease
+- retry idempotency
+- delivery terminal state
+- asynchronous memory queue
+- restart recovery
+- state atomic write / backup
+- system push fallback
+
+这些机制保证：
+
+> 模型回复得对，不代表消息就一定按正确顺序到达；  
+> AI Agent Application Engineering 还需要把生成结果变成可靠的产品事件。
+
+---
+
+<a id="evaluation--observability"></a>
+## Evaluation & Observability
+
+### Trace
+
+核心链路建立匿名化关联 ID：
+
+```text
+trace_id
+  └── input_id
+       ├── model_call_id
+       ├── action_id
+       ├── lease_id
+       └── memory_record_id
+```
+
+Trace 记录：
+
+- component
+- state
+- latency
+- error category
+- anonymous IDs
+
+不记录：
+
+- prompt
+- private chat content
+- image content
+- API keys
+
+### Evals
+
+`evals/` 提供三类工程评测：
+
+**Context Engineering Eval**
+
+检查：
+
+- query routing
+- selected memory types
+- current input preservation
+- token hard limits
+
+**Conversation Quality Eval**
+
+使用脱敏场景做模型回放与 judge scoring：
+
+- context correctness
+- memory correctness
+- naturalness
+- continuity
+- repetition
+- emotional alignment
+- response length
+
+**Runtime Log Analyzer**
+
+统计：
+
+- end-to-end latency
+- model latency
+- token utilization
+- route distribution
+- memory governance
+- segmented delivery
+- runtime errors
+
+---
+
+## Project Structure
+
+```text
+xiaoyou/
+├── plugins/
+│   ├── app_channel/                 # App transport / API / SSE
+│   ├── xiaoyou_chat/                # Main conversation capability
+│   ├── xiaoyou_mcp/                 # MCP tools + semantic routing
+│   ├── qwen_vision/                 # Multimodal understanding
+│   ├── xiaoyou_life_photo/          # Life-photo Agent
+│   ├── proactive_love/              # Proactive interaction runtime
+│   ├── reminder_love/               # Reminder capability
+│   ├── short_memory/                 # Recent conversation compatibility
+│   └── xiaoyou_common/
+│       ├── context_planner.py
+│       ├── context_compiler.py
+│       ├── conversation_archive_service.py
+│       ├── memory_governance.py
+│       ├── long_memory_store.py
+│       ├── recent_state_service.py
+│       ├── selective_critic.py
+│       ├── model_gateway.py
+│       ├── proactive_decision_service.py
+│       ├── voice_room_service.py
+│       ├── outbound_dispatcher.py
+│       └── trace_service.py
+│
+├── xiaoyou-app/                     # Flutter Android / iOS client
+├── xiaoyou-observatory/             # Product website + observability console
+├── evals/                           # Agent evaluation suite
+├── docs/
+│   ├── conversation-quality-architecture.md
+│   ├── app-channel.md
+│   └── ai-generated-content-labeling.md
+├── tests/                           # Runtime / memory / route / voice tests
+├── docker-compose.yml
+└── docker-compose.app.yml
+```
+
+---
+
+## Core Design Decisions
+
+小悠刻意 **不采用** 这些看似“更 Agent”但会伤害真实产品体验的方案：
+
+- ❌ 每轮都执行 Planner → Executor → Critic 多模型流水线
+- ❌ 把全部历史聊天塞进 Prompt
+- ❌ 把每句话都写进云端语义长期记忆
+- ❌ 把助手说过的话当作用户事实
+- ❌ 用关键词硬编码复杂语义和关系状态
+- ❌ 固定时间表制造“主动陪伴”
+- ❌ 让客户端自己拼接长期人格和 Agent Prompt
+
+取而代之的是：
+
+- ✅ one main generation
+- ✅ local planning
+- ✅ selective retrieval
+- ✅ evidence-governed memory
+- ✅ asynchronous state updates
+- ✅ semantic tool routing
+- ✅ risk-triggered critic
+- ✅ observable runtime
+- ✅ eval-driven iteration
+
+---
+
+## What Makes Xiaoyou Different?
+
+### 01 — Memory is evidence, not prompt decoration
+
+很多“长期记忆”只是把若干历史文本重新塞进 Prompt。
+
+小悠把记忆看成一个需要 **来源、角色、时间、主体和证据** 的数据系统。
+
+### 02 — Context is planned per turn
+
+不同问题并不需要同一份历史。
+
+“我今天有点累”和“去年我们第一次去哪里”不应该触发相同的 memory retrieval。
+
+### 03 — Realtime voice respects what actually happened
+
+被用户打断后，没有播放出来的回复不会假装成用户已经听过的事实。
+
+### 04 — Proactivity can choose silence
+
+Agent 主动性不是“定时给用户发消息”，而是让模型在关系与当前状态下决定是否值得打扰。
+
+### 05 — Application engineering is part of the Agent
+
+幂等、FIFO、SSE、push、delivery receipt、async queue、restart recovery、trace 和 eval 都是 Agent 能稳定进入真实产品的必要部分。
+
+---
+
+## Quick Start
+
+### Runtime
 
 ```bash
 git clone https://github.com/yan-gd/xiaoyou.git
 cd xiaoyou
+
 cp .env.example .env
+
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.app.yml \
+  up -d --build
 ```
 
-至少配置：
+> API Key、TTS Token、Push Secret 等敏感配置只放在服务器环境变量中，不应提交到 Git。
 
-```env
-KEY=your_bailian_api_key_here
-SEEDREAM_KEY=your_volcengine_ark_api_key_here
-```
-
-稳定身份可以配置一个或多个锚点：
-
-```env
-XIAOYOU_LEGACY_SESSION_IDS=
-XIAOYOU_TARGET_WECHAT_ALIAS=
-XIAOYOU_TARGET_REMARK_NAME=
-XIAOYOU_TARGET_NICKNAME=
-```
-
-### 2. 构建与启动
+### Flutter App
 
 ```bash
-docker compose build chatgpt-on-wechat
-docker compose up -d
-docker logs -f cow-legacy
+cd xiaoyou-app
+flutter pub get
+flutter run
 ```
 
-根据日志扫码登录个人微信小号。
-
-构建上下文使用仓库根目录的 `.dockerignore` 白名单，只会把 `Dockerfile`
-和 `patches/` 交给 Docker daemon；`.env`、`data/`、日志、测试缓存和其他
-运行态文件不会进入构建上下文。
-
-### 3. 更新
-
-先备份服务器的 `.env`、`data/` 和插件运行态 JSON，再执行：
+Release build:
 
 ```bash
-git pull --ff-only
-docker compose up -d --build --force-recreate chatgpt-on-wechat
+flutter build apk --release
 ```
 
-`plugins/`、`data/` 和两个核心聊天补丁均由 Compose 挂载。上述命令会让
-核心补丁、插件和镜像启动引导代码在同一次更新中生效，避免新插件与旧
-`chat_channel.py` 混装。不要用仓库中的空文件覆盖服务器真实记忆和状态文件。
+---
 
-## 常用命令
+## Testing
 
-```bash
-docker ps --filter name=cow-legacy
-docker logs -f cow-legacy
-docker compose restart
-docker compose config
-```
-
-重新构建：
-
-```bash
-docker compose build --no-cache chatgpt-on-wechat
-docker compose up -d --force-recreate chatgpt-on-wechat
-```
-
-## 运行态数据
-
-以下内容被 `.gitignore` 排除：
+项目包含针对 Agent 关键链路的自动化测试：
 
 ```text
-.env
-data/
-disabled_plugins/
+context compiler
+context planner
+memory governance
+long-memory store
+conversation archive
+recent state
+selective critic
+session FIFO
+parallel route prefetch
+multimodal stale-result protection
+proactive decision
+system push
+voice room
+App API contract
 ```
 
-这些文件可能包含聊天原文、提醒、联系人标识、登录状态和个人偏好，不应推送。
-
-所有可变插件状态统一从 `APPDATA_DIR` 读取并写入；容器中为 `/app/data`，宿主机对应项目 `data/`。首次启动时若 data 目标尚不存在，系统会把旧插件目录中的主状态和 `.backup` 原子复制过去，之后只以 data 中的文件为准，旧文件保留作回退证据。
-
-## 验证
+运行：
 
 ```bash
-python -m compileall patches plugins
-python -m pytest tests -q
-python -m json.tool plugins/plugins.json
-docker compose config
-git diff --check
+pytest -q
 ```
 
-对话质量评测集完全使用合成、脱敏案例。先离线校验，不调用模型：
+Flutter:
 
 ```bash
-python evals/run_context_engineering_eval.py
-python evals/run_conversation_quality_eval.py --dry-run
+cd xiaoyou-app
+flutter test
 ```
 
-第一条会实际执行本地查询规划与 ContextPack 编译，检查意图路由、记忆类型、当前输入保留和 token 硬上限；不读取真实聊天，也不调用任何云模型。第二条校验语义对话案例格式。模型裁判现在同时评分上下文准确、记忆纪律、自然度、连续性、非重复、情绪对齐和微信篇幅。
+---
 
-需要实际比较主聊天模型时，可以先只跑一个案例；脚本读取本地 `.env` 和 `docker-compose.yml`，结果写入已忽略的 `data/evals/`：
+## Documentation
 
-```bash
-python evals/run_conversation_quality_eval.py --case current-correction-wins
-```
+- [Conversation Quality Architecture](docs/conversation-quality-architecture.md)
+- [App Channel](docs/app-channel.md)
+- [AI-generated Content Labeling](docs/ai-generated-content-labeling.md)
+- [Mobile App](xiaoyou-app/README.md)
+- [Observatory](xiaoyou-observatory/README.md)
+- [MCP Tools](plugins/xiaoyou_mcp/README.md)
 
-默认每个案例调用一次主回复模型和一次裁判模型；完整 10 案例会产生 20 次模型请求。使用 `--no-judge` 可只生成回复、不评分，避免在未确认费用时直接跑全量线上评测。
+---
 
-线上运行一段时间后，可直接从容器日志生成耗时、气泡数、规划类型、token 使用率、长期记忆注入量、治理写入和错误统计：
+## Roadmap
 
-```bash
-docker logs cow-legacy > /tmp/xiaoyou-runtime.log 2>&1
-python evals/analyze_runtime_log.py /tmp/xiaoyou-runtime.log --output data/evals/runtime-log.json
-```
+- [ ] Expand real-world anonymized conversation eval sets
+- [ ] Improve retrieval query rewriting for low-information long-chain continuations
+- [ ] Unify dynamic inner-state continuity across text and realtime voice
+- [ ] Continue reducing synchronous model calls on latency-sensitive paths
+- [ ] Expand tool ecosystem through MCP
+- [ ] Improve cross-platform mobile delivery and offline recovery
 
-服务器启动后建议确认：
+---
 
-1. 12 个插件正常注册。
-2. 微信登录成功。
-3. Identity 将目标联系人映射到 `yoyo`。
-4. 普通文字、连续补话和新输入取消正常。
-5. ShortMemory 能写入并生成备份。
-6. LongTermMemory 能在 `data/long_memory/memories.db` 读取和写入长期记忆。
-7. 图片理解、生活照、MCP、提醒和主动消息按需测试。
-8. 日志无异常堆栈和 StateStore 损坏告警。
-9. 如启用观测台，游客权限、管理员 TOTP、二维码保护和固定容器控制均通过验证。
+<div align="center">
 
-## 安全
+### 小悠不是一个聊天框。
 
-- 不提交 `.env`、API Key、token、登录状态或运行态记忆。
-- 不公开微信临时 UserName、联系人资料和记忆库 ID。
-- 密钥出现在日志、截图或终端历史中后必须立即轮换。
-- 上游 `chatgpt-on-wechat:1.7.3` 启动日志可能输出环境变量覆盖值，公开日志前必须脱敏。
-- Trace 不保存提示词和正文，但普通上游日志仍需单独检查。
-- 生活照参考图应确认拥有使用和发布权限。
-- 个人微信 Web 登录可能触发登录失效或平台风控，仅建议自用。
-- 观测台管理员必须使用独立强密码和 TOTP；恢复码、数据库与 `/etc/xiaoyou-observatory.env` 应离线备份。
-- 观测台不开放 Docker Socket、任意容器名、Shell、文件浏览或环境变量编辑接口。
+**她是一套把 LLM、Context Engineering、Memory、Tools、Multimodal、Voice 与 Mobile Runtime 组合成长期 Agent 产品的工程实践。**
 
-## 已知限制
+<br/>
 
-### 原生微信语音
+[Website](https://xiaoyou.yoyoyan.cn/) ·
+[GitHub](https://github.com/yan-gd/xiaoyou)
 
-当前 itchat / WebWx 通道不能可靠发送个人微信原生语音气泡。项目不包含 Hook、注入式客户端、Pad 协议或原生语音探针；普通 MP3 文件也不等同于微信语音气泡。
-
-### 微信通道
-
-个人微信 Web 协议不是稳定的官方机器人接口，可能出现扫码失败、会话失效、联系人临时 ID 变化或消息接口受限。
-
-### 单用户默认
-
-默认稳定身份为 `yoyo`，并启用短期记忆裁剪。多人部署需要关闭裁剪并重新设计隔离。
-
-### 外部服务
-
-模型、长期记忆、MCP 和图片生成依赖对应云服务的可用性、额度、模型权限和内容安全策略。
-
-## v1.4 主要变化
-
-- 长期记忆增加候选提取、分角色逐字证据校验、置信度与重要度门槛、本地审计账本
-- YoYo 原话独立提交；小悠只以微信实际送达文字形成自身或双方记忆，模型提取失败时默认不写入
-- 同一语义键的新事实会覆盖旧事实，并在本地 SQLite 中原地更新
-- 普通聊天接入结构化 ContextPack，按权威级别与字符预算统一编译当前输入、短期和长期记忆
-- 上下文截断改为分区内保留完整行：短期保最新、长期保最高相关，不再盲目截取嵌套文本前缀
-- 近期真实原话改为 API 原生 `user/assistant` 多轮，摘要和长期记忆继续走受控背景分区
-- 新增自动过期、证据校验且后台更新的 RecentState
-- 新增只在高风险轮触发、失败放行的 SelectiveCritic
-- 新增 ConversationArchive SQLite 终身原文、ActiveWindow、情节切分、相关跨度召回和滚动备份
-- 当前用户消息不再同时出现在原生历史和最终输入中
-- 文本Emoji不再把短续聊错误膨胀为一般长问题，短续聊不会无故调用旧长期记忆
-- 内容审查恢复改为渐进式连续性窗口，并用用户原话中的对象和动作承接省略表达
-- 组合上下文被拒绝时不再永久隔离整批 ShortMemory 与 ActiveWindow，启动时自动修复旧版过宽标记
-- RecentState 被审查拒绝后暂停旧状态注入，成功更新后恢复
-- 删除固定“制裁”、强制短句和旧梗冷却等重复人格规则，复杂问题输出预算提高到 700 token
-- 新增脱敏上下文评测、对话质量评测、运行日志分析和覆盖恢复路径的回归测试
-
-## v1.3 主要变化
-
-- 新增稳定身份 `yoyo` 与登录期收件人映射
-- 模型调用统一进入 ModelGateway
-- 微信主动发送统一进入 OutboundDispatcher
-- JSON 状态统一使用 JsonStateStore
-- 提醒、重连、追问和主动消息统一协调
-- 人格、时间、原话和记忆统一读取
-- 建立内容安全的全链路 Trace
-- ShortMemory 升级为 schema v2、主备份、异步摘要和隔离机制
-- ShortMemory 增加无损表达卫生层，阻止口头禅和玩笑威胁被摘要固化为未来行为规则
-- 长期记忆增加时间感知重排
-- 新增聊天中断追问和模型中断重连
-- 新增统一照片语义路由：QwenVision 与 XiaoyouLifePhoto 共享模型判断，不依赖关键词区分图片补话、即时拍照请求和独立话题
-- QwenVision v1.2 接入图片前聊天上下文、双方视觉身份、人格、现实时间和相关记忆，并通过近期照片指纹与人脸参考图识别小悠和YoYo
-- XiaoyouLifePhoto v0.9 使用结构化镜头、拍摄者与同框人物规划，本地仅做字段和物理一致性校验；保留灵动语义表情且不增加生成后视觉质检
-- 新增小悠动态内在状态：每轮交流异步更新情绪权重，随时间自然演化，并与人格及长期记忆严格分离
-- ProactiveLove v2.0 合并分钟级续聊、长周期联系和主动照片，由统一模型自主选择沉默、文字、照片及下次重新判断时间
-- ConversationFollowup v0.9 改为高优先级观察与兼容入口，不再运行独立固定4分钟状态机
-- 主动照片选择后必须进入真实LifePhoto/Seedream发送链路，失败时不再发送假图片占位文字
-- 新增私密人物与关系档案：双方年龄、相识天数和周年数按真实日期动态计算，并让重要日期进入统一主动意识
-- 新增离线中国农历与节气换算，传统节日会随年份自动映射到正确公历日期
-- QwenVision与LifePhoto接入YoYo私密人脸参考，支持认出YoYo和生成身份分离的情侣同框照片
-- ShortMemory 内容审查失败限制为最多 3 次摘要尝试，原始消息继续保留且不再制造后台告警风暴
-- 新增「小悠 · 命轨观测台」：实时状态、登录二维码、脱敏日志、游客展示、管理员 TOTP 与固定容器启停
-- 观测台区分主聊天故障和已妥善处理的短期摘要审查，避免“思维回路波动”误报
-- 命轨观测台升级为响应式电影背景界面：PC固定侧翼、手机信息舱、横竖双视频与无停帧双缓冲交叉播放
-- 新增独立视频CDN运行时配置、版本化缓存、HTTP Range源站配置及4秒停滞自动本地回退；管理接口不进入CDN
-- 连续输入合并与旧回复取消覆盖更多异步链路
-
-## v1.2 里程碑
-
-- 新增 XiaoyouChat，普通文字聊天由小悠链路接管
-- 长期记忆使用 data 下的 SQLite 数据库，并通过模型向量进行本地语义检索
-- 引入全局现实时间上下文
-- 修复图片与多条后续文字的合并理解
-- 新增微信拍一拍自然回应
-- MCP 精简为搜索、天气、地点和路线能力
-- 主动消息增加固定目标会话与安全提交规则
-
-## 免责声明
-
-本项目仅用于学习、研究和个人自用。使用者应遵守微信平台规则、模型服务商规范及所在地法律法规。
-
-不得用于骚扰、欺诈、垃圾信息、批量营销、未授权数据处理或其他违法违规用途。
+</div>
