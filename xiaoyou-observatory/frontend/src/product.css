@@ -4859,3 +4859,270 @@ body.xy-product-body {
   scroll-margin-top: 0 !important;
 }
 
+
+
+/* ===== Mobile hero + continuous surface fix ===== */
+
+@media (max-width: 720px) {
+
+  /* --------------------------------------------------------
+     1. 手机端整页使用一张连续网格
+     -------------------------------------------------------- */
+
+  .xy-product-page {
+    position: relative;
+
+    /*
+     * 背景渐变只存在于整个页面本身，
+     * section 不再拥有自己的底色。
+     */
+    background:
+      radial-gradient(
+        circle at 88% 7%,
+        rgba(200, 211, 235, .18),
+        transparent 19%
+      ),
+      radial-gradient(
+        circle at 5% 46%,
+        rgba(238, 214, 220, .11),
+        transparent 25%
+      ),
+      radial-gradient(
+        circle at 90% 78%,
+        rgba(205, 217, 238, .10),
+        transparent 24%
+      ),
+      linear-gradient(
+        180deg,
+        #fafaf9 0%,
+        #f7f7f5 48%,
+        #f7f7f5 76%,
+        #fafaf9 100%
+      ) !important;
+  }
+
+  /*
+   * 用一层贯穿整个 product-page 的网格。
+   * 不会因为 Hero / Core / App section 切换而重新开始。
+   */
+  .xy-product-page::after {
+    content: "";
+
+    position: absolute;
+    z-index: 0;
+
+    inset: 0;
+
+    pointer-events: none;
+
+    background-image:
+      linear-gradient(
+        rgba(55, 58, 65, .075) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        90deg,
+        rgba(55, 58, 65, .075) 1px,
+        transparent 1px
+      );
+
+    background-size:
+      78px 78px;
+
+    background-position:
+      0 0;
+
+    opacity: .68;
+  }
+
+  /*
+   * 手机端关闭每个 section 各自的 Canvas。
+   * 否则 section 接缝处还是会有两套网格交替。
+   *
+   * 桌面端不受影响，继续使用动态 InteractiveGrid。
+   */
+  .xy-section-grid {
+    display: none !important;
+  }
+
+
+  /* --------------------------------------------------------
+     2. 所有章节真正透明
+     -------------------------------------------------------- */
+
+  .xy-hero,
+  .xy-capabilities-section,
+  .xy-showcase,
+  .xy-download-section,
+  .xy-product-footer {
+    position: relative;
+    z-index: 1;
+
+    background: transparent !important;
+
+    border-top: 0 !important;
+    border-bottom: 0 !important;
+  }
+
+
+  /*
+   * Hero 原本独立的白色渐变是手机端横向分割感
+   * 最明显的来源之一。
+   */
+  .xy-hero::before {
+    display: none !important;
+    content: none !important;
+  }
+
+
+  /* --------------------------------------------------------
+     3. Hero 不再裁剪手机图片
+     -------------------------------------------------------- */
+
+  .xy-hero {
+    height: auto !important;
+    min-height: auto !important;
+
+    overflow: visible !important;
+
+    padding:
+      112px
+      20px
+      34px !important;
+
+    gap: 26px !important;
+  }
+
+
+  /*
+   * 原先这里最终会得到：
+   *
+   * height: 560px;
+   * transform: scale(.9);
+   *
+   * 图片实际比 560px 高，所以 section 下一屏开始时
+   * 看起来像手机被截断。
+   *
+   * 现在让真实图片直接撑开舞台高度。
+   */
+  .xy-hero-device-stage {
+    width: 100% !important;
+
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+
+    padding:
+      8px
+      0
+      24px;
+
+    transform: none !important;
+
+    overflow: visible !important;
+
+    display: grid;
+    place-items: center;
+  }
+
+
+  /*
+   * 手机上稍微放大一点真实设备图，
+   * 但宽度始终不会超过 viewport。
+   */
+  .xy-hero-real-device {
+    position: relative;
+
+    width:
+      min(360px, 88vw) !important;
+
+    max-width: 100% !important;
+
+    height: auto !important;
+    max-height: none !important;
+
+    transform:
+      rotateZ(.7deg) !important;
+
+    transform-origin:
+      center top;
+  }
+
+
+  .xy-hero-real-device img {
+    display: block;
+
+    width: 100% !important;
+    height: auto !important;
+
+    max-width: 100% !important;
+    max-height: none !important;
+
+    object-fit: contain !important;
+
+    filter:
+      drop-shadow(
+        0 30px 38px
+        rgba(0, 0, 0, .14)
+      );
+  }
+
+
+  /* --------------------------------------------------------
+     4. Hero 浮动提示跟着真实设备重新定位
+     -------------------------------------------------------- */
+
+  .xy-float-memory {
+    top: 14% !important;
+
+    left:
+      max(
+        0px,
+        calc(50% - 190px)
+      ) !important;
+  }
+
+  .xy-float-voice {
+    right:
+      max(
+        0px,
+        calc(50% - 196px)
+      ) !important;
+
+    bottom: 18% !important;
+  }
+
+
+  /* --------------------------------------------------------
+     5. Core 紧跟 Hero，但保持正常呼吸空间
+     -------------------------------------------------------- */
+
+  .xy-capabilities-section {
+    margin-top: 0 !important;
+
+    padding:
+      78px
+      20px
+      64px !important;
+  }
+
+
+  /*
+   * 防止 section 自己生成白色遮罩 / 伪元素。
+   */
+  .xy-capabilities-section::before,
+  .xy-capabilities-section::after,
+  .xy-showcase::before,
+  .xy-showcase::after {
+    background: transparent !important;
+  }
+
+
+  /* 页面主体都压在统一网格上方 */
+  .xy-product-page > main,
+  .xy-product-footer {
+    position: relative;
+    z-index: 1;
+  }
+}
+
