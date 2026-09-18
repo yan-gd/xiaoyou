@@ -1,4 +1,4 @@
-:root{
+﻿:root{
   --xy-black:#070707;--xy-ink:#111;--xy-muted:#717176;--xy-line:rgba(17,17,17,.12);
   --xy-paper:#f3f3f1;--xy-serif:"Songti SC","STSong","Noto Serif SC",Georgia,serif;
   --xy-sans:"SF Pro Display","SF Pro Text","PingFang SC","Helvetica Neue",Arial,sans-serif;
@@ -107,7 +107,7 @@ body.xy-product-body{margin:0;background:#fff;color:var(--xy-ink);overflow-x:hid
 [data-product-reveal]{opacity:0;transform:translateY(28px);transition:opacity .76s cubic-bezier(.2,.8,.2,1) var(--delay,0ms),transform .76s cubic-bezier(.2,.8,.2,1) var(--delay,0ms)}
 [data-product-reveal].is-visible{opacity:1;transform:none}
 
-@keyframes xyFloat{50%{transform:translateY(-12px)}}@keyframes xySpin{to{rotate:360deg}}@keyframes xyBreathe{50%{transform:scale(1.05)}}@keyframes xyWave{from{scale:1 .55;opacity:.35}to{scale:1 1.2;opacity:1}}@keyframes xyPortal{50%{transform:scale(1.04);opacity:.35}}
+@keyframes xyFloat{50%{transform:translateY(-6px)}}@keyframes xySpin{to{rotate:360deg}}@keyframes xyBreathe{50%{transform:scale(1.05)}}@keyframes xyWave{from{scale:1 .55;opacity:.35}to{scale:1 1.2;opacity:1}}@keyframes xyPortal{50%{transform:scale(1.04);opacity:.35}}
 
 @media(max-width:1050px){
   .xy-product-nav{grid-template-columns:1fr auto}.xy-product-nav>nav{position:fixed;top:68px;right:0;left:0;padding:18px;border-radius:24px;background:#fff;box-shadow:0 18px 50px #0001;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(-8px)}
@@ -3854,8 +3854,8 @@ body.xy-product-body {
 }
 
 .xy-product-nav > nav .xy-nav-download {
-  color: #171719;
-  font-weight: 720;
+  color: #666;
+  font-weight: inherit;
 }
 
 .xy-download-section {
@@ -4147,3 +4147,715 @@ body.xy-product-body {
     transform: none;
   }
 }
+
+
+
+/* ============================================================
+   Unified interactive grid
+   全站使用同一套 78px 网格 + 鼠标扰动。
+   不再使用独立 CSS 方格，也不绘制方块粒子。
+   ============================================================ */
+
+.xy-hero::after,
+.xy-download-section::before {
+  display: none !important;
+}
+
+.xy-section-grid {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.xy-hero,
+.xy-capabilities-section,
+.xy-showcase,
+.xy-download-section,
+.xy-product-footer,
+.xy-capabilities-voice {
+  position: relative;
+  isolation: isolate;
+}
+
+.xy-hero > :not(.xy-section-grid),
+.xy-capabilities-section > :not(.xy-section-grid),
+.xy-showcase > :not(.xy-section-grid),
+.xy-download-section > :not(.xy-section-grid),
+.xy-product-footer > :not(.xy-section-grid),
+.xy-capabilities-voice > :not(.xy-section-grid) {
+  position: relative;
+  z-index: 1;
+}
+
+
+/* ============================================================
+   01 / CORE EXPERIENCE + VOICE
+   两个旧章节合并成一个完整章节
+   ============================================================ */
+
+.xy-capabilities-section {
+  min-height: 100svh;
+  padding:
+    clamp(88px, 8vw, 116px)
+    max(5vw, 40px)
+    clamp(70px, 7vw, 96px);
+
+  overflow: hidden;
+
+  background:
+    radial-gradient(
+      circle at 82% 18%,
+      rgba(199,210,235,.18),
+      transparent 29%
+    ),
+    #f1f1ef;
+}
+
+.xy-capabilities-heading {
+  position: relative;
+  z-index: 1;
+  max-width: 800px;
+}
+
+.xy-capabilities-heading h2 {
+  margin: 20px 0 0;
+
+  font-size: clamp(42px, 4.4vw, 70px);
+  line-height: 1.02;
+  letter-spacing: -.055em;
+}
+
+.xy-capabilities-heading > p {
+  max-width: 660px;
+  margin: 18px 0 0;
+
+  color: #747479;
+
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.xy-capabilities-body {
+  position: relative;
+  z-index: 1;
+
+  display: grid;
+
+  grid-template-columns:
+    minmax(520px, 1.06fr)
+    minmax(460px, .94fr);
+
+  gap: 18px;
+
+  margin-top: 42px;
+
+  align-items: stretch;
+}
+
+
+/* 左侧四张卡压缩成一屏 */
+
+.xy-feature-grid-compact {
+  display: grid;
+
+  grid-template-columns:
+    repeat(2, minmax(0, 1fr));
+
+  gap: 12px;
+}
+
+.xy-feature-grid-compact .xy-feature-card {
+  min-height: 220px !important;
+
+  padding: 22px !important;
+
+  border-radius: 28px !important;
+}
+
+.xy-feature-grid-compact .xy-feature-card h3 {
+  margin-top: 35px !important;
+
+  font-size: clamp(24px, 2vw, 34px) !important;
+  line-height: 1.13 !important;
+}
+
+.xy-feature-grid-compact .xy-feature-card p {
+  margin-top: 13px !important;
+
+  padding-right: 36px !important;
+
+  font-size: 11px !important;
+  line-height: 1.58 !important;
+}
+
+.xy-feature-grid-compact .xy-feature-number {
+  right: 18px !important;
+  bottom: 12px !important;
+
+  font-size: 34px !important;
+}
+
+
+/* 右侧声音作为同一章节中的重点能力 */
+
+.xy-capabilities-voice {
+  min-height: 452px;
+
+  overflow: hidden;
+
+  padding: 28px 18px 20px 30px;
+
+  border-radius: 32px;
+
+  background:
+    radial-gradient(
+      circle at 72% 48%,
+      rgba(69,57,91,.18),
+      transparent 34%
+    ),
+    #070707;
+
+  color: #fff;
+
+  display: grid;
+
+  grid-template-columns:
+    minmax(210px, .78fr)
+    minmax(280px, 1.22fr);
+
+  align-items: center;
+}
+
+.xy-capabilities-voice-copy {
+  max-width: 330px;
+}
+
+.xy-capabilities-voice-copy .xy-section-number {
+  color: rgba(255,255,255,.66);
+}
+
+.xy-capabilities-voice-copy h3 {
+  margin: 18px 0 0;
+
+  font:
+    500 clamp(38px, 3.4vw, 60px) / 1.03
+    var(--xy-serif);
+
+  letter-spacing: -.05em;
+}
+
+.xy-capabilities-voice-copy p {
+  margin: 22px 0 0;
+
+  color: #999;
+
+  font-size: 12px;
+  line-height: 1.72;
+}
+
+.xy-capabilities-voice-copy a {
+  display: inline-flex;
+
+  align-items: center;
+
+  gap: 8px;
+
+  margin-top: 25px;
+
+  color: #fff;
+
+  font-size: 11px;
+  font-weight: 650;
+}
+
+
+/* 原语音球缩到合并后的卡片里 */
+
+.xy-capabilities-voice .xy-voice-visual.xy-siri-visual {
+  width: 100% !important;
+
+  height: 400px !important;
+  min-height: 0 !important;
+
+  transform: scale(.73);
+
+  transform-origin: center;
+}
+
+
+/* ============================================================
+   App & Download
+   不再自己生成网格，只接受统一 Canvas 网格
+   ============================================================ */
+
+.xy-showcase {
+  background:
+    radial-gradient(
+      circle at 88% 14%,
+      rgba(205,214,235,.18),
+      transparent 28%
+    ),
+    #f4f4f2 !important;
+}
+
+.xy-download-section {
+  background:
+    radial-gradient(
+      circle at 84% 8%,
+      rgba(198,210,236,.42),
+      transparent 28%
+    ),
+    radial-gradient(
+      circle at 4% 90%,
+      rgba(237,208,216,.35),
+      transparent 29%
+    ),
+    #efefed !important;
+}
+
+
+/* Footer 也连续保留网格 */
+
+.xy-product-footer {
+  overflow: hidden;
+
+  background: #fff;
+}
+
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+
+@media (max-width: 1100px) {
+  .xy-capabilities-body {
+    grid-template-columns: 1fr;
+  }
+
+  .xy-capabilities-voice {
+    min-height: 430px;
+
+    grid-template-columns:
+      minmax(240px, .8fr)
+      minmax(320px, 1.2fr);
+  }
+}
+
+@media (max-width: 720px) {
+  .xy-capabilities-section {
+    min-height: auto;
+
+    padding:
+      96px
+      20px
+      64px;
+  }
+
+  .xy-capabilities-heading h2 {
+    font-size: clamp(40px, 12vw, 58px);
+  }
+
+  .xy-capabilities-body {
+    margin-top: 32px;
+  }
+
+  .xy-feature-grid-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .xy-feature-grid-compact .xy-feature-card {
+    min-height: 210px !important;
+  }
+
+  .xy-capabilities-voice {
+    min-height: 610px;
+
+    padding: 28px 22px 6px;
+
+    grid-template-columns: 1fr;
+  }
+
+  .xy-capabilities-voice-copy {
+    max-width: 100%;
+  }
+
+  .xy-capabilities-voice .xy-voice-visual.xy-siri-visual {
+    height: 360px !important;
+
+    transform: scale(.68);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-section-grid {
+    opacity: .7;
+  }
+}
+
+
+/* ===== Xiaoyou continuous page surface ===== */
+
+/*
+ * 整个产品页共享一张背景。
+ * Hero / Core / App / Download / Footer 不再分别换底色。
+ */
+body.xy-product-body {
+  background: #f6f6f3 !important;
+}
+
+.xy-product-page {
+  position: relative;
+
+  background:
+    radial-gradient(
+      circle at 82% 6%,
+      rgba(200, 211, 235, .23),
+      transparent 20%
+    ),
+
+    radial-gradient(
+      circle at 10% 29%,
+      rgba(238, 214, 220, .15),
+      transparent 23%
+    ),
+
+    radial-gradient(
+      circle at 87% 56%,
+      rgba(205, 217, 238, .14),
+      transparent 23%
+    ),
+
+    radial-gradient(
+      circle at 13% 80%,
+      rgba(238, 214, 220, .12),
+      transparent 24%
+    ),
+
+    linear-gradient(
+      180deg,
+      #fbfbfa 0%,
+      #f8f8f6 22%,
+      #f6f6f3 48%,
+      #f5f5f2 72%,
+      #f8f8f6 100%
+    ) !important;
+}
+
+
+/* 所有主要章节透明，露出同一张全局底色 */
+.xy-hero,
+.xy-capabilities-section,
+.xy-showcase,
+.xy-download-section,
+.xy-product-footer {
+  background: transparent !important;
+}
+
+
+/* 首页只保留非常弱的顶部空气感 */
+.xy-hero::before {
+  display: block !important;
+
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255,255,255,.24),
+      rgba(255,255,255,.06) 48%,
+      transparent 86%
+    ) !important;
+}
+
+
+/* 禁用旧 CSS 静态网格，只使用 Canvas 动态网格 */
+.xy-hero::after,
+.xy-download-section::before {
+  display: none !important;
+}
+
+
+/* App 页不再突然换灰色 */
+.xy-showcase {
+  background: transparent !important;
+}
+
+
+/* 下载页不再单独换底 */
+.xy-download-section {
+  background: transparent !important;
+}
+
+
+/* Footer 也自然接上上一屏 */
+.xy-product-footer {
+  overflow: hidden;
+
+  background:
+    linear-gradient(
+      180deg,
+      transparent,
+      rgba(255,255,255,.20)
+    ) !important;
+}
+
+
+/*
+ * 实时语音保留深色，但只是一个“内容卡片”，
+ * 不再表现成整块黑色页面。
+ */
+.xy-capabilities-voice {
+  background:
+    radial-gradient(
+      circle at 72% 46%,
+      rgba(111,91,132,.20),
+      transparent 36%
+    ),
+
+    radial-gradient(
+      circle at 83% 70%,
+      rgba(65,106,111,.13),
+      transparent 30%
+    ),
+
+    #111112 !important;
+
+  border:
+    1px solid rgba(255,255,255,.045);
+
+  box-shadow:
+    0 24px 70px rgba(20,20,20,.07);
+}
+
+
+/* 卡片阴影也更柔和 */
+.xy-feature-card {
+  box-shadow:
+    0 8px 30px rgba(20,20,20,.022);
+}
+
+
+/* section 的节奏统一 */
+.xy-capabilities-section,
+.xy-showcase,
+.xy-download-section {
+  padding-top:
+    clamp(88px, 8vw, 112px) !important;
+
+  padding-bottom:
+    clamp(72px, 7vw, 96px) !important;
+
+  border-top: 0 !important;
+  border-bottom: 0 !important;
+}
+
+
+/* 动态网格保持同样视觉强度 */
+.xy-section-grid {
+  opacity: .94;
+}
+
+.xy-hero > .xy-section-grid {
+  opacity: .94;
+}
+
+
+@media (max-width: 720px) {
+  .xy-product-page {
+    background:
+      radial-gradient(
+        circle at 90% 8%,
+        rgba(200,211,235,.20),
+        transparent 18%
+      ),
+
+      radial-gradient(
+        circle at 4% 48%,
+        rgba(238,214,220,.13),
+        transparent 23%
+      ),
+
+      linear-gradient(
+        180deg,
+        #fbfbfa,
+        #f5f5f2 58%,
+        #f8f8f6
+      ) !important;
+  }
+}
+
+
+/* ===== Xiaoyou language switch ===== */
+
+.xy-language-switch {
+  height: 38px;
+  min-width: 46px;
+  padding: 0 12px;
+
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  border:
+    1px solid rgba(17,17,17,.11);
+
+  border-radius: 999px;
+
+  background:
+    rgba(255,255,255,.58);
+
+  color:
+    rgba(17,17,17,.68) !important;
+
+  backdrop-filter:
+    blur(14px);
+
+  -webkit-backdrop-filter:
+    blur(14px);
+
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: .08em;
+
+  transition:
+    background .22s ease,
+    color .22s ease,
+    border-color .22s ease,
+    transform .22s ease;
+}
+
+.xy-language-switch:hover {
+  color: #111 !important;
+
+  background:
+    rgba(255,255,255,.9);
+
+  border-color:
+    rgba(17,17,17,.2);
+
+  transform:
+    translateY(-1px);
+}
+
+@media (max-width: 720px) {
+  .xy-language-switch {
+    height: 36px;
+    min-width: 42px;
+    padding: 0 10px;
+
+    font-size: 9px;
+  }
+
+  .xy-product-nav-actions {
+    gap: 6px;
+  }
+}
+
+
+
+/* ===== Neutral download nav ===== */
+.xy-product-nav > nav .xy-nav-download {
+  color: #666 !important;
+  font-weight: inherit !important;
+}
+
+.xy-product-nav > nav .xy-nav-download:hover {
+  color: #111 !important;
+}
+
+
+/* ===== Capabilities density polish ===== */
+
+.xy-capabilities-heading {
+  max-width: 680px;
+}
+
+.xy-capabilities-heading h2 {
+  font-size: clamp(38px, 3.8vw, 60px) !important;
+  line-height: 1.01 !important;
+}
+
+.xy-capabilities-heading > p {
+  max-width: 600px;
+  margin-top: 14px !important;
+  line-height: 1.65 !important;
+}
+
+.xy-capabilities-body {
+  margin-top: 34px !important;
+}
+
+.xy-feature-grid-compact .xy-feature-card h3 {
+  margin-top: 30px !important;
+  font-size: clamp(25px, 1.9vw, 33px) !important;
+}
+
+.xy-feature-grid-compact .xy-feature-card p {
+  max-width: 360px;
+  margin-top: 11px !important;
+  line-height: 1.55 !important;
+}
+
+.xy-capabilities-voice-copy h3 {
+  font-size: clamp(36px, 3.1vw, 54px) !important;
+}
+
+.xy-capabilities-voice-copy p {
+  max-width: 300px;
+  margin-top: 17px !important;
+  line-height: 1.6 !important;
+}
+
+
+
+/* ===== Voice navigation anchor ===== */
+
+/*
+ * Voice 现在位于 Core Experience 内部，
+ * 点击顶部导航时直接定位到右侧实时语音区域。
+ */
+.xy-capabilities-voice {
+  scroll-margin-top: 104px;
+}
+
+/* 首页定位同样避开顶部悬浮导航 */
+#top {
+  scroll-margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .xy-capabilities-voice {
+    scroll-margin-top: 82px;
+  }
+}
+
+
+
+/* ===== Precise voice anchor ===== */
+
+/*
+ * Voice 导航现在由 JavaScript 根据悬浮导航的实时位置计算。
+ * CSS 不再额外叠加 104px 偏移。
+ */
+#voice {
+  scroll-margin-top: 0;
+}
+
+
+
+/* ===== Exact CORE EXPERIENCE navigation position ===== */
+
+/*
+ * Voice 导航由 JS 直接将 #capabilities 顶部对齐 viewport。
+ * 不再增加任何额外 scroll-margin。
+ */
+#capabilities {
+  scroll-margin-top: 0 !important;
+}
+
+#voice {
+  scroll-margin-top: 0 !important;
+}
+

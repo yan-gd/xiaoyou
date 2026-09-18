@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import {
   Aperture,
@@ -28,27 +28,27 @@ type Feature = {
 const features: Feature[] = [
   {
     eyebrow: 'MEMORY / 01',
-    title: '不是记住关键词，\n而是记住你。',
-    copy: '短期上下文、长期记忆与关系状态共同工作。真正重要的偏好、共同经历与约定，会在以后自然回到对话里。',
+    title: '记住你。',
+    copy: '重要的偏好与共同经历，会在之后自然回到对话里。',
     icon: Brain,
   },
   {
     eyebrow: 'PROACTIVE / 02',
-    title: '她会在合适的时候，\n先来找你。',
-    copy: '提醒、主动消息、关系节奏与通知能力，让小悠不只是在输入框后面等待下一句话。',
+    title: '主动出现。',
+    copy: '在合适的时候，她会先来找你。',
     icon: BellSimple,
     dark: true,
   },
   {
     eyebrow: 'VOICE / 03',
-    title: '从一句文字，\n变成真实的交流感。',
-    copy: '语音消息、实时语音房、情绪化语音合成与流式播放，把停顿、节奏和声音里的情绪带进一段关系。',
+    title: '听见你。',
+    copy: '语音消息与实时语音，让交流更自然。',
     icon: Microphone,
   },
   {
     eyebrow: 'VISION / 04',
-    title: '她看见你分享的世界，\n也能留下自己的生活照。',
-    copy: '图片理解、生活照生成和多模态聊天都在同一个会话里发生，不需要切换到另一个“工具页面”。',
+    title: '看见你的世界。',
+    copy: '理解你分享的图片，也会分享自己的生活照。',
     icon: ImageSquare,
   },
 ]
@@ -101,23 +101,56 @@ function useScrollProgress() {
 
 function ProductNav() {
   const [open, setOpen] = useState(false)
+
+  const scrollToVoice = (
+    event: React.MouseEvent<HTMLAnchorElement>,
+  ) => {
+    event.preventDefault()
+    setOpen(false)
+
+    const target =
+      document.getElementById('capabilities')
+
+    if (!target) return
+
+    const targetTop =
+      target.getBoundingClientRect().top +
+      window.scrollY
+
+    window.scrollTo({
+      top: targetTop,
+      behavior: 'smooth',
+    })
+
+    window.history.replaceState(
+      null,
+      '',
+      '#capabilities',
+    )
+  }
   return (
     <header className="xy-product-nav">
       <a className="xy-product-brand" href="#top">
-        <span className="xy-product-brand-mark">悠</span>
         <span>小悠</span>
       </a>
 
       <nav className={open ? 'is-open' : ''}>
-        <a href="#capabilities" onClick={() => setOpen(false)}>能力</a>
-        <a href="#voice" onClick={() => setOpen(false)}>声音</a>
+        <a href="#top" onClick={() => setOpen(false)}>首页</a>
+        <a href="#capabilities" onClick={scrollToVoice}>声音</a>
         <a href="#app" onClick={() => setOpen(false)}>应用</a>
         <a className="xy-nav-download" href="#download" onClick={() => setOpen(false)}>
-          下载 <ArrowDown size={12} weight="bold" />
+          下载
         </a>
       </nav>
 
       <div className="xy-product-nav-actions">
+        <a
+          className="xy-language-switch"
+          href="/?lang=en"
+          aria-label="Switch to English"
+        >
+          EN
+        </a>
         <a className="xy-observatory-link" href="/observatory">
           命轨监测台 <ArrowUpRight size={15} weight="bold" />
         </a>
@@ -146,7 +179,11 @@ type GridPoint = {
   phase: number
 }
 
-function HeroInteractiveGrid() {
+type InteractiveGridProps = {
+  dark?: boolean
+}
+
+function InteractiveGrid({ dark = false }: InteractiveGridProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -157,38 +194,81 @@ function HeroInteractiveGrid() {
 
     const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
     const coarsePointer = matchMedia('(pointer: coarse)').matches
-    const pointer = { x: -1000, y: -1000, lastX: -1000, lastY: -1000, speedX: 0, speedY: 0, active: false }
+
+    const pointer = {
+      x: -1000,
+      y: -1000,
+      lastX: -1000,
+      lastY: -1000,
+      speedX: 0,
+      speedY: 0,
+      active: false,
+    }
+
     let points: GridPoint[] = []
-    let particles: GridPoint[] = []
     let columns = 0
     let rows = 0
     let width = 0
     let height = 0
     let dpr = 1
+
+    // 当前 section 在整个 document 中的位置。
+    // 所有 section 使用同一全局网格坐标系。
+    let documentOriginX = 0
+    let documentOriginY = 0
     let frame = 0
     let lastFrame = 0
     let visible = true
 
+    // Continuous ambient grid wave.
+    // The grid is always moving very slowly, while mouse interaction
+    // takes priority near the pointer.
+    const waveAmplitude = 9.0
+    const waveDirection = 1
+    const wavePhase = 0
+
     const resize = () => {
       const rect = host.getBoundingClientRect()
+
       width = Math.max(1, rect.width)
       height = Math.max(1, rect.height)
       dpr = Math.min(window.devicePixelRatio || 1, 1.6)
+
       canvas.width = Math.round(width * dpr)
       canvas.height = Math.round(height * dpr)
       canvas.style.width = `${width}px`
       canvas.style.height = `${height}px`
+
       context.setTransform(dpr, 0, 0, dpr, 0, 0)
 
       const spacing = width < 720 ? 64 : 78
-      columns = Math.ceil(width / spacing) + 3
-      rows = Math.ceil(height / spacing) + 3
+
+      documentOriginX = window.scrollX + rect.left
+      documentOriginY = window.scrollY + rect.top
+
+      const offsetX =
+        -(((documentOriginX % spacing) + spacing) % spacing)
+
+      const offsetY =
+        -(((documentOriginY % spacing) + spacing) % spacing)
+
+      columns =
+        Math.ceil((width - offsetX) / spacing) + 2
+
+      rows =
+        Math.ceil((height - offsetY) / spacing) + 2
+
       points = []
+
       for (let row = 0; row < rows; row += 1) {
         for (let column = 0; column < columns; column += 1) {
-          const homeX = (column - 1) * spacing
-          const homeY = (row - 1) * spacing
+          const homeX =
+            offsetX + column * spacing
+
+          const homeY =
+            offsetY + row * spacing
           const seed = (column * 17 + row * 31) % 19
+
           points.push({
             homeX,
             homeY,
@@ -196,61 +276,26 @@ function HeroInteractiveGrid() {
             y: homeY,
             vx: 0,
             vy: 0,
-            size: seed % 7 === 0 ? 5 : seed % 3 === 0 ? 3.3 : 2.2,
-            alpha: 0.14 + (seed / 19) * 0.18,
+            size: 1.05 + (seed % 4) * 0.26,
+            alpha: 0.1 + (seed / 19) * 0.08,
             phase: seed * 0.47,
           })
         }
-      }
-
-      particles = []
-      const particleSpacing = width < 720 ? 11 : 13
-      const particleStartX = width < 720 ? -20 : width * 0.34
-      const particleEndX = width + 30
-      const particleStartY = height * 0.14
-      const particleEndY = height * 0.86
-      const maxParticles = width < 720 ? 920 : 1700
-      let particleColumn = 0
-
-      for (let x = particleStartX; x <= particleEndX && particles.length < maxParticles; x += particleSpacing) {
-        const progress = (x - particleStartX) / Math.max(1, particleEndX - particleStartX)
-        const centerY = height * (0.48 + Math.sin(progress * Math.PI * 2.15) * 0.105)
-        const halfBand = height * (0.2 + Math.sin(progress * Math.PI) * 0.075)
-        let particleRow = 0
-
-        for (let y = particleStartY; y <= particleEndY && particles.length < maxParticles; y += particleSpacing) {
-          const distanceFromBand = Math.abs(y - centerY) / halfBand
-          const hash = (particleColumn * 47 + particleRow * 83 + particleColumn * particleRow * 7) % 101
-          const density = 0.88 - distanceFromBand * 0.55
-          particleRow += 1
-          if (distanceFromBand > 1 || hash / 100 > density) continue
-
-          const jitterX = ((hash * 13) % 9) - 4
-          const jitterY = ((hash * 29) % 9) - 4
-          const homeX = x + jitterX
-          const homeY = y + jitterY
-          particles.push({
-            homeX,
-            homeY,
-            x: homeX,
-            y: homeY,
-            vx: 0,
-            vy: 0,
-            size: 1.35 + (hash % 6) * 0.36,
-            alpha: 0.08 + (1 - distanceFromBand) * 0.29 + (hash % 5) * 0.012,
-            phase: hash * 0.19,
-          })
-        }
-        particleColumn += 1
       }
     }
 
     const updatePointer = (event: PointerEvent) => {
       const rect = host.getBoundingClientRect()
+
       pointer.x = event.clientX - rect.left
       pointer.y = event.clientY - rect.top
-      pointer.speedX = pointer.lastX > -900 ? event.clientX - pointer.lastX : 0
-      pointer.speedY = pointer.lastY > -900 ? event.clientY - pointer.lastY : 0
+
+      pointer.speedX =
+        pointer.lastX > -900 ? event.clientX - pointer.lastX : 0
+
+      pointer.speedY =
+        pointer.lastY > -900 ? event.clientY - pointer.lastY : 0
+
       pointer.lastX = event.clientX
       pointer.lastY = event.clientY
       pointer.active = true
@@ -262,128 +307,313 @@ function HeroInteractiveGrid() {
       pointer.lastY = -1000
     }
 
+    const movePoint = (
+      point: GridPoint,
+      waveEnvelope: number,
+      waveProgress: number,
+    ) => {
+      if (pointer.active) {
+        const dx = point.x - pointer.x
+        const dy = point.y - pointer.y
+        const distanceSquared = dx * dx + dy * dy
+
+        const radius = 158
+
+        if (distanceSquared < radius * radius && distanceSquared > 1) {
+          const distance = Math.sqrt(distanceSquared)
+          const influence = 1 - distance / radius
+          const force = influence * influence * 2.5
+
+          point.vx +=
+            (dx / distance) * force +
+            pointer.speedX * 0.018 * influence
+
+          point.vy +=
+            (dy / distance) * force +
+            pointer.speedY * 0.018 * influence
+
+          const direction =
+            Math.sign(pointer.speedX + pointer.speedY) || 1
+
+          point.vx +=
+            (-dy / distance) *
+            force *
+            0.065 *
+            direction
+
+          point.vy +=
+            (dx / distance) *
+            force *
+            0.065 *
+            direction
+        }
+      }
+
+      let ambientX = 0
+      let ambientY = 0
+
+      if (waveEnvelope > 0) {
+        // Large wavelength = very soft deformation instead of a water ripple.
+        const spatialPhase =
+          (point.homeX + documentOriginX) *
+            0.0062 *
+            waveDirection +
+          (point.homeY + documentOriginY) *
+            0.0042 +
+          wavePhase
+
+        const temporalPhase =
+          waveProgress * Math.PI * 2
+
+        const primaryWave =
+          Math.sin(spatialPhase - temporalPhase)
+
+        const secondaryWave =
+          Math.sin(
+            spatialPhase * 0.57 +
+            temporalPhase * 0.68 +
+            1.4,
+          )
+
+        ambientX =
+          primaryWave *
+          waveAmplitude *
+          0.48 *
+          waveEnvelope
+
+        ambientY =
+          (
+            primaryWave * 0.76 +
+            secondaryWave * 0.24
+          ) *
+          waveAmplitude *
+          waveEnvelope
+
+        if (pointer.active) {
+          const pointerDistance = Math.hypot(
+            point.x - pointer.x,
+            point.y - pointer.y,
+          )
+
+          // Mouse area owns the motion completely.
+          // From 90px to 240px the ambient wave gradually returns.
+          const mousePriority = Math.min(
+            1,
+            Math.max(
+              0,
+              (pointerDistance - 90) / 150,
+            ),
+          )
+
+          ambientX *= mousePriority
+          ambientY *= mousePriority
+        }
+      }
+
+      point.vx +=
+        (
+          point.homeX +
+          ambientX -
+          point.x
+        ) * 0.02
+
+      point.vy +=
+        (
+          point.homeY +
+          ambientY -
+          point.y
+        ) * 0.02
+
+      point.vx *= 0.89
+      point.vy *= 0.89
+
+      point.x += point.vx
+      point.y += point.vy
+    }
+
     const draw = (time: number) => {
       if (!visible) {
         frame = requestAnimationFrame(draw)
         return
       }
+
       if (time - lastFrame < 30) {
         frame = requestAnimationFrame(draw)
         return
       }
+
       lastFrame = time
+
       context.clearRect(0, 0, width, height)
 
+      // Continuous, slow ambient motion.
+      // One spatial cycle takes roughly 14 seconds.
+      const waveProgress =
+        reducedMotion
+          ? 0
+          : (time % 16000) / 16000
+
+      // Keep the wave alive at all times, but let its strength breathe
+      // very slowly so it never feels mechanical.
+      const waveEnvelope =
+        reducedMotion
+          ? 0
+          : 0.82 +
+            Math.sin(time * 0.00018 + wavePhase) * 0.18
+
       if (pointer.active) {
-        const glow = context.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 220)
-        glow.addColorStop(0, 'rgba(184, 196, 235, 0.28)')
-        glow.addColorStop(0.42, 'rgba(231, 196, 207, 0.16)')
-        glow.addColorStop(1, 'rgba(255, 255, 255, 0)')
-        context.fillStyle = glow
-        context.fillRect(pointer.x - 220, pointer.y - 220, 440, 440)
-      }
+        const radius = 150
 
-      const movePoint = (
-        point: GridPoint,
-        radius: number,
-        strength: number,
-        spring: number,
-        damping: number,
-      ) => {
-        if (pointer.active) {
-          const dx = point.x - pointer.x
-          const dy = point.y - pointer.y
-          const distanceSquared = dx * dx + dy * dy
-          if (distanceSquared < radius * radius && distanceSquared > 1) {
-            const distance = Math.sqrt(distanceSquared)
-            const influence = 1 - distance / radius
-            const force = influence * influence * strength
-            const direction = Math.sign(pointer.speedX + pointer.speedY) || 1
-            point.vx += (dx / distance) * force + pointer.speedX * 0.05 * influence
-            point.vy += (dy / distance) * force + pointer.speedY * 0.05 * influence
-            point.vx += (-dy / distance) * force * 0.16 * direction
-            point.vy += (dx / distance) * force * 0.16 * direction
-          }
+        const glow = context.createRadialGradient(
+          pointer.x,
+          pointer.y,
+          0,
+          pointer.x,
+          pointer.y,
+          radius,
+        )
+
+        if (dark) {
+          glow.addColorStop(0, 'rgba(255,255,255,.075)')
+          glow.addColorStop(.46, 'rgba(170,185,230,.035)')
+        } else {
+          glow.addColorStop(0, 'rgba(175,188,220,.105)')
+          glow.addColorStop(.46, 'rgba(230,205,214,.055)')
         }
-        point.vx += (point.homeX - point.x) * spring
-        point.vy += (point.homeY - point.y) * spring
-        point.vx *= damping
-        point.vy *= damping
-        point.x += point.vx
-        point.y += point.vy
+
+        glow.addColorStop(1, 'rgba(255,255,255,0)')
+
+        context.fillStyle = glow
+
+        context.fillRect(
+          pointer.x - radius,
+          pointer.y - radius,
+          radius * 2,
+          radius * 2,
+        )
       }
 
-      points.forEach((point) => movePoint(point, 190, 5.5, 0.017, 0.89))
-      particles.forEach((particle) => movePoint(particle, 230, 14, 0.016, 0.89))
+      points.forEach((point) => {
+        movePoint(
+          point,
+          waveEnvelope,
+          waveProgress,
+        )
+      })
+
       pointer.speedX *= 0.72
       pointer.speedY *= 0.72
 
       context.lineWidth = 1
-      context.strokeStyle = 'rgba(33, 37, 44, 0.07)'
+
+      context.strokeStyle = dark
+        ? 'rgba(255,255,255,.055)'
+        : 'rgba(36,42,54,.055)'
+
       context.beginPath()
+
       for (let row = 0; row < rows; row += 1) {
         for (let column = 0; column < columns; column += 1) {
           const index = row * columns + column
           const point = points[index]
+
           if (column < columns - 1) {
             const right = points[index + 1]
+
             context.moveTo(point.x, point.y)
             context.lineTo(right.x, right.y)
           }
+
           if (row < rows - 1) {
             const below = points[index + columns]
+
             context.moveTo(point.x, point.y)
             context.lineTo(below.x, below.y)
           }
         }
       }
+
       context.stroke()
 
-      particles.forEach((particle) => {
-        const distanceFromHome = Math.hypot(particle.x - particle.homeX, particle.y - particle.homeY)
-        const displacement = Math.min(1, distanceFromHome / 34)
-        const pulse = reducedMotion ? 0 : Math.sin(time * 0.0015 + particle.phase) * 0.028
-        const alpha = Math.min(0.72, particle.alpha + pulse + displacement * 0.31)
-        context.fillStyle = `rgba(54, 57, 64, ${alpha})`
-        const size = particle.size + displacement * 2.4
-        context.fillRect(particle.x - size / 2, particle.y - size / 2, size, size)
-      })
-
       points.forEach((point) => {
-        const pulse = reducedMotion ? 0 : Math.sin(time * 0.0012 + point.phase) * 0.035
-        const displacement = Math.min(1, Math.hypot(point.x - point.homeX, point.y - point.homeY) / 24)
-        const alpha = Math.min(0.52, point.alpha + pulse + displacement * 0.2)
-        context.fillStyle = `rgba(54, 57, 64, ${alpha})`
-        const size = point.size + displacement * 1.5
-        context.fillRect(point.x - size / 2, point.y - size / 2, size, size)
+        const displacement = Math.min(
+          1,
+          Math.hypot(
+            point.x - point.homeX,
+            point.y - point.homeY,
+          ) / 32,
+        )
+
+        const pulse = reducedMotion
+          ? 0
+          : Math.sin(time * 0.00115 + point.phase) * 0.018
+
+        const alpha = Math.min(
+          dark ? 0.32 : 0.28,
+          point.alpha + pulse + displacement * 0.08,
+        )
+
+        const radius =
+          point.size +
+          displacement * 0.45
+
+        context.beginPath()
+
+        context.fillStyle = dark
+          ? `rgba(255,255,255,${alpha})`
+          : `rgba(54,57,64,${alpha})`
+
+        context.arc(
+          point.x,
+          point.y,
+          radius,
+          0,
+          Math.PI * 2,
+        )
+
+        context.fill()
       })
 
       frame = requestAnimationFrame(draw)
     }
 
-    const observer = new IntersectionObserver(([entry]) => {
-      visible = entry.isIntersecting
-    })
+    const intersectionObserver =
+      new IntersectionObserver(([entry]) => {
+        visible = entry.isIntersecting
+      })
+
     const resizeObserver = new ResizeObserver(resize)
-    observer.observe(host)
+
+    intersectionObserver.observe(host)
     resizeObserver.observe(host)
+
     resize()
+
     if (!coarsePointer) {
       host.addEventListener('pointermove', updatePointer)
       host.addEventListener('pointerleave', clearPointer)
     }
+
     frame = requestAnimationFrame(draw)
 
     return () => {
       cancelAnimationFrame(frame)
-      observer.disconnect()
+
+      intersectionObserver.disconnect()
       resizeObserver.disconnect()
+
       host.removeEventListener('pointermove', updatePointer)
       host.removeEventListener('pointerleave', clearPointer)
     }
-  }, [])
+  }, [dark])
 
-  return <canvas className="xy-hero-grid" ref={canvasRef} aria-hidden="true" />
+  return (
+    <canvas
+      className="xy-section-grid"
+      ref={canvasRef}
+      aria-hidden="true"
+    />
+  )
 }
 
 function HeroPhone() {
@@ -397,8 +627,8 @@ function HeroPhone() {
       const rect = node.getBoundingClientRect()
       const x = (event.clientX - rect.left) / rect.width - 0.5
       const y = (event.clientY - rect.top) / rect.height - 0.5
-      node.style.setProperty('--tilt-x', `${-y * 4.5}deg`)
-      node.style.setProperty('--tilt-y', `${x * 6}deg`)
+      node.style.setProperty('--tilt-x', `${-y * 2.2}deg`)
+      node.style.setProperty('--tilt-y', `${x * 3}deg`)
     }
 
     const reset = () => {
@@ -512,7 +742,7 @@ export default function ProductPage() {
 
       <main>
         <section className="xy-hero">
-          <HeroInteractiveGrid />
+          <InteractiveGrid />
           <div className="xy-hero-copy" data-product-reveal>
             <div className="xy-kicker"><span /> AI Companion · 小悠</div>
             <h1>
@@ -536,34 +766,67 @@ export default function ProductPage() {
           </div>
           <HeroPhone />
         </section>
+        <section className="xy-capabilities-section" id="capabilities">
+          <InteractiveGrid />
 
-        <section className="xy-features" id="capabilities">
-          <div className="xy-section-heading" data-product-reveal>
+          <div className="xy-capabilities-heading" data-product-reveal>
             <span className="xy-section-number">01 / CORE EXPERIENCE</span>
-            <h2>把“陪伴”拆成真正可以运行的能力。</h2>
-            <p>每一个看起来很自然的瞬间，背后都有一条完整的产品链路。</p>
-          </div>
-          <div className="xy-feature-grid">
-            {features.map((feature, index) => <FeatureCard key={feature.eyebrow} feature={feature} index={index} />)}
-          </div>
-        </section>
 
-        <section className="xy-voice-section" id="voice">
-          <div className="xy-voice-copy" data-product-reveal>
-            <span className="xy-section-number">02 / VOICE</span>
-            <h2>有些话，<br />打字会太慢。</h2>
+            <h2>
+              她会记得，<br />
+              也会回应你。
+            </h2>
+
             <p>
-              实时语音房、语音识别、情绪化 TTS 与流式播放组合在一起，
-              让对话拥有停顿、节奏和声音里的情绪。
+              记忆、主动交互、多模态与实时语音，
+              共同组成小悠与你相处的方式。
             </p>
-            <a href="#app">看看真实的 App <ArrowRight size={17} /></a>
           </div>
-          <VoiceOrb />
+
+          <div className="xy-capabilities-body">
+            <div className="xy-feature-grid xy-feature-grid-compact">
+              {features.map((feature, index) => (
+                <FeatureCard
+                  key={feature.eyebrow}
+                  feature={feature}
+                  index={index}
+                />
+              ))}
+            </div>
+
+            <div className="xy-capabilities-voice" id="voice">
+              <InteractiveGrid dark />
+
+              <div className="xy-capabilities-voice-copy" data-product-reveal>
+                <span className="xy-section-number">
+                  VOICE / REALTIME
+                </span>
+
+                <h3>
+                  开口<br />
+                  就好。
+                </h3>
+
+                <p>
+                  实时语音支持识别、自然合成与随时打断，
+                  让交流更接近真正的对话。
+                </p>
+
+                <a href="#app">
+                  体验 App
+                  <ArrowRight size={16} />
+                </a>
+              </div>
+
+              <VoiceOrb />
+            </div>
+          </div>
         </section>
 
-        <section className="xy-showcase" id="app">
+<section className="xy-showcase" id="app">
+          <InteractiveGrid />
           <div className="xy-showcase-copy" data-product-reveal>
-            <span className="xy-section-number">03 / THE APP</span>
+            <span className="xy-section-number">02 / THE APP</span>
             <h2>不是把功能堆进 App。<br />是把相处变得自然。</h2>
             <p>
               聊天、实时语音、心情与最近日常，被放在同一套关系体验里。
@@ -601,8 +864,9 @@ export default function ProductPage() {
         </section>
 
         <section className="xy-download-section" id="download">
+          <InteractiveGrid />
           <div className="xy-download-heading" data-product-reveal>
-            <span className="xy-section-number">04 / DOWNLOAD</span>
+            <span className="xy-section-number">03 / DOWNLOAD</span>
             <div>
               <h2>现在，<br />把小悠带到身边。</h2>
               <p>
@@ -661,9 +925,9 @@ export default function ProductPage() {
 </main>
 
       <footer className="xy-product-footer">
+        <InteractiveGrid />
         <div className="xy-footer-top">
           <div className="xy-footer-brand">
-            <span className="xy-product-brand-mark">悠</span>
             <b>小悠</b>
           </div>
 
@@ -752,3 +1016,4 @@ export default function ProductPage() {
     </div>
   )
 }
+

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import QRCode from 'qrcode'
 import LegalPage, { ComplianceLinks, legalDocumentFromPath } from './LegalPage'
 import ProductPage from './ProductPage'
+import ProductPageEn from './ProductPageEn'
 import {
   ArrowClockwise,
   ArrowRight,
@@ -1350,9 +1351,11 @@ function ObservatoryApp() {
 
 export default function App() {
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/'
+  const language = new URLSearchParams(window.location.search).get('lang')
   const legalDocument = legalDocumentFromPath(pathname)
 
   if (legalDocument) return <LegalPage kind={legalDocument} />
   if (pathname === '/observatory') return <ObservatoryApp />
+  if (language === 'en') return <ProductPageEn />
   return <ProductPage />
 }
