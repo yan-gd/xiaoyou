@@ -8,8 +8,6 @@ import {
   BellSimple,
   Brain,
   DeviceMobile,
-  EnvelopeSimple,
-  GithubLogo,
   ImageSquare,
   Microphone,
   MoonStars,
@@ -56,6 +54,10 @@ const features: Feature[] = [
 ]
 
 const asset = (name: string) => `/product/${name}`
+
+const VIVO_STORE_URL = 'https://h5.appstore.vivo.com.cn/#/result?keyword=%E5%B0%8F%E6%82%A0&keyfrom=2'
+const DIRECT_APK_URL = '/downloads/xiaoyou-latest.apk'
+const GITHUB_RELEASES_URL = 'https://github.com/yan-gd/xiaoyou/releases'
 
 function useReveal() {
   useEffect(() => {
@@ -110,6 +112,9 @@ function ProductNav() {
         <a href="#capabilities" onClick={() => setOpen(false)}>能力</a>
         <a href="#voice" onClick={() => setOpen(false)}>声音</a>
         <a href="#app" onClick={() => setOpen(false)}>应用</a>
+        <a className="xy-nav-download" href="#download" onClick={() => setOpen(false)}>
+          下载 <ArrowDown size={12} weight="bold" />
+        </a>
       </nav>
 
       <div className="xy-product-nav-actions">
@@ -127,6 +132,258 @@ function ProductNav() {
       </div>
     </header>
   )
+}
+
+type GridPoint = {
+  homeX: number
+  homeY: number
+  x: number
+  y: number
+  vx: number
+  vy: number
+  size: number
+  alpha: number
+  phase: number
+}
+
+function HeroInteractiveGrid() {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const host = canvas?.parentElement
+    const context = canvas?.getContext('2d')
+    if (!canvas || !host || !context) return
+
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
+    const coarsePointer = matchMedia('(pointer: coarse)').matches
+    const pointer = { x: -1000, y: -1000, lastX: -1000, lastY: -1000, speedX: 0, speedY: 0, active: false }
+    let points: GridPoint[] = []
+    let particles: GridPoint[] = []
+    let columns = 0
+    let rows = 0
+    let width = 0
+    let height = 0
+    let dpr = 1
+    let frame = 0
+    let lastFrame = 0
+    let visible = true
+
+    const resize = () => {
+      const rect = host.getBoundingClientRect()
+      width = Math.max(1, rect.width)
+      height = Math.max(1, rect.height)
+      dpr = Math.min(window.devicePixelRatio || 1, 1.6)
+      canvas.width = Math.round(width * dpr)
+      canvas.height = Math.round(height * dpr)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      context.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+      const spacing = width < 720 ? 64 : 78
+      columns = Math.ceil(width / spacing) + 3
+      rows = Math.ceil(height / spacing) + 3
+      points = []
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const homeX = (column - 1) * spacing
+          const homeY = (row - 1) * spacing
+          const seed = (column * 17 + row * 31) % 19
+          points.push({
+            homeX,
+            homeY,
+            x: homeX,
+            y: homeY,
+            vx: 0,
+            vy: 0,
+            size: seed % 7 === 0 ? 5 : seed % 3 === 0 ? 3.3 : 2.2,
+            alpha: 0.14 + (seed / 19) * 0.18,
+            phase: seed * 0.47,
+          })
+        }
+      }
+
+      particles = []
+      const particleSpacing = width < 720 ? 11 : 13
+      const particleStartX = width < 720 ? -20 : width * 0.34
+      const particleEndX = width + 30
+      const particleStartY = height * 0.14
+      const particleEndY = height * 0.86
+      const maxParticles = width < 720 ? 920 : 1700
+      let particleColumn = 0
+
+      for (let x = particleStartX; x <= particleEndX && particles.length < maxParticles; x += particleSpacing) {
+        const progress = (x - particleStartX) / Math.max(1, particleEndX - particleStartX)
+        const centerY = height * (0.48 + Math.sin(progress * Math.PI * 2.15) * 0.105)
+        const halfBand = height * (0.2 + Math.sin(progress * Math.PI) * 0.075)
+        let particleRow = 0
+
+        for (let y = particleStartY; y <= particleEndY && particles.length < maxParticles; y += particleSpacing) {
+          const distanceFromBand = Math.abs(y - centerY) / halfBand
+          const hash = (particleColumn * 47 + particleRow * 83 + particleColumn * particleRow * 7) % 101
+          const density = 0.88 - distanceFromBand * 0.55
+          particleRow += 1
+          if (distanceFromBand > 1 || hash / 100 > density) continue
+
+          const jitterX = ((hash * 13) % 9) - 4
+          const jitterY = ((hash * 29) % 9) - 4
+          const homeX = x + jitterX
+          const homeY = y + jitterY
+          particles.push({
+            homeX,
+            homeY,
+            x: homeX,
+            y: homeY,
+            vx: 0,
+            vy: 0,
+            size: 1.35 + (hash % 6) * 0.36,
+            alpha: 0.08 + (1 - distanceFromBand) * 0.29 + (hash % 5) * 0.012,
+            phase: hash * 0.19,
+          })
+        }
+        particleColumn += 1
+      }
+    }
+
+    const updatePointer = (event: PointerEvent) => {
+      const rect = host.getBoundingClientRect()
+      pointer.x = event.clientX - rect.left
+      pointer.y = event.clientY - rect.top
+      pointer.speedX = pointer.lastX > -900 ? event.clientX - pointer.lastX : 0
+      pointer.speedY = pointer.lastY > -900 ? event.clientY - pointer.lastY : 0
+      pointer.lastX = event.clientX
+      pointer.lastY = event.clientY
+      pointer.active = true
+    }
+
+    const clearPointer = () => {
+      pointer.active = false
+      pointer.lastX = -1000
+      pointer.lastY = -1000
+    }
+
+    const draw = (time: number) => {
+      if (!visible) {
+        frame = requestAnimationFrame(draw)
+        return
+      }
+      if (time - lastFrame < 30) {
+        frame = requestAnimationFrame(draw)
+        return
+      }
+      lastFrame = time
+      context.clearRect(0, 0, width, height)
+
+      if (pointer.active) {
+        const glow = context.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 220)
+        glow.addColorStop(0, 'rgba(184, 196, 235, 0.28)')
+        glow.addColorStop(0.42, 'rgba(231, 196, 207, 0.16)')
+        glow.addColorStop(1, 'rgba(255, 255, 255, 0)')
+        context.fillStyle = glow
+        context.fillRect(pointer.x - 220, pointer.y - 220, 440, 440)
+      }
+
+      const movePoint = (
+        point: GridPoint,
+        radius: number,
+        strength: number,
+        spring: number,
+        damping: number,
+      ) => {
+        if (pointer.active) {
+          const dx = point.x - pointer.x
+          const dy = point.y - pointer.y
+          const distanceSquared = dx * dx + dy * dy
+          if (distanceSquared < radius * radius && distanceSquared > 1) {
+            const distance = Math.sqrt(distanceSquared)
+            const influence = 1 - distance / radius
+            const force = influence * influence * strength
+            const direction = Math.sign(pointer.speedX + pointer.speedY) || 1
+            point.vx += (dx / distance) * force + pointer.speedX * 0.05 * influence
+            point.vy += (dy / distance) * force + pointer.speedY * 0.05 * influence
+            point.vx += (-dy / distance) * force * 0.16 * direction
+            point.vy += (dx / distance) * force * 0.16 * direction
+          }
+        }
+        point.vx += (point.homeX - point.x) * spring
+        point.vy += (point.homeY - point.y) * spring
+        point.vx *= damping
+        point.vy *= damping
+        point.x += point.vx
+        point.y += point.vy
+      }
+
+      points.forEach((point) => movePoint(point, 190, 5.5, 0.017, 0.89))
+      particles.forEach((particle) => movePoint(particle, 230, 14, 0.016, 0.89))
+      pointer.speedX *= 0.72
+      pointer.speedY *= 0.72
+
+      context.lineWidth = 1
+      context.strokeStyle = 'rgba(33, 37, 44, 0.07)'
+      context.beginPath()
+      for (let row = 0; row < rows; row += 1) {
+        for (let column = 0; column < columns; column += 1) {
+          const index = row * columns + column
+          const point = points[index]
+          if (column < columns - 1) {
+            const right = points[index + 1]
+            context.moveTo(point.x, point.y)
+            context.lineTo(right.x, right.y)
+          }
+          if (row < rows - 1) {
+            const below = points[index + columns]
+            context.moveTo(point.x, point.y)
+            context.lineTo(below.x, below.y)
+          }
+        }
+      }
+      context.stroke()
+
+      particles.forEach((particle) => {
+        const distanceFromHome = Math.hypot(particle.x - particle.homeX, particle.y - particle.homeY)
+        const displacement = Math.min(1, distanceFromHome / 34)
+        const pulse = reducedMotion ? 0 : Math.sin(time * 0.0015 + particle.phase) * 0.028
+        const alpha = Math.min(0.72, particle.alpha + pulse + displacement * 0.31)
+        context.fillStyle = `rgba(54, 57, 64, ${alpha})`
+        const size = particle.size + displacement * 2.4
+        context.fillRect(particle.x - size / 2, particle.y - size / 2, size, size)
+      })
+
+      points.forEach((point) => {
+        const pulse = reducedMotion ? 0 : Math.sin(time * 0.0012 + point.phase) * 0.035
+        const displacement = Math.min(1, Math.hypot(point.x - point.homeX, point.y - point.homeY) / 24)
+        const alpha = Math.min(0.52, point.alpha + pulse + displacement * 0.2)
+        context.fillStyle = `rgba(54, 57, 64, ${alpha})`
+        const size = point.size + displacement * 1.5
+        context.fillRect(point.x - size / 2, point.y - size / 2, size, size)
+      })
+
+      frame = requestAnimationFrame(draw)
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting
+    })
+    const resizeObserver = new ResizeObserver(resize)
+    observer.observe(host)
+    resizeObserver.observe(host)
+    resize()
+    if (!coarsePointer) {
+      host.addEventListener('pointermove', updatePointer)
+      host.addEventListener('pointerleave', clearPointer)
+    }
+    frame = requestAnimationFrame(draw)
+
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+      resizeObserver.disconnect()
+      host.removeEventListener('pointermove', updatePointer)
+      host.removeEventListener('pointerleave', clearPointer)
+    }
+  }, [])
+
+  return <canvas className="xy-hero-grid" ref={canvasRef} aria-hidden="true" />
 }
 
 function HeroPhone() {
@@ -255,6 +512,7 @@ export default function ProductPage() {
 
       <main>
         <section className="xy-hero">
+          <HeroInteractiveGrid />
           <div className="xy-hero-copy" data-product-reveal>
             <div className="xy-kicker"><span /> AI Companion · 小悠</div>
             <h1>
@@ -265,10 +523,6 @@ export default function ProductPage() {
               小悠把记忆、主动交互、语音、多模态与长期关系体验放进同一段持续发生的对话里。
               她不只是回答问题，也会记得、回应、等待，并在合适的时候主动出现。
             </p>
-            <div className="xy-hero-actions">
-              <a className="xy-primary-cta" href="#capabilities">认识小悠 <ArrowDown size={17} /></a>
-              <a className="xy-secondary-cta" href="/observatory">前往命轨监测台 <ArrowRight size={17} /></a>
-            </div>
             <div className="xy-hero-meta">
               <span><ShieldCheck size={16} /> 独立账号与数据空间</span>
               <span><MoonStars size={16} /> 深浅色主题</span>
@@ -346,6 +600,64 @@ export default function ProductPage() {
           </div>
         </section>
 
+        <section className="xy-download-section" id="download">
+          <div className="xy-download-heading" data-product-reveal>
+            <span className="xy-section-number">04 / DOWNLOAD</span>
+            <div>
+              <h2>现在，<br />把小悠带到身边。</h2>
+              <p>
+                选择适合你的安装方式。通过官方应用商店获取更新，
+                或直接下载 Android 安装包；历史版本与更新记录也始终公开可查。
+              </p>
+            </div>
+          </div>
+
+          <div className="xy-download-grid" data-product-reveal>
+            <a className="xy-download-card is-featured" href={VIVO_STORE_URL} target="_blank" rel="noreferrer">
+              <span className="xy-download-card-topline">
+                <span className="xy-download-card-icon is-vivo"><img src="/product/brand/vivo.png" alt="" /></span>
+                <small>推荐</small>
+              </span>
+              <span className="xy-download-card-copy">
+                <b>vivo 应用商店</b>
+                <span>官方渠道安装，后续版本自动更新。</span>
+              </span>
+              <span className="xy-download-card-action">前往商店 <ArrowUpRight size={18} weight="bold" /></span>
+            </a>
+
+            <a className="xy-download-card" href={DIRECT_APK_URL}>
+              <span className="xy-download-card-topline">
+                <span className="xy-download-card-icon is-android">
+                  <img src="/product/brand/android.png" alt="" />
+                </span>
+                <small>Android</small>
+              </span>
+              <span className="xy-download-card-copy">
+                <b>直接下载 APK</b>
+                <span>获取当前最新安装包，快速开始使用。</span>
+              </span>
+              <span className="xy-download-card-action">下载安装包 <ArrowDown size={18} weight="bold" /></span>
+            </a>
+
+            <a className="xy-download-card" href={GITHUB_RELEASES_URL} target="_blank" rel="noreferrer">
+              <span className="xy-download-card-topline">
+                <span className="xy-download-card-icon is-github"><img src="/product/brand/github.png" alt="" /></span>
+                <small>Open Source</small>
+              </span>
+              <span className="xy-download-card-copy">
+                <b>GitHub Releases</b>
+                <span>查看版本历史、更新说明与开源项目。</span>
+              </span>
+              <span className="xy-download-card-action">查看版本 <ArrowUpRight size={18} weight="bold" /></span>
+            </a>
+          </div>
+
+          <div className="xy-download-note" data-product-reveal>
+            <span><ShieldCheck size={16} /> 官方渠道 · 安全下载</span>
+            <span>当前支持 Android</span>
+          </div>
+        </section>
+
 </main>
 
       <footer className="xy-product-footer">
@@ -389,9 +701,14 @@ export default function ProductPage() {
             <a
               className="xy-footer-contact"
               href="mailto:2453997321@qq.com"
+              aria-label="发送邮件到 2453997321@qq.com"
             >
-              <EnvelopeSimple size={15} weight="regular" aria-hidden="true" />
-              <span>QQ邮箱：2453997321@qq.com</span>
+              <img
+                className="xy-footer-brand-icon is-qq"
+                src="/product/brand/qq-mail.png"
+                alt="QQ邮箱"
+              />
+              <span>2453997321@qq.com</span>
             </a>
 
             <span className="xy-footer-separator" aria-hidden="true">·</span>
@@ -402,8 +719,28 @@ export default function ProductPage() {
               target="_blank"
               rel="noreferrer"
             >
-              <GithubLogo size={15} weight="fill" aria-hidden="true" />
+              <img
+                className="xy-footer-brand-icon is-github"
+                src="/product/brand/github.png"
+                alt="GitHub"
+              />
               <span>github.com/yan-gd/xiaoyou</span>
+            </a>
+
+            <span className="xy-footer-separator" aria-hidden="true">·</span>
+
+            <a
+              className="xy-footer-vivo"
+              href={VIVO_STORE_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <img
+                className="xy-footer-brand-icon is-vivo"
+                src="/product/brand/vivo.png"
+                alt="vivo"
+              />
+              <span>应用商店</span>
             </a>
           </div>
 

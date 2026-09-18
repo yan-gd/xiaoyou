@@ -3743,3 +3743,407 @@ body.xy-product-body {
 .xy-footer-bottom {
   border-top: 0 !important;
 }
+
+
+/* ===== Branded footer links ===== */
+
+.xy-footer-contact,
+.xy-footer-github,
+.xy-footer-vivo {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px !important;
+  white-space: nowrap;
+}
+
+.xy-footer-brand-icon {
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+  opacity: .84;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.xy-footer-brand-icon.is-qq {
+  width: 24px;
+  height: 16px;
+}
+
+.xy-footer-brand-icon.is-github {
+  width: 17px;
+  height: 17px;
+}
+
+.xy-footer-brand-icon.is-vivo {
+  width: 38px;
+  height: 16px;
+}
+
+.xy-footer-contact:hover .xy-footer-brand-icon,
+.xy-footer-github:hover .xy-footer-brand-icon,
+.xy-footer-vivo:hover .xy-footer-brand-icon {
+  opacity: 1;
+  transform: translateY(-1px);
+}
+
+@media (max-width: 760px) {
+  .xy-footer-vivo {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+
+/* ===== Interactive hero field + final download destination ===== */
+.xy-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 82% 22%, rgba(199, 210, 235, .34), transparent 29%),
+    radial-gradient(circle at 58% 74%, rgba(238, 210, 216, .24), transparent 31%),
+    linear-gradient(180deg, #fff 0%, #f8f8f6 100%);
+}
+
+.xy-hero::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(255,255,255,.48) 0%, rgba(255,255,255,.14) 45%, transparent 76%);
+}
+
+.xy-hero::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  pointer-events: none;
+  opacity: .35;
+  background-image:
+    linear-gradient(rgba(36,42,54,.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(36,42,54,.055) 1px, transparent 1px);
+  background-size: 78px 78px;
+  mask-image: linear-gradient(to bottom, #000 8%, rgba(0,0,0,.8) 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 8%, rgba(0,0,0,.8) 70%, transparent 100%);
+}
+
+.xy-hero-grid {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  mask-image: linear-gradient(to bottom, #000 4%, #000 82%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 4%, #000 82%, transparent 100%);
+}
+
+.xy-hero-copy,
+.xy-hero-device-stage {
+  position: relative;
+  z-index: 2;
+}
+
+.xy-product-nav > nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.xy-product-nav > nav .xy-nav-download {
+  color: #171719;
+  font-weight: 720;
+}
+
+.xy-download-section {
+  position: relative;
+  scroll-margin-top: 94px;
+  min-height: 100svh;
+  padding: clamp(98px, 9vw, 126px) max(4vw, 32px) clamp(50px, 6vw, 72px);
+  overflow: hidden;
+  display: grid;
+  align-content: center;
+  background:
+    radial-gradient(circle at 84% 8%, rgba(198, 210, 236, .6), transparent 28%),
+    radial-gradient(circle at 4% 90%, rgba(237, 208, 216, .48), transparent 29%),
+    #efefed;
+}
+
+.xy-download-section::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: .62;
+  background-image:
+    linear-gradient(rgba(17,17,17,.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(17,17,17,.035) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: linear-gradient(115deg, transparent 7%, #000 48%, transparent 96%);
+  -webkit-mask-image: linear-gradient(115deg, transparent 7%, #000 48%, transparent 96%);
+}
+
+.xy-download-heading,
+.xy-download-grid,
+.xy-download-note {
+  position: relative;
+  z-index: 1;
+  width: min(1180px, 100%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.xy-download-heading {
+  display: grid;
+  grid-template-columns: minmax(120px, .28fr) minmax(0, 1fr);
+  gap: clamp(30px, 5vw, 72px);
+  align-items: start;
+}
+
+.xy-download-heading > div {
+  max-width: 980px;
+}
+
+.xy-download-heading h2 {
+  margin: -7px 0 0;
+  font: 520 clamp(44px, 5.2vw, 76px)/1 var(--xy-serif);
+  letter-spacing: -.055em;
+}
+
+.xy-download-heading p {
+  max-width: 560px;
+  margin: 20px 0 0;
+  color: #646469;
+  font-size: clamp(13px, 1vw, 15px);
+  line-height: 1.72;
+}
+
+.xy-download-grid {
+  margin-top: clamp(36px, 4.5vw, 54px);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.xy-download-card {
+  min-height: 258px;
+  padding: 22px;
+  border: 1px solid rgba(17,17,17,.1);
+  border-radius: 24px;
+  background: rgba(255,255,255,.68);
+  box-shadow: 0 18px 48px rgba(33,33,38,.045);
+  backdrop-filter: blur(18px) saturate(120%);
+  display: flex;
+  flex-direction: column;
+  transition: transform 280ms cubic-bezier(.2,.8,.2,1), border-color 220ms ease, box-shadow 280ms ease;
+}
+
+.xy-download-card:hover {
+  transform: translateY(-7px);
+  border-color: rgba(17,17,17,.2);
+  box-shadow: 0 28px 74px rgba(33,33,38,.1);
+}
+
+.xy-download-card.is-featured {
+  color: #fff;
+  border-color: rgba(255,255,255,.12);
+  background:
+    radial-gradient(circle at 88% 10%, rgba(127, 150, 205, .44), transparent 34%),
+    radial-gradient(circle at 16% 92%, rgba(172, 100, 124, .34), transparent 38%),
+    #101115;
+  box-shadow: 0 28px 80px rgba(15,16,20,.19);
+}
+
+.xy-download-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.xy-download-card-topline > small {
+  padding: 7px 10px;
+  border: 1px solid rgba(17,17,17,.09);
+  border-radius: 999px;
+  color: #727279;
+  font-size: 9px;
+  font-weight: 740;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.xy-download-card.is-featured .xy-download-card-topline > small {
+  border-color: rgba(255,255,255,.16);
+  color: rgba(255,255,255,.7);
+}
+
+.xy-download-card-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+}
+
+.xy-download-card-icon img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.xy-download-card-icon.is-vivo {
+  width: 62px;
+}
+
+.xy-download-card-icon.is-vivo img {
+  width: 58px;
+  height: 24px;
+}
+
+.xy-download-card-icon.is-android img {
+  width: 38px;
+  height: 38px;
+}
+
+.xy-download-card-copy {
+  margin-top: auto;
+  display: grid;
+  gap: 12px;
+}
+
+.xy-download-card-copy b {
+  font: 520 clamp(24px, 2vw, 32px)/1.08 var(--xy-serif);
+  letter-spacing: -.035em;
+}
+
+.xy-download-card-copy > span {
+  max-width: 290px;
+  color: #73737a;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.xy-download-card.is-featured .xy-download-card-copy > span {
+  color: rgba(255,255,255,.58);
+}
+
+.xy-download-card-action {
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 1px solid rgba(17,17,17,.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.xy-download-card.is-featured .xy-download-card-action {
+  border-color: rgba(255,255,255,.13);
+}
+
+.xy-download-card-action svg {
+  transition: transform 220ms ease;
+}
+
+.xy-download-card:hover .xy-download-card-action svg {
+  transform: translate(2px, -2px);
+}
+
+.xy-download-card:nth-child(2):hover .xy-download-card-action svg {
+  transform: translateY(3px);
+}
+
+.xy-download-note {
+  margin-top: 16px;
+  padding: 0 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #77777c;
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+
+.xy-download-note span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+@media (max-width: 980px) {
+  .xy-download-heading {
+    grid-template-columns: 1fr;
+    gap: 26px;
+  }
+
+  .xy-download-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .xy-download-card.is-featured {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .xy-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 34px;
+    padding: 112px 20px 48px;
+  }
+
+  .xy-hero-copy {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .xy-hero-device-stage {
+    width: 100%;
+    height: 560px;
+  }
+
+  .xy-hero::before {
+    background: linear-gradient(180deg, rgba(255,255,255,.66), transparent 74%);
+  }
+
+  .xy-hero-grid {
+    opacity: .76;
+  }
+
+  .xy-download-section {
+    min-height: auto;
+    padding: 90px 20px 70px;
+  }
+
+  .xy-download-heading h2 {
+    font-size: clamp(44px, 13vw, 62px);
+  }
+
+  .xy-download-grid {
+    margin-top: 40px;
+    grid-template-columns: 1fr;
+  }
+
+  .xy-download-card.is-featured {
+    grid-column: auto;
+  }
+
+  .xy-download-card {
+    min-height: 238px;
+  }
+
+  .xy-download-note {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xy-download-card:hover {
+    transform: none;
+  }
+}
