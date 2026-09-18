@@ -104,7 +104,6 @@ function ProductNav() {
   return (
     <header className="xy-product-nav">
       <a className="xy-product-brand" href="#top">
-        <span className="xy-product-brand-mark">悠</span>
         <span>小悠</span>
       </a>
 
@@ -113,7 +112,7 @@ function ProductNav() {
         <a href="#voice" onClick={() => setOpen(false)}>声音</a>
         <a href="#app" onClick={() => setOpen(false)}>应用</a>
         <a className="xy-nav-download" href="#download" onClick={() => setOpen(false)}>
-          下载 <ArrowDown size={12} weight="bold" />
+          下载
         </a>
       </nav>
 
@@ -275,12 +274,12 @@ function HeroInteractiveGrid() {
       context.clearRect(0, 0, width, height)
 
       if (pointer.active) {
-        const glow = context.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 220)
-        glow.addColorStop(0, 'rgba(184, 196, 235, 0.28)')
-        glow.addColorStop(0.42, 'rgba(231, 196, 207, 0.16)')
+        const glow = context.createRadialGradient(pointer.x, pointer.y, 0, pointer.x, pointer.y, 160)
+        glow.addColorStop(0, 'rgba(184, 196, 235, 0.14)')
+        glow.addColorStop(0.42, 'rgba(231, 196, 207, 0.08)')
         glow.addColorStop(1, 'rgba(255, 255, 255, 0)')
         context.fillStyle = glow
-        context.fillRect(pointer.x - 220, pointer.y - 220, 440, 440)
+        context.fillRect(pointer.x - 160, pointer.y - 160, 320, 320)
       }
 
       const movePoint = (
@@ -299,9 +298,9 @@ function HeroInteractiveGrid() {
             const influence = 1 - distance / radius
             const force = influence * influence * strength
             const direction = Math.sign(pointer.speedX + pointer.speedY) || 1
-            point.vx += (dx / distance) * force + pointer.speedX * 0.05 * influence
-            point.vy += (dy / distance) * force + pointer.speedY * 0.05 * influence
-            point.vx += (-dy / distance) * force * 0.16 * direction
+            point.vx += (dx / distance) * force + pointer.speedX * 0.018 * influence
+            point.vy += (dy / distance) * force + pointer.speedY * 0.018 * influence
+            point.vx += (-dy / distance) * force * 0.07 * direction
             point.vy += (dx / distance) * force * 0.16 * direction
           }
         }
@@ -313,8 +312,8 @@ function HeroInteractiveGrid() {
         point.y += point.vy
       }
 
-      points.forEach((point) => movePoint(point, 190, 5.5, 0.017, 0.89))
-      particles.forEach((particle) => movePoint(particle, 230, 14, 0.016, 0.89))
+      points.forEach((point) => movePoint(point, 155, 2.4, 0.017, 0.9))
+      particles.forEach((particle) => movePoint(particle, 175, 5, 0.016, 0.9))
       pointer.speedX *= 0.72
       pointer.speedY *= 0.72
 
@@ -341,20 +340,20 @@ function HeroInteractiveGrid() {
 
       particles.forEach((particle) => {
         const distanceFromHome = Math.hypot(particle.x - particle.homeX, particle.y - particle.homeY)
-        const displacement = Math.min(1, distanceFromHome / 34)
+        const displacement = Math.min(1, distanceFromHome / 46)
         const pulse = reducedMotion ? 0 : Math.sin(time * 0.0015 + particle.phase) * 0.028
-        const alpha = Math.min(0.72, particle.alpha + pulse + displacement * 0.31)
+        const alpha = Math.min(0.62, particle.alpha + pulse + displacement * 0.12)
         context.fillStyle = `rgba(54, 57, 64, ${alpha})`
-        const size = particle.size + displacement * 2.4
+        const size = particle.size + displacement * 0.9
         context.fillRect(particle.x - size / 2, particle.y - size / 2, size, size)
       })
 
       points.forEach((point) => {
         const pulse = reducedMotion ? 0 : Math.sin(time * 0.0012 + point.phase) * 0.035
-        const displacement = Math.min(1, Math.hypot(point.x - point.homeX, point.y - point.homeY) / 24)
-        const alpha = Math.min(0.52, point.alpha + pulse + displacement * 0.2)
+        const displacement = Math.min(1, Math.hypot(point.x - point.homeX, point.y - point.homeY) / 34)
+        const alpha = Math.min(0.44, point.alpha + pulse + displacement * 0.08)
         context.fillStyle = `rgba(54, 57, 64, ${alpha})`
-        const size = point.size + displacement * 1.5
+        const size = point.size + displacement * 0.55
         context.fillRect(point.x - size / 2, point.y - size / 2, size, size)
       })
 
@@ -397,8 +396,8 @@ function HeroPhone() {
       const rect = node.getBoundingClientRect()
       const x = (event.clientX - rect.left) / rect.width - 0.5
       const y = (event.clientY - rect.top) / rect.height - 0.5
-      node.style.setProperty('--tilt-x', `${-y * 4.5}deg`)
-      node.style.setProperty('--tilt-y', `${x * 6}deg`)
+      node.style.setProperty('--tilt-x', `${-y * 2.2}deg`)
+      node.style.setProperty('--tilt-y', `${x * 3}deg`)
     }
 
     const reset = () => {
@@ -663,7 +662,6 @@ export default function ProductPage() {
       <footer className="xy-product-footer">
         <div className="xy-footer-top">
           <div className="xy-footer-brand">
-            <span className="xy-product-brand-mark">悠</span>
             <b>小悠</b>
           </div>
 
