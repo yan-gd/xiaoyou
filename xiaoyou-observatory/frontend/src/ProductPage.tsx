@@ -8,6 +8,8 @@ import {
   BellSimple,
   Brain,
   DeviceMobile,
+  EnvelopeSimple,
+  GithubLogo,
   ImageSquare,
   Microphone,
   MoonStars,
@@ -388,7 +390,20 @@ export default function ProductPage() {
               className="xy-footer-contact"
               href="mailto:2453997321@qq.com"
             >
-              联系我们：2453997321@qq.com
+              <EnvelopeSimple size={15} weight="regular" aria-hidden="true" />
+              <span>QQ邮箱：2453997321@qq.com</span>
+            </a>
+
+            <span className="xy-footer-separator" aria-hidden="true">·</span>
+
+            <a
+              className="xy-footer-github"
+              href="https://github.com/yan-gd/xiaoyou"
+              target="_blank"
+              rel="noreferrer"
+            >
+              <GithubLogo size={15} weight="fill" aria-hidden="true" />
+              <span>github.com/yan-gd/xiaoyou</span>
             </a>
           </div>
 

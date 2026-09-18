@@ -3676,3 +3676,70 @@ body.xy-product-body {
     margin-top: 16px !important;
   }
 }
+
+
+
+/* ===== Footer contact + GitHub refinement ===== */
+
+/* Keep only one divider line in the footer. */
+.xy-product-footer {
+  border-top: 0 !important;
+}
+
+.xy-footer-bottom {
+  border-top: 1px solid rgba(17,17,17,.09) !important;
+}
+
+.xy-footer-contact,
+.xy-footer-github {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px !important;
+  white-space: nowrap;
+}
+
+.xy-footer-contact svg,
+.xy-footer-github svg {
+  flex: 0 0 auto;
+  color: #77777c;
+  transition: color 180ms ease, transform 180ms ease;
+}
+
+.xy-footer-contact:hover svg,
+.xy-footer-github:hover svg {
+  color: #111;
+  transform: translateY(-1px);
+}
+
+.xy-footer-github span {
+  letter-spacing: .005em;
+}
+
+.xy-footer-copyright {
+  margin: 20px auto 0 !important;
+  width: 100%;
+  text-align: center !important;
+}
+
+@media (max-width: 900px) {
+  .xy-footer-records {
+    row-gap: 10px !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .xy-footer-contact,
+  .xy-footer-github,
+  .xy-footer-police,
+  .xy-footer-records > a:first-child {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+
+
+/* ===== Footer single divider fix ===== */
+.xy-footer-bottom {
+  border-top: 0 !important;
+}
