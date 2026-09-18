@@ -107,7 +107,7 @@ body.xy-product-body{margin:0;background:#fff;color:var(--xy-ink);overflow-x:hid
 [data-product-reveal]{opacity:0;transform:translateY(28px);transition:opacity .76s cubic-bezier(.2,.8,.2,1) var(--delay,0ms),transform .76s cubic-bezier(.2,.8,.2,1) var(--delay,0ms)}
 [data-product-reveal].is-visible{opacity:1;transform:none}
 
-@keyframes xyFloat{50%{transform:translateY(-12px)}}@keyframes xySpin{to{rotate:360deg}}@keyframes xyBreathe{50%{transform:scale(1.05)}}@keyframes xyWave{from{scale:1 .55;opacity:.35}to{scale:1 1.2;opacity:1}}@keyframes xyPortal{50%{transform:scale(1.04);opacity:.35}}
+@keyframes xyFloat{50%{transform:translateY(-6px)}}@keyframes xySpin{to{rotate:360deg}}@keyframes xyBreathe{50%{transform:scale(1.05)}}@keyframes xyWave{from{scale:1 .55;opacity:.35}to{scale:1 1.2;opacity:1}}@keyframes xyPortal{50%{transform:scale(1.04);opacity:.35}}
 
 @media(max-width:1050px){
   .xy-product-nav{grid-template-columns:1fr auto}.xy-product-nav>nav{position:fixed;top:68px;right:0;left:0;padding:18px;border-radius:24px;background:#fff;box-shadow:0 18px 50px #0001;flex-direction:column;opacity:0;visibility:hidden;transform:translateY(-8px)}
@@ -4147,3 +4147,32 @@ body.xy-product-body {
     transform: none;
   }
 }
+
+/* ===== Unified product grid + restrained hero motion =====
+   Hero keeps the interactive canvas; the remaining product chapters only
+   reuse its 78px line grid, with no square particles. */
+.xy-features,
+.xy-showcase,
+.xy-product-footer {
+  background-image:
+    linear-gradient(rgba(36,42,54,.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(36,42,54,.055) 1px, transparent 1px);
+  background-size: 78px 78px;
+  background-position: 0 0;
+}
+
+.xy-voice-section {
+  background-image:
+    linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+  background-size: 78px 78px;
+  background-position: 0 0;
+}
+
+.xy-download-section::before {
+  opacity: .4;
+  background-size: 78px 78px;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+
