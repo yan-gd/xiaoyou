@@ -301,7 +301,7 @@ function HeroInteractiveGrid() {
             point.vx += (dx / distance) * force + pointer.speedX * 0.018 * influence
             point.vy += (dy / distance) * force + pointer.speedY * 0.018 * influence
             point.vx += (-dy / distance) * force * 0.07 * direction
-            point.vy += (dx / distance) * force * 0.16 * direction
+            point.vy += (dx / distance) * force * 0.07 * direction
           }
         }
         point.vx += (point.homeX - point.x) * spring
